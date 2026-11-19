@@ -77,8 +77,15 @@ def not_needed(text: str) -> None:
 theme.apply()
 
 
+STEPS_CSS = """
+.vi-steps .q-stepper__header { flex-wrap: wrap; }
+.vi-steps .q-stepper__tab { flex: 0 0 25%; max-width: 25%; }
+"""  # seven steps: four on the first line, then the worksheet starts the second
+
+
 def header() -> None:
     anim.add_css()
+    ui.add_css(STEPS_CSS)
     theme.add_css()
     recording.add_assets()
     with ui.header().classes("items-center justify-between"):
@@ -278,7 +285,7 @@ def editor_page(slug: str) -> None:
                 ed.status = ui.label("Saved").classes("text-sm opacity-60")
             ed.on_change_hooks.append(lambda: title.set_text(inst.meta.name))
 
-            with ui.stepper().props("header-nav animated flat").classes("w-full") as stepper:
+            with ui.stepper().props("header-nav animated flat").classes("w-full vi-steps") as stepper:
                 with ui.step("Instrument", icon="music_note"):
                     step_instrument(ed)
                     nav(stepper, first=True)
@@ -610,9 +617,9 @@ def step_range(ed: Editor) -> None:
 
 def step_dynamics(ed: Editor) -> None:
     inst, dyn, rec = ed.inst, ed.inst.dynamics, ed.inst.recording
-    ui.label("Velocity lanes").classes("text-base font-medium")
+    ui.label("Velocities").classes("text-base font-medium")
     ui.label("The dynamics every note is recorded at, quietest first, each in its own take. These are the "
-             "defaults: in the worksheet, single notes can get their own lanes and velocity ranges.") \
+             "defaults: in the worksheet, single notes can get their own velocities and ranges.") \
         .classes("text-sm opacity-70 max-w-3xl")
 
     @ui.refreshable
@@ -636,15 +643,15 @@ def step_dynamics(ed: Editor) -> None:
     layers()
     if inst.recording.source == "samples":
         velocity_layers(ed)
-        ui.label("When importing: a sample whose file name contains a lane name (e.g. “_mf_”) goes to that "
-                 "lane; a velocity number like “v2” is ranked; otherwise the samples of each note are "
-                 "spread over the lanes by loudness, and several samples in one lane become "
+        ui.label("When importing: a sample whose file name contains a velocity name (e.g. “_mf_”) goes to that "
+                 "velocity; a velocity number like “v2” is ranked; otherwise the samples of each note are "
+                 "spread over the velocities by loudness, and several samples in one velocity become "
                  "variations.").classes("text-sm opacity-70 max-w-3xl")
         return
     velocity_layers(ed)
     with ui.row():
-        ed.number("Variations per lane", dyn, "round_robins", min=1, max=32, precision=0).classes("w-52") \
-            .tooltip("How many times each note is played per lane; DecentSampler alternates between them")
+        ed.number("Variations per velocity", dyn, "round_robins", min=1, max=32, precision=0).classes("w-52") \
+            .tooltip("How many times each note is played per velocity; DecentSampler alternates between them")
         ed.number("Ring / hold time per hit", rec, "ring_seconds", cast=float, min=0.5, max=60, step=0.5,
                   suffix="s").classes("w-56")
         ed.number("Noise floor", rec, "noise_floor_seconds", min=0, max=300, precision=0, suffix="s").classes("w-36")

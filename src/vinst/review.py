@@ -16,7 +16,7 @@ FLAGS: dict[str, tuple[str, str]] = {
     "wrong_note": ("error", "pitch is more than 50 cents away from the expected note"),
     "clipped": ("error", "the signal reached full scale"),
     "no_pitch": ("warning", "no stable pitch found"),
-    "layer_mismatch": ("warning", "loudness fits a different velocity lane of this note"),
+    "layer_mismatch": ("warning", "loudness fits a different velocity of this note better"),
     "cut_off": ("warning", "still ringing when the next hit (or the file) started"),
     "out_of_tune": ("info", "more than 20 cents off; the instrument will correct it"),
     "loop_poor": ("warning", "the automatic loop may click or pulse; listen to it"),
@@ -130,7 +130,7 @@ def check_lanes(results: list["TakeResult"], lanes: list[str]) -> None:
         first.message = "; ".join(filter(None, [first.message, LANES_OUT_OF_ORDER]))
 
 
-LANES_OUT_OF_ORDER = "this note's velocity lanes don't get louder in order"
+LANES_OUT_OF_ORDER = "this note's velocities don't get louder in order"
 
 
 class Manifest(BaseModel):

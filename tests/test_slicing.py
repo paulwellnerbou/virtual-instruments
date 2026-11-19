@@ -52,7 +52,7 @@ def test_mistakes_are_flagged(sliced):
     by_number = {t.number: t for t in m.takes}
     assert "wrong_note" in by_number[3].hits[1].flags
     # A missing hit: the lane just has one variation fewer.
-    assert by_number[4].status == "ok" and len(by_number[4].hits) == 1 and by_number[4].info == "1 hits, 2 planned"
+    assert by_number[4].status == "ok" and len(by_number[4].hits) == 1 and by_number[4].info == "1 hit, 2 planned"
     assert "clipped" in by_number[5].hits[-1].flags
 
 
@@ -111,7 +111,7 @@ def test_invalid_layer_names_refuse_slicing(sliced):
     inst, _ = sliced
     bad = inst.model_copy(deep=True)
     bad.dynamics.layers = ["p", "f", "F"]
-    assert any("Duplicate lane name" in p for p in bad.problems())
+    assert any("Duplicate velocity name" in p for p in bad.problems())
     bad.dynamics.layers = ["p", "soft/hard"]
     assert any("letters, digits" in p for p in bad.problems())
     with pytest.raises(ValueError, match="Fix these first"):

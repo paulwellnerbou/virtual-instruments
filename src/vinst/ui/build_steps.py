@@ -128,7 +128,7 @@ def velocity_layers(ed: "Editor") -> None:
                 slider.set_value(value)
             bar.refresh()
 
-        ui.label("Where each lane starts").classes("text-sm font-medium mt-2")
+        ui.label("Where each velocity starts").classes("text-sm font-medium mt-2")
         sliders: list[ui.slider] = []
         with ui.column().classes("gap-1 w-full max-w-3xl"):
             for i, layer in enumerate(layers[1:]):

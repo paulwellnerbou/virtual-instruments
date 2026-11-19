@@ -208,8 +208,8 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
     if unrecorded:
         m.warnings.append(f"{unrecorded} planned notes aren't recorded yet; neighbouring samples cover them.")
     if laneless:
-        m.warnings.append(f"{laneless} hits have no lane (theirs was removed from the note) and are left out; "
-                          "drag them into a lane in the worksheet.")
+        m.warnings.append(f"{laneless} hits have no velocity (theirs was removed from the note) and are left out; "
+                          "drag them into one in the worksheet.")
     if not notes:
         return m
 
@@ -230,7 +230,7 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
             bounds = lane_bounds(inst, note_of.get((pass_id, root), ""))
             lanes = {lane for lane, _, _ in bounds}
             for lane in sorted(set(pass_notes[root]) - lanes):
-                m.warnings.append(f"Note {root}: hits in lane “{lane}”, which this note doesn't have; left out.")
+                m.warnings.append(f"Note {root}: hits in velocity “{lane}”, which this note doesn't have; left out.")
             slots = velocity_slots(bounds, set(pass_notes[root]) & lanes)
             # Without neighbour borrowing one entry covers the whole zone; with it every key gets
             # its own entries, because each key has a different set of candidates.

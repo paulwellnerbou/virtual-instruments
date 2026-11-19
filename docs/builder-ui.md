@@ -32,21 +32,22 @@ A local app (`vinst ui`, opened in the browser) that walks through creating an i
 - **Beyond the recorded notes:** the lowest and highest samples can be stretched further down and up, by up to 24 semitones; the step shows the resulting playable range. This only changes the built instrument, so nothing needs recording or slicing again.
 
 ### 4. Dynamics and extras
-- **Velocity lanes:** the dynamics every note is recorded at, quietest first, e.g. p and f, each in its own take. A slider per lane sets the velocity where it starts ("f starts at velocity 80"), with a bar showing each lane's range; the default is an even split.
-- **Variations per lane:** how often each note is played per lane; DecentSampler alternates between them.
-- These are **defaults**: in the worksheet, single notes can get their own lanes and velocity ranges. Changing the defaults never needs new slicing, because a hit's lane comes from its take.
+- **Velocities:** the dynamics every note is recorded at, quietest first, e.g. p and f, each in its own take. A slider per velocity sets where it starts ("f starts at velocity 80"), with a bar showing each one's range; the default is an even split.
+- **Variations per velocity:** how often each note is played per lane; DecentSampler alternates between them.
+- These are **defaults**: in the worksheet, single notes can get their own velocities and ranges. Changing the defaults never needs new slicing, because a hit's velocity comes from its take.
 - Ring time per hit, noise-floor length, and **extras**: release noises, chucks, body knocks, each its own take.
 
 ### 5. Worksheet
 Recording, slicing and review in one place, replacing the earlier recording sheet and review steps.
 - **At the top:** the takes folder, sample rate and bit depth, the audio interface and which input each signal is plugged into ("Detect" finds it), where the sliced samples go, denoising and loops, and "Slice all" for takes exported from a DAW.
 - **The noise floor** and every **extra** get a row with ● to record it and its hits.
-- **One card per note, one row per lane:**
-  - the lane's velocity range for this note; changing where a lane starts (Enter or leaving the field) gives the note its own lanes;
-  - ● records the lane (a count-in, then one hit per bar with a visual metronome), + records more variations to compare with the ones there, ▶ plays the kept hits with their attacks 0.75 s apart;
-  - the hits as chips, coloured by their flags. **Drag a chip to another lane** to move it; it keeps that lane when slicing again;
-  - without a recording, the file name to export from a DAW, e.g. `060_C-0_p_pickup.wav`.
-- **"+ lane"** adds a lane to one note only (e.g. an ff for the low strings), × removes an empty lane from it, and "Use default lanes" goes back to the defaults.
+- **One card per note, one row per velocity:**
+  - a vertical slider beside the rows, from velocity 1 at the top to 127 at the bottom, with a dot per boundary: dragging a dot moves where the next velocity starts for this note, and gives the note its own velocities. The ranges always join up;
+  - ● records the velocity (a count-in, then one hit per bar with a visual metronome), + records more variations to compare with the ones there, ▶ plays the kept hits with their attacks 0.75 s apart;
+  - the hits as chips, coloured by their flags. **Drag a chip to another velocity** to move it; it keeps that velocity when slicing again;
+  - **drop an audio file** (WAV, AIFF, FLAC, e.g. exported from Cubase or WaveLab) onto a row: it becomes that velocity's take, or more variations if the velocity is already recorded, so nothing is overwritten. With several signals per take, the signal id must be in the file name;
+  - below the rows, the waveform of each recording with its cut regions.
+- **"+ velocity"** adds a velocity to one note only (e.g. an ff for the low strings), × removes an empty one, and "Use default velocities" goes back to the defaults. Recordings of a removed velocity stay with the note; their hits show under "No velocity" until dragged into one.
 - **Takes:** one per note and lane, `<note>_<lane>_<signal>.wav`. More variations recorded later are `<note>_<lane>-more<n>_<signal>.wav`. Every hit in a lane take is a variation of that lane, however many there are; the planned number is only a guide.
 - **Takes from before lanes,** which held all dynamics in one file (`<note>_<signal>.wav`), still count: their hits start in the note's first lane, to be dragged into the right ones.
 - **Recording in the app** slices that recording right away. A take is written to a temporary file and only replaces the existing one when it finishes; Cancel, a failed write, the interface stopping mid-take or leaving the page all keep the old take. The count-in isn't recorded, apart from half a second of pre-roll. The app refuses to record when the interface runs at another sample rate than the instrument, or when the chosen interface isn't connected.

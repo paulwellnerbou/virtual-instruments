@@ -242,12 +242,12 @@ class Instrument(BaseModel):
                 out.append("Add at least one sound.")
             _dupes(out, "sound key", [str(s.key) for s in self.range.sounds])
         if not self.dynamics.layers:
-            out.append("Add at least one velocity lane.")
-        _dupes(out, "lane name", self.dynamics.layers)
+            out.append("Add at least one velocity.")
+        _dupes(out, "velocity name", self.dynamics.layers)
         for note, own in self.note_lanes.items():
             if not own.layers:
-                out.append(f"Note {note} has no velocity lanes; give it one or use the defaults.")
-            _dupes(out, f"lane name for note {note}", own.layers)
+                out.append(f"Note {note} has no velocities; give it one or use the defaults.")
+            _dupes(out, f"velocity name for note {note}", own.layers)
         for c in self.preset.controls:
             if c not in CONTROLS:
                 out.append(f"Unknown control “{c}”.")
@@ -275,7 +275,7 @@ class Instrument(BaseModel):
         if self.processing.denoise and not self.recording.noise_floor_seconds:
             out.append("Denoising needs a noise-floor recording (set its length in step 4).")
         lanes = self.dynamics.layers + [lane for own in self.note_lanes.values() for lane in own.layers]
-        for what, values in (("Signal id", [s.id for s in self.signals]), ("Lane name", list(dict.fromkeys(lanes)))):
+        for what, values in (("Signal id", [s.id for s in self.signals]), ("Velocity name", list(dict.fromkeys(lanes)))):
             for v in values:
                 if not SAFE_NAME.fullmatch(v):
                     out.append(f"{what} “{v}” may only use letters, digits and “-”.")

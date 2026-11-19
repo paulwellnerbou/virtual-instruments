@@ -226,11 +226,11 @@ def test_a_removed_lane_keeps_its_recording_and_moved_hits(uke):
     uke.note_lanes[f.note_base] = NoteLanes(layers=["p"])  # then the f lane is removed from the note
     again = process(uke, previous=m)
     kept = result(again, f.key)
-    assert kept.origin == "unplanned" and "lane removed" in kept.title
+    assert kept.origin == "unplanned" and "velocity removed" in kept.title
     assert [h.layer for h in kept.hits] == ["p", None]  # the moved one stays in p, the other has no lane
     review.save(again, store.manifest_path(uke.meta.slug))
     built = bundle.build(uke)
-    assert any("have no lane" in w for w in built.warnings)
+    assert any("have no velocity" in w for w in built.warnings)
     paths = {s.get("path").split("/")[-1] for s in etree.parse(str(built.preset_file)).iter("sample")}
     assert kept.hits[0].files["pickup"] in paths and kept.hits[1].files["pickup"] not in paths
 
@@ -269,3 +269,31 @@ def test_takes_from_before_lanes_count_as_recorded(uke):
     assert summarize(uke).recorded_files == 0
     write(uke, f"{combined_base(p)}_{p.signals[0]}.wav", take_audio(p, (0.2, 0.7)))
     assert summarize(uke).recorded_files == 1
+
+
+def test_dropped_files_become_the_take_or_more_variations(uke):
+    import asyncio
+
+    from vinst.ui.worksheet import drop_file
+
+    class Body:  # the part of a request the endpoint reads
+        def __init__(self, data):
+            self.data = data
+
+        async def body(self):
+            return self.data
+
+    take = lane(uke, "f")
+    buf = io.BytesIO()
+    sf.write(buf, take_audio(take, (0.7, 0.72)), 44100, format="WAV", subtype="PCM_16")
+    drop = lambda name: asyncio.run(drop_file(uke.meta.slug, take.key, Body(buf.getvalue()), name))  # noqa: E731
+    first = drop("C3 loud take.wav")
+    takes = store.instrument_dir(uke.meta.slug).parent.parent / "takes"
+    assert first["ok"] and first["key"] == take.key and (takes / take.files[0]).exists()
+    assert "44100 Hz" in first["message"]  # the instrument records at 48 kHz
+    assert sf.info(takes / take.files[0]).subtype == "PCM_24"
+    second = drop("another.wav")  # already recorded: kept, the new file becomes more variations
+    assert second["ok"] and second["key"] == f"{take.base_name}-more1"
+    assert (takes / more_file(take, 1, take.signals[0])).exists()
+    bad = asyncio.run(drop_file(uke.meta.slug, take.key, Body(b"not audio"), "notes.txt"))
+    assert not bad["ok"] and "isn't an audio file" in bad["message"]

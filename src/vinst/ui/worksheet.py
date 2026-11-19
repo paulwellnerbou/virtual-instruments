@@ -7,6 +7,7 @@ own lanes and velocity ranges instead of the defaults from Dynamics.
 
 import io
 import json
+import re
 from html import escape
 from pathlib import Path
 from collections.abc import Callable
@@ -15,13 +16,25 @@ from urllib.parse import quote
 
 import numpy as np
 import soundfile as sf
-from fastapi import HTTPException, Query
+from fastapi import HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from nicegui import app, run, ui
 
 from vinst import loops, review, slicing, store
 from vinst.bundle import STALE_MESSAGE, changed_message
-from vinst.plan import SAFE_LANE, Take, lane_bounds, note_lanes, plan_takes, recording_passes, slicing_setup
+from vinst.plan import (
+    SAFE_LANE,
+    Take,
+    lane_bounds,
+    more_base,
+    more_file,
+    note_lanes,
+    plan_takes,
+    recording_passes,
+    slicing_setup,
+    take_key,
+)
+from vinst.slicing import SUBTYPES
 from vinst.review import FLAGS, Hit, Manifest, TakeResult, check_lanes, lane_of, settle
 from vinst.spec import NoteLanes
 from vinst.ui import recording
@@ -113,6 +126,50 @@ def compare_file(slug: str, names: list[str] = Query(), every: float = COMPARE_E
     return Response(buf.getvalue(), media_type="audio/wav")
 
 
+@app.post("/drop/{slug}/{key}")
+async def drop_file(slug: str, key: str, request: Request, name: str = "") -> dict:
+    """An audio file dropped onto a take's row, e.g. exported from a DAW.
+
+    It becomes the take, or if the take is already recorded, more variations of it; nothing
+    recorded is overwritten. Several signals of a take are told apart by their ids in the file name.
+    """
+    inst = store.load(slug)
+    takes_dir = Path(inst.recording.takes_dir).expanduser()
+    take = next((t for t in plan_takes(inst) if t.key == key), None)
+    if take is None or not inst.recording.takes_dir:
+        raise HTTPException(404)
+    stem = Path(name).stem.lower()
+    signal = take.signals[0] if len(take.signals) == 1 else next(
+        (s for s in take.signals if re.search(rf"(^|[^a-z0-9]){re.escape(s.lower())}([^a-z0-9]|$)", stem)), None)
+    if signal is None:
+        return {"ok": False, "message": f"Which signal is “{name}”? Put one of {', '.join(take.signals)} in its name."}
+    try:
+        audio, sr = sf.read(io.BytesIO(await request.body()), always_2d=True)
+    except Exception:
+        return {"ok": False, "message": f"“{name}” isn't an audio file this app can read (WAV, AIFF, FLAC)."}
+    index = take.signals.index(signal)
+    target = takes_dir / take.files[index]
+    result_key = take.key
+    if target.exists():
+        if take.kind != "note":
+            return {"ok": False, "message": f"{take.title} is already recorded; record it again with ●."}
+        from vinst.slicing import more_numbers
+
+        # The other signals of the same "more" recording share its number.
+        numbers = more_numbers(take, takes_dir)
+        open_ = [n for n in numbers if not (takes_dir / more_file(take, n, signal)).exists()]
+        number = open_[0] if open_ else max(numbers, default=0) + 1
+        target = takes_dir / more_file(take, number, signal)
+        result_key = take_key(more_base(take, number), take.pass_id)
+    takes_dir.mkdir(parents=True, exist_ok=True)
+    part = target.with_name(target.name + ".part")
+    sf.write(part, audio, sr, subtype=SUBTYPES.get(inst.recording.bit_depth, "PCM_24"), format="WAV")
+    part.replace(target)
+    note = "" if sr == inst.recording.sample_rate else \
+        f" It runs at {sr} Hz, the instrument at {inst.recording.sample_rate} Hz."
+    return {"ok": True, "key": result_key, "message": f"“{name}” is now {target.name}.{note}"}
+
+
 # One player for the whole page: a second click on the same button stops it.
 PLAY_JS = """(url) => {
   const a = window.viPlayer || (window.viPlayer = new Audio());
@@ -147,6 +204,14 @@ def waveform(take: TakeResult, highlight: str | None = None) -> str:
 
 
 CSS = """
+.vi-vel { position: relative; width: 14px; margin: 4px 30px 4px 4px; border-radius: 7px; background: #eee; }
+.vi-vel-seg { position: absolute; left: 0; right: 0; transition: top .15s, height .15s; }
+.vi-vel-seg:first-child { border-radius: 7px 7px 0 0; } .vi-vel-seg:last-of-type { border-radius: 0 0 7px 7px; }
+.vi-vel-dot { position: absolute; left: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%;
+              background: white; border: 2px solid #1565c0; cursor: ns-resize; touch-action: none;
+              box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .1s; }
+.vi-vel-dot.active { transform: scale(1.2); }
+.vi-vel-dot span { position: absolute; left: 22px; top: -1px; font-size: 11px; opacity: .75; pointer-events: none; }
 .vi-lane { border-radius: 6px; padding: 2px 4px; transition: background-color .15s; }
 .vi-lane.vi-drop { background: rgba(25, 118, 210, .12); outline: 2px dashed #1976d2; }
 .vi-chip-drag { cursor: grab; }
@@ -154,9 +219,53 @@ CSS = """
 DRAG_JS = "(e) => e.dataTransfer.setData('text/plain', {ref})"
 DRAG_OVER_JS = "(e) => { e.preventDefault(); e.currentTarget.classList.add('vi-drop'); }"
 DRAG_LEAVE_JS = "(e) => e.currentTarget.classList.remove('vi-drop')"
+# A hit chip carries its reference as text; files dropped from the Finder are uploaded first, then
+# the server's answers are sent on. URL is replaced per row.
 DROP_JS = ("(e) => { e.preventDefault(); e.currentTarget.classList.remove('vi-drop'); "
-           "emit(e.dataTransfer.getData('text/plain')); }")
+           "const files = [...(e.dataTransfer.files || [])]; "
+           "if (!files.length) { emit(e.dataTransfer.getData('text/plain')); return; } "
+           "Promise.all(files.map(f => fetch(URL + '?name=' + encodeURIComponent(f.name), {method: 'POST', body: f})"
+           ".then(r => r.json()).catch(err => ({ok: false, message: String(err)})))).then(rs => emit(rs)); }")
 SUGGESTED_LANES = ["pp", "p", "mp", "mf", "f", "ff"]
+VELOCITY_COLOURS = ["#90caf9", "#42a5f5", "#1e88e5", "#1565c0", "#0d47a1"]
+ROW_H = 48  # px per velocity row; the velocity slider spans the rows
+
+# Dragging a velocity dot: values follow the pointer between the neighbouring dots; on release the
+# bar sends all starts to the server ("vel-change").
+JS = r"""
+window.viVel || (() => {
+  let drag = null;
+  const at = (track, y) => { const r = track.getBoundingClientRect();
+    return Math.round(1 + Math.min(1, Math.max(0, (y - r.top) / r.height)) * 127); };
+  const place = (track, dots) => {
+    const starts = [1, ...dots.map(d => +d.dataset.value), 128];
+    track.querySelectorAll('.vi-vel-seg').forEach((s, k) => {
+      s.style.top = ((starts[k] - 1) / 127 * 100) + '%';
+      s.style.height = ((starts[k + 1] - starts[k]) / 127 * 100) + '%'; });
+  };
+  document.addEventListener('pointerdown', e => {
+    const dot = e.target.closest('.vi-vel-dot'); if (!dot) return;
+    const track = dot.closest('.vi-vel'), dots = [...track.querySelectorAll('.vi-vel-dot')];
+    drag = {dot, track, dots, i: dots.indexOf(dot)};
+    dot.classList.add('active'); try { dot.setPointerCapture(e.pointerId); } catch (_) {} e.preventDefault();
+  });
+  document.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const {dot, track, dots, i} = drag;
+    const lo = i > 0 ? +dots[i - 1].dataset.value + 1 : 2;
+    const hi = i < dots.length - 1 ? +dots[i + 1].dataset.value - 1 : 127;
+    const v = Math.min(hi, Math.max(lo, at(track, e.clientY)));
+    dot.dataset.value = v; dot.style.top = ((v - 1) / 127 * 100) + '%'; dot.querySelector('span').textContent = v;
+    place(track, dots);
+  });
+  document.addEventListener('pointerup', () => {
+    if (!drag) return;
+    const {dot, track, dots} = drag; drag = null; dot.classList.remove('active');
+    track.dispatchEvent(new CustomEvent('vel-change', {detail: dots.map(d => +d.dataset.value)}));
+  });
+  window.viVel = true;
+})();
+"""
 
 
 def step_worksheet(ed: "Editor") -> None:
@@ -166,6 +275,7 @@ def step_worksheet(ed: "Editor") -> None:
     state: dict[str, Any] = {"manifest": None, "problems_only": False, "busy": False,
                              "progress": 0.0, "label": "", "stale": None}
     ui.add_css(CSS)
+    ui.add_body_html(f"<script>{JS}</script>")
     try:
         state["manifest"] = review.load(path)
     except Exception as e:  # e.g. written by an older version; slicing again replaces it
@@ -187,10 +297,10 @@ def step_worksheet(ed: "Editor") -> None:
                 .tooltip("Only used when a sample's pitch can't be measured; otherwise the pitch decides "
                          "which octave a name means.")
     else:
-        ui.markdown("Every note is recorded once per **velocity lane**. Record a lane with ● (or export it "
-                    "from a DAW under the file name shown) and its hits appear right away. Listen to them, "
-                    "reject the ones you don't want, drag hits to another lane, and give single notes their "
-                    "own lanes or velocity ranges.").classes("max-w-3xl")
+        ui.markdown("Every note is recorded once per **velocity** (e.g. p and f). Record one with ●, or drop an "
+                    "audio file exported from your DAW onto its row, and its hits appear right away. Listen to "
+                    "them, reject the ones you don't want, drag hits to another velocity, and give single notes "
+                    "their own velocities or ranges.").classes("max-w-3xl")
         with ui.row().classes("w-full items-center no-wrap gap-1"):
             takes = ed.folder("Folder for the takes", rec, "takes_dir", "Folder for the takes",
                               placeholder=store.default_takes_dir(inst.meta.name))
@@ -352,7 +462,7 @@ def step_worksheet(ed: "Editor") -> None:
             return
         take, hit = found
         if (take.note, take.pass_id) != (note, pass_id):
-            ui.notify("Hits can only move between the lanes of their own note.", type="warning")
+            ui.notify("Hits can only move between the velocities of their own note.", type="warning")
             return
         hit.layer_set = None if lane == take.lane else lane
         saved(take)
@@ -393,7 +503,7 @@ def step_worksheet(ed: "Editor") -> None:
             ui.label(hit.id).classes("text-xs font-mono opacity-70")
             lanes = note_lanes(inst, take.note) if take.note else []
             lane = lane_of(hit, take, lanes) if take.note and not importing else hit.layer
-            facts = [("Lane", lane or "–"),
+            facts = [("Velocity", lane or "–"),
                      ("Length", f"{(hit.end - hit.start) / (hit.sample_rate or take.sample_rate or 1):.2f} s"),
                      ("Loudness (first 0.3 s)", f"{hit.rms_db:.1f} dBFS")]
             if hit.cents is not None:
@@ -407,7 +517,7 @@ def step_worksheet(ed: "Editor") -> None:
                 ui.label(f"Where it was cut in {take.title}").classes("text-xs opacity-60")
                 ui.html(waveform(take, hit.id), sanitize=False).classes("w-full")
             if take.kind == "note" and not importing and len(lanes) > 1:
-                ui.select({la: la for la in lanes}, value=lane, label="Move to lane",
+                ui.select({la: la for la in lanes}, value=lane, label="Move to velocity",
                           on_change=lambda e: choose_lane(take, hit, e.value)).props("dense").classes("w-40")
             for f in hit.flags:
                 sev, text = FLAGS.get(f, ("info", f))
@@ -437,7 +547,7 @@ def step_worksheet(ed: "Editor") -> None:
                     if take.kind == "note" and not importing and lane:
                         ui.button("Record a new one instead", icon="fiber_manual_record",
                                   on_click=lambda: record_instead(take, hit)).props("flat color=red") \
-                            .tooltip("Records one more hit for this lane; this one is rejected once it's saved")
+                            .tooltip("Records one more hit for this velocity; this one is rejected once it's saved")
                     ui.button("Close", on_click=dialog.close).props("flat")
         dialog.open()
 
@@ -446,19 +556,14 @@ def step_worksheet(ed: "Editor") -> None:
         inst.note_lanes[note] = NoteLanes(layers=lanes, splits=starts)
         ed.changed()
 
-    def set_start(note: str, index: int, value: Any) -> None:
+    def set_starts(note: str, starts: Any) -> None:
         bounds = lane_bounds(inst, note)
-        starts = [lo for _, lo, _ in bounds][1:]
         try:
-            starts[index - 1] = int(value)
+            values = [int(v) for v in starts]
         except (TypeError, ValueError):
             return
-        for k in range(index, len(starts)):  # keep the lanes in order, each at least one velocity wide
-            starts[k] = max(starts[k], starts[k - 1] + 1) if k else starts[k]
-        for k in range(index - 2, -1, -1):
-            starts[k] = min(starts[k], starts[k + 1] - 1)
-        starts = [min(max(v, 2 + k), 127 - (len(starts) - 1 - k)) for k, v in enumerate(starts)]
-        set_lanes(note, [lane for lane, _, _ in bounds], starts)
+        if len(values) == len(bounds) - 1 and values == sorted(set(values)) and all(2 <= v <= 127 for v in values):
+            set_lanes(note, [lane for lane, _, _ in bounds], values)
 
     def remove_lane(note: str, lane: str) -> None:
         bounds = lane_bounds(inst, note)
@@ -474,12 +579,12 @@ def step_worksheet(ed: "Editor") -> None:
         existing = [lane for lane, _, _ in bounds]
         lane_card.clear()
         with lane_card:
-            ui.label(f"A new lane for {title}").classes("text-lg font-medium")
+            ui.label(f"A new velocity for {title}").classes("text-lg font-medium")
             suggestion = next((s for s in SUGGESTED_LANES[::-1] if s not in existing), "")
             name = ui.input("Name", value=suggestion).props("dense autofocus")
             start = ui.number("Starts at velocity", value=min(127, bounds[-1][1] - 10 if bounds else 64),
                               min=2, max=127, precision=0).props("dense")
-            ui.label("Only this note gets it; the defaults in Dynamics stay as they are. The lanes stay "
+            ui.label("Only this note gets it; the defaults in Dynamics stay as they are. The velocities stay "
                      "ordered by where they start.").classes("text-xs opacity-70")
 
             def add() -> None:
@@ -488,7 +593,7 @@ def step_worksheet(ed: "Editor") -> None:
                     ui.notify("Use a new name with letters, digits and “-” only.", type="warning")
                     return
                 if at <= 1 or at in {lo for _, lo, _ in bounds}:
-                    ui.notify(f"Another lane already starts at velocity {at}; choose another.", type="warning")
+                    ui.notify(f"Another velocity already starts at {at}; choose another.", type="warning")
                     return
                 entries = sorted([(lo, n) for n, lo, _ in bounds if n] + [(at, lane)])
                 entries = [(max(1, lo), n) for lo, n in entries]
@@ -499,7 +604,7 @@ def step_worksheet(ed: "Editor") -> None:
 
             with ui.row().classes("w-full justify-end"):
                 ui.button("Cancel", on_click=lane_dialog.close).props("flat")
-                ui.button("Add lane", on_click=add)
+                ui.button("Add velocity", on_click=add)
         lane_dialog.open()
 
     def chip(take: TakeResult, h: Hit, number: int) -> None:
@@ -510,7 +615,7 @@ def step_worksheet(ed: "Editor") -> None:
         if take.origin == "more":
             tips.append("recorded later")
         elif take.origin == "combined":
-            tips.append("from the take with all lanes")
+            tips.append("from the take with all velocities")
         if h.layer_set:
             tips.append("moved here")
         if h.loop_start is not None:
@@ -543,7 +648,7 @@ def step_worksheet(ed: "Editor") -> None:
     def take_row(take: Take, result: TakeResult | None) -> None:
         """The noise floor or an extra: one take, recorded as a whole."""
         recorded = result is not None and result.status not in ("missing",)
-        with ui.row().classes("items-center gap-2 w-full"):
+        with ui.row().classes("vi-lane items-center gap-2 w-full").style(f"min-height:{ROW_H}px") as row:
             ui.label(take.title).classes("font-medium w-56")
             record_button(take, recorded)
             if result and result.status == "noise_floor":
@@ -553,15 +658,65 @@ def step_worksheet(ed: "Editor") -> None:
                     chip(result, h, i)
                 compare_button([(result, h) for h in result.hits])
             if not recorded:
-                ui.label(f"or export {', '.join(take.files)}").classes("text-xs font-mono opacity-50")
-            if result and (result.message or result.info) and result.status != "noise_floor":
+                ui.label("not recorded: ● records it, or drop an audio file here").classes("text-xs opacity-50") \
+                    .tooltip(f"E.g. a file exported from Cubase or WaveLab; it is stored as {', '.join(take.files)}")
+            if result and (result.message or result.info) and result.status not in ("noise_floor", "missing"):
                 ui.label("; ".join(filter(None, [result.message, result.info]))).classes("text-xs opacity-70")
+        drop_target(row, take, "", take.pass_id)
+        if result and result.envelope and result.status != "noise_floor":
+            ui.html(waveform(result), sanitize=False).classes("w-full")
 
     def record_button(take: Take, recorded: bool) -> None:
         ui.button(icon="check_circle" if recorded else "fiber_manual_record", color=None,
                   on_click=lambda t=take: recording.record_take(ed, t.number, resliced)) \
             .props(f"flat dense round size=sm text-color={'positive' if recorded else 'red'}") \
-            .tooltip("Recorded; click to record it again (replaces it)" if recorded else "Record this lane")
+            .tooltip("Recorded; click to record it again (replaces it)" if recorded else "Record it")
+
+    def velocity_slider(note: str, bounds: list[tuple[str, int, int]]) -> None:
+        """A vertical bar from velocity 1 (top) to 127, one draggable dot per boundary between velocities."""
+        segs = "".join(
+            f"<div class='vi-vel-seg' style='top:{(lo - 1) / 127 * 100:.2f}%;height:{(hi - lo + 1) / 127 * 100:.2f}%;"
+            f"background:{VELOCITY_COLOURS[k % len(VELOCITY_COLOURS)]}'></div>"
+            for k, (_, lo, hi) in enumerate(bounds))
+        dots = "".join(
+            f"<div class='vi-vel-dot' data-value='{lo}' style='top:{(lo - 1) / 127 * 100:.2f}%'>"
+            f"<span>{lo}</span></div>" for _, lo, _ in bounds[1:])
+        track = ui.element("div").classes("vi-vel shrink-0").style(f"height:{len(bounds) * ROW_H - 8}px")
+        with track:
+            ui.html(segs + dots, sanitize=False)
+        track.tooltip("Velocity 1 at the top, 127 at the bottom: drag a dot to move where the next velocity "
+                      "starts for this note")
+        track.on("vel-change", lambda e, n=note: set_starts(n, e.args["detail"]), args=["detail"])
+
+    def drop_target(row: Any, take: Take, note: str, pass_id: str) -> None:
+        """Hits dragged from another velocity of this note, or audio files dropped from the Finder."""
+        url = json.dumps(f"/drop/{slug}/{quote(take.key, safe='')}")
+        row.on("dragover", js_handler=DRAG_OVER_JS)
+        row.on("dragleave", js_handler=DRAG_LEAVE_JS)
+        row.on("drop", js_handler=DROP_JS.replace("URL", url),
+               handler=lambda e, la=take.lane, n=note, ps=pass_id: dropped(e.args, la, n, ps))
+
+    def dropped(args: Any, lane: str | None, note: str, pass_id: str) -> None:
+        if isinstance(args, list):  # audio files, already stored by the /drop endpoint
+            for r in args:
+                ui.notify(r.get("message", ""), type="positive" if r.get("ok") else "warning", multi_line=True)
+            keys = [r["key"] for r in args if r.get("ok")]
+            if len(set(keys)) == 1:
+                resliced(keys[0])
+            elif keys:
+                with anchor:
+                    ui.timer(0.1, lambda: slice_all(), once=True)
+        elif isinstance(args, str) and lane:
+            move(args, lane, note, pass_id)
+
+    def recordings_waveforms(recs: list[TakeResult]) -> None:
+        for r in recs:
+            if not r.envelope:
+                continue
+            what = "all velocities in one take" if r.origin == "combined" else \
+                f"{r.lane} · recorded later" if r.origin == "more" else f"{r.lane}"
+            ui.label(what).classes("text-xs opacity-60 mt-1")
+            ui.html(waveform(r), sanitize=False).classes("w-full")
 
     def note_card(lane_takes: list[Take], results_by_key: dict[str, TakeResult]) -> None:
         first = lane_takes[0]
@@ -580,64 +735,60 @@ def step_worksheet(ed: "Editor") -> None:
             with ui.row().classes("items-center gap-2 w-full"):
                 ui.label(title).classes("font-medium")
                 if own:
-                    ui.badge("own lanes", color="primary").props("outline")
+                    ui.badge("own velocities", color="primary").props("outline")
                 ui.space()
-                ui.button("+ lane", on_click=lambda n=note, t=title: add_lane(n, t)).props("flat dense no-caps")
+                ui.button("+ velocity", on_click=lambda n=note, t=title: add_lane(n, t)).props("flat dense no-caps")
                 if own:
-                    ui.button("Use default lanes", on_click=lambda n=note: use_defaults(n)).props("flat dense no-caps")
-            notes_text = "; ".join(filter(None, [m for r in recs for m in (r.message, r.info)]))
-            if notes_text:
-                ui.label(notes_text).classes("text-xs text-orange-600")
+                    ui.button("Use default velocities", on_click=lambda n=note: use_defaults(n)) \
+                        .props("flat dense no-caps")
+            # A row's own status ("not recorded yet") shows in the row: here what needs attention, in
+            # orange, and what's good to know, in grey.
+            recorded_recs = [r for r in recs if r.status != "missing"]
+            for text, style in (("; ".join(filter(None, (r.message for r in recorded_recs))), "text-orange-600"),
+                                ("; ".join(filter(None, (r.info for r in recorded_recs))), "opacity-60")):
+                if text:
+                    ui.label(text).classes(f"text-xs {style}")
             bounds = lane_bounds(inst, note)
-            for i, ((lane, lo, hi), take) in enumerate(zip(bounds, lane_takes)):
-                result = results_by_key.get(take.key)
-                recorded = result is not None and result.status != "missing"
-                hits = by_lane.get(lane, [])
-                with ui.row().classes("vi-lane items-center gap-1 w-full no-wrap min-h-[44px]") as row:
-                    ui.label(lane).classes("w-10 font-medium")
-                    if i == 0:
-                        ui.label(f"1 – {hi}").classes("w-28 text-xs opacity-70 whitespace-nowrap")
-                    else:
-                        with ui.row().classes("w-28 items-center gap-1 no-wrap"):
-                            # Applied on Enter or leaving the field: redrawing while typing would lose focus.
-                            start = ui.number(value=lo, min=2, max=127, precision=0) \
-                                .props("dense input-class=text-xs").classes("w-16") \
-                                .tooltip(f"Velocity where {lane} starts for this note")
-                            # The typed text comes with the event: the field's value may not have reached
-                            # the server yet when it loses focus.
-                            for event in ("blur", "keydown.enter"):
-                                start.on(event, js_handler="(e) => emit((e.target || {}).value)",
-                                         handler=lambda e, n=note, k=i, old=lo:
-                                         e.args not in (None, "", str(old)) and set_start(n, k, e.args))
-                            ui.label(f"– {hi}").classes("text-xs opacity-70 whitespace-nowrap")
-                    record_button(take, recorded)
-                    ui.button(icon="add", color=None,
-                              on_click=lambda t=take: recording.record_more(ed, t.key, inst.dynamics.round_robins,
-                                                                             resliced)) \
-                        .props("flat dense round size=sm text-color=primary") \
-                        .tooltip(f"Record {inst.dynamics.round_robins} more {lane} hits to compare with these")
-                    compare_button(hits)
-                    with ui.row().classes("gap-1 items-center"):
-                        for n, (r, h) in enumerate(hits, 1):
-                            chip(r, h, n)
-                    if not recorded and not hits:
-                        ui.label(f"or export {', '.join(take.files)}").classes("text-xs font-mono opacity-50")
-                    ui.space()
-                    if len(bounds) > 1 and not hits:
-                        ui.button(icon="close", on_click=lambda n=note, la=lane: remove_lane(n, la)) \
-                            .props("flat dense round size=xs").tooltip(f"Remove the {lane} lane from this note")
-                row.on("dragover", js_handler=DRAG_OVER_JS)
-                row.on("dragleave", js_handler=DRAG_LEAVE_JS)
-                row.on("drop", js_handler=DROP_JS,
-                       handler=lambda e, la=lane, n=note, ps=first.pass_id: move(e.args, la, n, ps))
+            with ui.row().classes("w-full no-wrap items-start gap-3"):
+                if len(bounds) > 1:
+                    velocity_slider(note, bounds)
+                with ui.column().classes("grow gap-0 min-w-0"):
+                    for (lane, lo, hi), take in zip(bounds, lane_takes):
+                        result = results_by_key.get(take.key)
+                        recorded = result is not None and result.status != "missing"
+                        hits = by_lane.get(lane, [])
+                        with ui.row().classes("vi-lane items-center gap-1 w-full no-wrap").style(f"min-height:{ROW_H}px") \
+                                as row:
+                            ui.label(lane).classes("w-10 font-medium")
+                            ui.label(f"velocity {lo}–{hi}").classes("w-32 text-xs opacity-70 whitespace-nowrap")
+                            record_button(take, recorded)
+                            ui.button(icon="add", color=None,
+                                      on_click=lambda t=take: recording.record_more(ed, t.key, inst.dynamics.round_robins,
+                                                                                     resliced)) \
+                                .props("flat dense round size=sm text-color=primary") \
+                                .tooltip(f"Record {inst.dynamics.round_robins} more {lane} hits to compare with these")
+                            compare_button(hits)
+                            with ui.row().classes("gap-1 items-center"):
+                                for n, (r, h) in enumerate(hits, 1):
+                                    chip(r, h, n)
+                            if not recorded and not hits:
+                                ui.label("not recorded: ● records it, or drop an audio file here").classes(
+                                    "text-xs opacity-50").tooltip(
+                                    f"E.g. a file exported from Cubase or WaveLab; it is stored as {', '.join(take.files)}")
+                            ui.space()
+                            if len(bounds) > 1 and not hits:
+                                ui.button(icon="close", on_click=lambda n=note, la=lane: remove_lane(n, la)) \
+                                    .props("flat dense round size=xs").tooltip(f"Remove the {lane} velocity from this note")
+                        drop_target(row, take, note, first.pass_id)
             orphans = by_lane.get(None, [])
             if orphans:
                 with ui.row().classes("items-center gap-1 w-full"):
-                    ui.label("No lane:").classes("text-xs opacity-70")
+                    ui.label("No velocity:").classes("text-xs opacity-70")
                     for n, (r, h) in enumerate(orphans, 1):
                         chip(r, h, n)
-                    ui.label("their lane was removed from this note; drag them into one, or they're left out") \
+                    ui.label("their velocity was removed from this note; drag them into one, or they're left out") \
                         .classes("text-xs opacity-60")
+            recordings_waveforms(recs)
 
     def import_card(take: TakeResult) -> None:
         label, color = STATUS[take.status]
@@ -670,11 +821,8 @@ def step_worksheet(ed: "Editor") -> None:
             if state["stale"]:
                 ui.label("⚠ " + state["stale"]).classes("text-sm text-orange-600")
             c = manifest.counts()
-            with ui.row().classes("items-center gap-4 w-full"):
-                ui.label(f"{c['hits']} hits · {c['errors']} errors · {c['warnings']} warnings · "
-                         f"{c['rejected']} rejected").classes("text-sm")
-                ui.switch("Only problems", value=state["problems_only"],
-                          on_change=lambda e: (state.update(problems_only=e.value), results.refresh()))
+            ui.label(f"{c['hits']} hits · {c['errors']} errors · {c['warnings']} warnings · "
+                     f"{c['rejected']} rejected").classes("text-sm")
             if manifest.noise_floor_db is not None:
                 denoised = " · samples denoised" if manifest.denoised else ""
                 ui.label(f"Noise floor: {manifest.noise_floor_db:.1f} dBFS{denoised}").classes("text-xs opacity-60")
@@ -706,6 +854,14 @@ def step_worksheet(ed: "Editor") -> None:
                 ui.label("Extras").classes("text-sm font-medium mt-2")
                 for t in extras:
                     take_row(t, results_by_key.get(t.key))
+
+    def problems_only(value: bool) -> None:
+        state["problems_only"] = value
+        # After the switch has moved: redrawing at once would cut its animation short.
+        with anchor:
+            ui.timer(0.25, results.refresh, once=True)
+
+    ui.switch("Only problems", value=False, on_change=lambda e: problems_only(e.value))
 
     def shown() -> str:
         """What the worksheet depends on in the spec; other edits (a name, a colour) don't redraw it."""

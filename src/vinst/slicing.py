@@ -285,7 +285,7 @@ def recordings(inst: Instrument, takes_dir: Path) -> list[Take]:
                 out.append(replace(t, base_name=base, files=files, lane=lane, hits=0,
                                    origin="more" if number else "unplanned",
                                    title=f"{note_title} · {lane}" + (f" · more ({number})" if number else "")
-                                   + " (lane removed)"))
+                                   + " (velocity removed)"))
     return out
 
 
@@ -363,7 +363,7 @@ def analyse_cuts(inst: Instrument, take: Take, result: TakeResult, take_signals:
     """
     id_base = take.key.replace("~", "_")  # hit ids must differ between passes
     if take.hits and len(cuts) != take.hits:
-        result.info = f"{len(cuts)} hits, {take.hits} planned"
+        result.info = f"{len(cuts)} hit{'' if len(cuts) == 1 else 's'}, {take.hits} planned"
     out_dir.mkdir(parents=True, exist_ok=True)
     subtype = SUBTYPES.get(inst.recording.bit_depth, "PCM_24")
     for i, (start, end, cut_off) in enumerate(cuts):
