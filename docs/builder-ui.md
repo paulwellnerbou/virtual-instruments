@@ -108,7 +108,7 @@ After importing, the worksheet works as for recorded takes. Change the folder's 
 - **Even out loudness** (optional): brings every sample of a velocity to that velocity's typical loudness, so notes play alike while soft velocities stay softer than loud ones.
 - **Low cut** (optional): lowers what lies below each note's own pitch, e.g. the thump of a pluck on a ukulele's body. It follows each note, so it never cuts into the low notes. Only pitched notes are affected, never extras or unpitched sounds. It's applied when building, so you can change it, build and listen without slicing again.
 - **Level:** recordings often sit well below full scale; the build makes the instrument as loud as it needs to be and keeps the peaks from clipping.
-- **Extras:** play on key release, on their own key, or not at all.
+- **Extras:** play on key release, on their own key, or not at all. On their own key, each press plays the next of their hits in turn, in the order you recorded them (e.g. chucks down, up, down…). **Stops ringing notes** (on for a chuck): playing it fades out the notes still ringing, as a hand on the strings does.
 - **Envelope:** attack, release and velocity sensitivity.
 - **Knobs:** signal mix, tone, attack, release, reverb, chorus, release-noise volume. The mod wheel drives the tone knob.
 - **Look:** background image (812 × 375 px), background and text colours, with a live preview.

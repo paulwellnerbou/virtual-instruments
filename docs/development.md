@@ -51,7 +51,7 @@ Audio is kept outside the repo: takes in the folder set in the worksheet, sliced
 - Decisions in `hits.json` are carried over when slicing again while the recording's size and modification time are unchanged. The slicing setup fingerprint covers passes, signals and loops, so velocity changes don't need re-slicing.
 - Loops: a WAV `smpl` chunk is used as is; otherwise the steady part of each note is searched for the loop whose end best matches its start.
 - Level, evening out and low cut are applied at build time to the bundle's copies of the samples. The build aims the loudest velocity's median loudness at −16 dBFS, and a 2 ms limiter keeps peaks under −1 dBFS.
-- Mapping writes each sample's `tuning`, pitches samples down to fill keys between recorded notes (up only above the highest note), renumbers round robins per key and velocity cell so rejected hits leave no gaps, and plays release extras from a `trigger="release"` group.
+- Mapping writes each sample's `tuning`, pitches samples down to fill keys between recorded notes (up only above the highest note), renumbers round robins per key and velocity cell so rejected hits leave no gaps, and plays release extras from a `trigger="release"` group. Extras on their own key get a group each (`seqMode="round_robin"`, so recorded sequences stay in order); a muting one carries the `mutes` tag, and the notes' groups get `silencedByTags="mutes"` with `silencingDecay` 0.06 s.
 
 ## Reference
 
