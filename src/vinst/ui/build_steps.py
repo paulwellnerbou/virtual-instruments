@@ -331,7 +331,7 @@ def step_build(ed: "Editor") -> None:
         with ui.row().classes("items-center gap-2"):
             download_btn = ui.button("Download", icon="file_download").props("outline")
             musescore_btn = ui.button("Copy to MuseScore", icon="library_music").props("outline") \
-                .tooltip(f"Into MuseScore's SoundFonts folder, {sf2.MUSESCORE_FOLDER}")
+                .tooltip(f"Into MuseScore's SoundFonts folder, {sf2.musescore_folder()}")
             font_finder = ui.button("Show in Finder", icon="folder_open").props("flat")
 
     def built() -> None:
@@ -386,7 +386,7 @@ def step_build(ed: "Editor") -> None:
 
     async def do_musescore() -> None:
         try:
-            target = await run.io_bound(sf2.install, state["result"].soundfont)
+            target = await run.io_bound(sf2.install, state["result"].soundfont, inst.meta.slug)
         except ValueError as e:
             ui.notify(str(e), type="warning", multi_line=True)
             return

@@ -20,29 +20,52 @@ from vinst.spec import Instrument
 # Generators and modulator sources of the SF2 2.04 specification.
 ATTACK_VOL_ENV, RELEASE_VOL_ENV, INSTRUMENT, KEY_RANGE, VEL_RANGE = 34, 38, 41, 43, 44
 INITIAL_ATTENUATION, FINE_TUNE, SAMPLE_ID, SAMPLE_MODES = 48, 52, 53, 54
+FILTER_FC = 8
 VELOCITY_CONCAVE_NEGATIVE = 0x0502  # the default velocity → attenuation modulator's source
 VELOCITY_LINEAR_NEGATIVE = 0x0102
+VELOCITY_SWITCH = 0x0C02  # the default velocity → filter modulator's amount source
+INFO_MAX = 256  # bytes of an INFO string, its terminating zeros included (FluidSynth rejects longer)
 PAD = 46  # zero samples the specification wants after each sample
 
 
 MARK = b"DecentSampler Instrument Builder (vinst)"
+OF = "vinst instrument: "  # in its comment, which instrument a soundfont is of
 MUSESCORE_FOLDER = Path("~/Documents/MuseScore4/SoundFonts")  # MuseScore 4's default
+MUSESCORE_SETTINGS = Path("~/Library/Preferences/org.musescore.MuseScore4.plist")
+
+
+def musescore_folder(settings: Path = MUSESCORE_SETTINGS) -> Path:
+    """Where MuseScore 4 looks for soundfonts: its first folder in Preferences → Folders, or its default."""
+    import plistlib
+
+    try:
+        with settings.expanduser().open("rb") as f:
+            value = plistlib.load(f).get("application.paths.mySoundfonts")
+    except (OSError, ValueError):
+        value = None
+    folders = [Path(v) for v in str(value).split(";") if v.strip()] if value else []
+    return folders[0].expanduser() if folders else MUSESCORE_FOLDER.expanduser()
+
+
+def header(path: Path) -> bytes:
+    try:
+        with path.open("rb") as f:  # the info comes first
+            return f.read(4096)
+    except OSError:
+        return b""
 
 
 def made_here(path: Path) -> bool:
     """Whether the soundfont at `path` was written by this builder (it says so in its info)."""
-    try:
-        with path.open("rb") as f:  # the info comes first
-            return MARK in f.read(4096)
-    except OSError:
-        return False
+    return MARK in header(path)
 
 
-def install(font: Path, folder: Path = MUSESCORE_FOLDER) -> Path:
-    """Copies the soundfont into MuseScore's SoundFonts folder; never over one made elsewhere."""
+def install(font: Path, slug: str, folder: Path | None = None) -> Path:
+    """Copies the soundfont into MuseScore's SoundFonts folder, never over one made elsewhere, and
+    removes copies of the same instrument under an earlier name."""
     import shutil
 
-    folder = folder.expanduser()
+    folder = (folder or musescore_folder()).expanduser()
     if not folder.is_dir():
         raise ValueError(f"MuseScore's SoundFonts folder isn't there: {folder}. Is MuseScore 4 installed? Its "
                          "folder can be changed in MuseScore's Preferences → Folders.")
@@ -50,6 +73,10 @@ def install(font: Path, folder: Path = MUSESCORE_FOLDER) -> Path:
     if target.exists() and not made_here(target):
         raise ValueError(f"{target} exists and wasn't made by this builder; not replacing it.")
     shutil.copy2(font, target)
+    mine = (OF + slug).encode() + b"\0"
+    for other in folder.glob("*.sf2"):
+        if other != target and made_here(other) and mine in header(other):
+            other.unlink()
     return target
 
 
@@ -64,8 +91,16 @@ def timecents(seconds: float) -> int:
     return -12000 if seconds <= 0.001 else round(1200 * math.log2(seconds))
 
 
-def name20(text: str) -> bytes:
-    return text.encode("ascii", "replace")[:19].ljust(20, b"\0")
+def ascii_text(value: str) -> bytes:
+    """SF2 names are ASCII: accents folded away ("Übung" → "Ubung"), anything else as "_"."""
+    import unicodedata
+
+    folded = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
+    return "".join(c if " " <= c <= "~" else "_" for c in folded).encode("ascii")
+
+
+def name20(value: str) -> bytes:
+    return ascii_text(value)[:19].ljust(20, b"\0")
 
 
 def chunk(tag: bytes, data: bytes) -> bytes:
@@ -76,8 +111,8 @@ def chunk(tag: bytes, data: bytes) -> bytes:
 
 
 def text(value: str) -> bytes:
-    """An INFO string: zero-terminated, and padded with another zero to an even length."""
-    data = value.encode("ascii", "replace") + b"\0"
+    """An INFO string: zero-terminated, padded with another zero to an even length, at most INFO_MAX."""
+    data = ascii_text(value)[:INFO_MAX - 2] + b"\0"
     return data + b"\0" * (len(data) % 2)
 
 
@@ -154,7 +189,9 @@ def write(inst: Instrument, mapping: Mapping, samples_dir: Path, dest: Path) -> 
         igen += [gen(ATTACK_VOL_ENV, timecents(float(p.attack))), gen(RELEASE_VOL_ENV, timecents(float(p.release)))]
         # Players make a soft key press up to 96 dB quieter by default; DecentSampler only a little.
         imod += [struct.pack("<HHhHH", VELOCITY_CONCAVE_NEGATIVE, INITIAL_ATTENUATION, 0, 0, 0),
-                 struct.pack("<HHhHH", VELOCITY_LINEAR_NEGATIVE, INITIAL_ATTENUATION, softest_cb, 0, 0)]
+                 struct.pack("<HHhHH", VELOCITY_LINEAR_NEGATIVE, INITIAL_ATTENUATION, softest_cb, 0, 0),
+                 # and from velocity 64 up darker, by up to 1200 cents of filter cutoff: off, as in DecentSampler
+                 struct.pack("<HHhHH", VELOCITY_LINEAR_NEGATIVE, FILTER_FC, 0, VELOCITY_SWITCH, 0)]
         for e in (z for z in zones if z.signal == signal):
             ibag.append(struct.pack("<HH", len(igen), len(imod)))
             igen += [rng(KEY_RANGE, e.lo, e.hi), rng(VEL_RANGE, e.lo_vel, e.hi_vel)]
@@ -182,7 +219,8 @@ def write(inst: Instrument, mapping: Mapping, samples_dir: Path, dest: Path) -> 
     pmod = [struct.pack("<HHhHH", 0, 0, 0, 0, 0)]
 
     info = riff_list(b"INFO", chunk(b"ifil", struct.pack("<HH", 2, 4)), chunk(b"isng", text("EMU8000")),
-                     chunk(b"INAM", text(inst.meta.name)), chunk(b"ISFT", text(MARK.decode())))
+                     chunk(b"INAM", text(inst.meta.name)), chunk(b"ISFT", text(MARK.decode())),
+                     chunk(b"ICMT", text(OF + inst.meta.slug)))
     sdta = riff_list(b"sdta", chunk(b"smpl", b"".join(hi_parts)), chunk(b"sm24", b"".join(lo_parts)))
     pdta = riff_list(b"pdta", chunk(b"phdr", b"".join(phdr)), chunk(b"pbag", b"".join(pbag)),
                      chunk(b"pmod", b"".join(pmod)), chunk(b"pgen", b"".join(pgen)),

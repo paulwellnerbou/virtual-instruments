@@ -430,10 +430,56 @@ def test_the_soundfont_goes_to_musescore_but_never_over_someone_elses(built, tmp
     font = bundle.build(inst).soundfont
     folder = tmp_path / "SoundFonts"
     with pytest.raises(ValueError, match="isn't there"):
-        sf2.install(font, folder)
+        sf2.install(font, inst.meta.slug, folder)
     folder.mkdir()
-    assert sf2.install(font, folder).read_bytes() == font.read_bytes()
-    assert sf2.install(font, folder)  # again over its own copy
+    assert sf2.install(font, inst.meta.slug, folder).read_bytes() == font.read_bytes()
+    assert sf2.install(font, inst.meta.slug, folder)  # again over its own copy
     (folder / font.name).write_bytes(b"RIFF....sfbk someone else's")
     with pytest.raises(ValueError, match="wasn't made by this builder"):
-        sf2.install(font, folder)
+        sf2.install(font, inst.meta.slug, folder)
+
+
+def test_a_renamed_instrument_replaces_its_old_soundfont_in_musescore(built, tmp_path):
+    from vinst import sf2
+
+    inst, _ = built
+    folder = tmp_path / "SoundFonts"
+    folder.mkdir()
+    old = sf2.install(bundle.build(inst).soundfont, inst.meta.slug, folder)
+    other = folder / "Someone else's.sf2"
+    other.write_bytes(b"RIFF....sfbk")
+    inst.meta.name = "Test Uke renamed"
+    new = sf2.install(bundle.build(inst).soundfont, inst.meta.slug, folder)
+    assert new.exists() and not old.exists() and other.exists()
+
+
+def test_soundfont_names_are_ascii_and_short_enough(built):
+    from vinst import sf2
+
+    assert sf2.name20("Gitarre Übung") == b"Gitarre Ubung".ljust(20, b"\0")
+    long = sf2.text("x" * 1000)
+    assert len(long) <= sf2.INFO_MAX and len(long) % 2 == 0 and long.endswith(b"\0")
+
+
+def test_soundfont_keeps_the_treble_at_every_velocity(built):
+    import struct
+
+    from vinst import sf2
+
+    inst, _ = built
+    data = bundle.build(inst).soundfont.read_bytes()
+    at = data.index(b"imod") + 8
+    size = struct.unpack("<I", data[at - 4:at])[0]
+    mods = [struct.unpack("<HHhHH", data[at + i: at + i + 10]) for i in range(0, size, 10)]
+    assert (sf2.VELOCITY_LINEAR_NEGATIVE, sf2.FILTER_FC, 0, sf2.VELOCITY_SWITCH, 0) in mods
+
+
+def test_musescore_s_own_soundfont_folder_is_used(tmp_path):
+    import plistlib
+
+    from vinst import sf2
+
+    settings = tmp_path / "org.musescore.MuseScore4.plist"
+    assert sf2.musescore_folder(settings) == sf2.MUSESCORE_FOLDER.expanduser()  # no settings yet
+    settings.write_bytes(plistlib.dumps({"application.paths.mySoundfonts": "/Volumes/EXT/Fonts;/other"}))
+    assert sf2.musescore_folder(settings) == Path("/Volumes/EXT/Fonts")
