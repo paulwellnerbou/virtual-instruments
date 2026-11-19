@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.nicegui/
+build/
+.DS_Store
+instruments/*/recording-sheet.*
+
+# Personal: own instrument specs and notes stay local
+/instruments/
+/private/

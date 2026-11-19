@@ -1,0 +1,270 @@
+import zipfile
+
+import pytest
+from conftest import piezo_and_mic
+from lxml import etree
+
+from vinst import bundle, defaults, preset, review, store
+from vinst.slicing import process
+from vinst.spec import InstrumentType
+from vinst.synth import Mistakes, write_takes
+from vinst.validate import validate_bundle
+
+
+def test_layer_bounds_cover_all_velocities():
+    assert preset.layer_bounds(3) == [(1, 42), (43, 85), (86, 127)]
+    assert preset.layer_bounds(1) == [(1, 127)]
+
+
+def test_missing_layer_borrows_from_below_then_above():
+    layers = ["p", "mf", "f"]
+    assert preset.velocity_slots(layers, {"p", "f"}) == [("p", 1, 85), ("f", 86, 127)]
+    assert preset.velocity_slots(layers, {"f"}) == [("f", 1, 127)]
+    assert preset.velocity_slots(layers, {"mf", "f"}) == [("mf", 1, 85), ("f", 86, 127)]
+
+
+def test_zones_prefer_pitching_down_and_stretch_edges():
+    assert preset.key_zones([60, 61], 0, 0) == {60: (60, 60), 61: (61, 61)}
+    assert preset.key_zones([60, 64], 0, 0) == {60: (60, 61), 64: (62, 64)}
+    assert preset.key_zones([60, 63], 2, 3) == {60: (58, 61), 63: (62, 66)}
+
+
+@pytest.fixture
+def built(tmp_path, monkeypatch):
+    monkeypatch.setenv("VINST_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VINST_BUILD", str(tmp_path / "build"))
+    monkeypatch.setenv("VINST_DS_LIBRARY", str(tmp_path / "library"))
+    inst = piezo_and_mic(defaults.new_instrument("Test Uke", InstrumentType.PLUCKED))
+    for s in inst.range.strings:
+        s.frets = 1  # 8 notes
+    inst.dynamics.round_robins = 2
+    inst.recording.ring_seconds = 1.0
+    inst.recording.takes_dir = str(tmp_path / "takes")
+    store.create(inst)
+    # take 2 (G2): wrong note, take 4 (C3): one hit missing, so unusable
+    write_takes(inst, tmp_path / "takes", ring=1.0, mistakes=Mistakes(wrong_note_take=2, missing_hit_take=4))
+    manifest = process(inst)
+    manifest.takes[1].hits[1].rejected = True  # the wrong note: G2 p rr2
+    review.save(manifest, store.manifest_path(inst.meta.slug))
+    return inst, manifest
+
+
+def samples(result, group_name):
+    doc = etree.parse(str(result.preset_file))
+    return [s.attrib for g in doc.iter("group") if g.get("name") == group_name for s in g.iter("sample")]
+
+
+def test_build_is_valid_and_covers_the_range(built):
+    inst, _ = built
+    result = bundle.build(inst)
+    assert result.report.ok, result.report.errors
+    assert any("found 5 hits, expected 6" in w for w in result.warnings)
+    piezo = samples(result, "Piezo")
+    keys = {k for s in piezo for k in range(int(s["loNote"]), int(s["hiNote"]) + 1)}
+    # Recorded: G2 G#2 C3 C#3 E3 F3 A3 A#3; gaps between strings and the unusable C3 are covered.
+    assert keys == set(range(55, 71))
+    assert {s["rootNote"] for s in piezo} == {"55", "56", "61", "64", "65", "69", "70"}
+
+
+def test_rejected_hit_is_left_out_and_round_robins_renumbered(built):
+    inst, manifest = built
+    rejected = manifest.takes[1].hits[1]
+    result = bundle.build(inst)
+    piezo = samples(result, "Piezo")
+    assert not any(s["path"].endswith(rejected.files["piezo"]) for s in piezo)
+    p_layer = [s for s in piezo if s["rootNote"] == "55" and s["loVel"] == "1"]
+    assert [(s["seqPosition"], s["seqLength"]) for s in p_layer] == [("1", "1")]
+
+
+def test_tuning_correction_modes(built):
+    inst, manifest = built
+    hit = manifest.takes[2].hits[0]
+    assert preset.tuning_for(inst, hit) == pytest.approx(-hit.cents / 100, abs=1e-4)
+    inst.preset.tuning = "partial"
+    inst.preset.tuning_amount = 0.5
+    assert preset.tuning_for(inst, hit) == pytest.approx(-hit.cents / 200, abs=1e-4)
+    inst.preset.tuning = "off"
+    assert preset.tuning_for(inst, hit) == 0
+
+
+def test_extras_become_release_and_key_groups(built):
+    inst, _ = built
+    result = bundle.build(inst)
+    doc = etree.parse(str(result.preset_file))
+    release = [g for g in doc.iter("group") if g.get("trigger") == "release"]
+    assert len(release) == 2  # one per signal
+    assert {s.get("loNote") for s in release[0].iter("sample")} == {"55"}
+    fx = [s.attrib for g in doc.iter("group") if g.get("name") == "Piezo effects" for s in g.iter("sample")]
+    assert {s["rootNote"] for s in fx} == {"48", "50"}
+
+
+def test_neighbour_round_robins_are_valid(built):
+    inst, _ = built
+    inst.preset.neighbour_round_robins = 1
+    result = bundle.build(inst)
+    assert result.report.ok, result.report.errors
+    piezo = samples(result, "Piezo")
+    on_56 = [s for s in piezo if s["loNote"] == "56" and s["loVel"] == "43"]  # mf layer on G#2
+    assert {s["rootNote"] for s in on_56} == {"55", "56"}  # its own hits plus G2's
+
+
+def test_validator_catches_broken_presets(built, tmp_path):
+    inst, _ = built
+    result = bundle.build(inst)
+    text = result.preset_file.read_text()
+    broken = text.replace('parameter="ENV_RELEASE"', 'parameter="GROUP_VOLUME"', 1)
+    broken = broken.replace('seqPosition="2"', 'seqPosition="3"', 1)
+    result.preset_file.write_text(broken)
+    (result.bundle / "Samples" / next(iter(sorted((result.bundle / "Samples").iterdir()))).name).unlink()
+    report = validate_bundle(result.bundle, result.preset_file)
+    assert any("GROUP_VOLUME" in e and "AMP_VOLUME" in e for e in report.errors)
+    assert any("round robins" in e for e in report.errors)
+    assert any("missing sample file" in e for e in report.errors)
+
+
+def test_install_package_and_foreign_bundle_protection(built, tmp_path):
+    inst, _ = built
+    result = bundle.build(inst)
+    target = bundle.install(result.bundle)
+    assert (target / f"{result.bundle.stem}.dspreset").is_file()
+    out = bundle.package(inst, result.bundle)
+    with zipfile.ZipFile(out) as z:
+        names = z.namelist()
+    assert all(n.startswith("Test Uke.dsbundle/") for n in names)
+    assert not any(n.endswith(bundle.MARKER) for n in names)
+    (target / bundle.MARKER).unlink()
+    with pytest.raises(ValueError, match="wasn't created by this tool"):
+        bundle.install(result.bundle)
+
+
+def test_rebuild_removes_samples_no_longer_used(built):
+    inst, manifest = built
+    result = bundle.build(inst)
+    hit = manifest.takes[2].hits[0]
+    used = result.bundle / "Samples" / hit.files["piezo"]
+    assert used.exists()
+    hit.rejected = True
+    review.save(manifest, store.manifest_path(inst.meta.slug))
+    bundle.build(inst)
+    assert not used.exists()
+
+
+@pytest.fixture
+def two_passes(tmp_path, monkeypatch):
+    """Piezo and internal mic share one output, so the mic is recorded in its own pass."""
+    monkeypatch.setenv("VINST_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("VINST_BUILD", str(tmp_path / "build"))
+    monkeypatch.setenv("VINST_DS_LIBRARY", str(tmp_path / "library"))
+    inst = piezo_and_mic(defaults.new_instrument("Pass Uke", InstrumentType.PLUCKED))
+    inst.signals[1].recorded = "separate"
+    for s in inst.range.strings:
+        s.frets = 0
+    inst.dynamics.round_robins = 2
+    inst.extras = inst.extras[:1]
+    inst.recording.ring_seconds = 1.0
+    inst.recording.takes_dir = str(tmp_path / "takes")
+    store.create(inst)
+    write_takes(inst, tmp_path / "takes", ring=1.0, mistakes=Mistakes())
+    review.save(process(inst), store.manifest_path(inst.meta.slug))
+    return inst
+
+
+def test_separate_pass_doubles_the_takes(two_passes):
+    from vinst.plan import plan_takes, summarize
+
+    takes = plan_takes(two_passes)
+    assert len({t.key for t in takes}) == len(takes) == 2 * (1 + 4 + 1)
+    mic = [t for t in takes if t.pass_id == "mic"]
+    assert mic[1].files == ["055_G-0_mic.wav"] and mic[1].title.endswith("· Internal mic")
+    assert summarize(two_passes).sampled == 4
+    from vinst import sheet
+    assert "Pass 2 of 2: Internal mic" in sheet.render_html(two_passes)
+
+
+def test_separate_passes_slice_independently(two_passes):
+    m = review.load(store.manifest_path(two_passes.meta.slug))
+    ids = [h.id for t in m.takes for h in t.hits]
+    assert len(ids) == len(set(ids))
+    g = [t for t in m.takes if t.base == "055_G-0"]
+    assert {t.pass_id for t in g} == {"main", "mic"} and all(t.status == "ok" for t in g)
+    assert set(g[1].hits[0].files) == {"mic"}
+
+
+def test_switch_mode_builds_a_sound_menu(two_passes):
+    result = bundle.build(two_passes)
+    assert result.report.ok, result.report.errors
+    doc = etree.parse(str(result.preset_file))
+    menu = doc.find(".//menu")
+    assert [o.get("name") for o in menu.iter("option")] == ["Piezo", "Internal mic"]
+    groups = {g.get("name"): g for g in doc.iter("group")}
+    assert groups["Piezo"].get("enabled") is None and groups["Internal mic"].get("enabled") == "false"
+    assert "pass-mic" in groups["Internal mic"].get("tags")
+    assert not any(k.get("label") == "Mix" for k in doc.iter("labeled-knob"))
+
+
+def test_layer_mode_mixes_the_passes(two_passes):
+    two_passes.preset.pass_mode = "layer"
+    result = bundle.build(two_passes)
+    assert result.report.ok, result.report.errors
+    doc = etree.parse(str(result.preset_file))
+    assert doc.find(".//menu") is None
+    assert any(k.get("label") == "Mix" for k in doc.iter("labeled-knob"))
+    assert all(g.get("enabled") is None for g in doc.iter("group"))
+
+
+def test_build_refuses_hits_sliced_under_another_setup(built):
+    inst, _ = built
+    moved = inst.model_copy(deep=True)
+    moved.signals[1].recorded = "separate"
+    with pytest.raises(ValueError, match="Slice again"):
+        bundle.build(moved)
+    renamed = inst.model_copy(deep=True)
+    renamed.dynamics.layers = ["soft", "mf", "f"]
+    with pytest.raises(ValueError, match="Slice again"):
+        bundle.build(renamed)
+    styled = inst.model_copy(deep=True)
+    styled.preset.reverb = 0.5  # sound settings don't affect slicing
+    assert bundle.build(styled).report.ok
+
+
+def test_extra_keys_inside_the_range_are_reported():
+    inst = defaults.new_instrument("Bari", InstrumentType.PLUCKED)
+    inst.range.strings = defaults.tuning_strings("Baritone ukulele (D G B E)")
+    assert any("Body knock" in p and "inside the playable range" in p for p in inst.problems())
+    inst.extras[2].key = 40
+    assert not any("inside the playable range" in p for p in inst.problems())
+
+
+def test_reserved_signal_ids_are_reported():
+    inst = defaults.new_instrument("X", InstrumentType.PLUCKED)
+    inst.signals[0].id = "fx"
+    assert any("reserved" in p for p in inst.problems())
+
+
+def test_tone_default_sets_the_filter_and_cc_follows_knob_range(built):
+    inst, _ = built
+    inst.preset.tone = 0.5
+    doc = etree.parse(str(bundle.build(inst).preset_file))
+    assert doc.find(".//effect[@type='lowpass']").get("frequency") == "1100"
+    inst.preset.controls = ["release", "reverb"]
+    doc = etree.parse(str(bundle.build(inst).preset_file))
+    cc = doc.find(".//cc/binding")
+    assert (cc.get("translationOutputMin"), cc.get("translationOutputMax")) == ("0", "8")
+
+
+def test_many_knobs_fit_in_one_row():
+    for n in range(1, 13):
+        x0, step, size = preset.knob_layout(n)
+        assert x0 >= 16 - 1e-9 and x0 + n * step <= preset.UI_W - 16 + 1e-9 and size > 0
+    assert preset.knob_layout(5)[2] == preset.KNOB_W
+
+
+def test_dashes_in_name_and_rename_cleanup(built):
+    inst, _ = built
+    first = bundle.install(bundle.build(inst).bundle)
+    inst.meta.name = "Test -- Uke"
+    second_build = bundle.build(inst)
+    assert second_build.report.ok
+    assert [p.name for p in second_build.bundle.parent.glob("*.dsbundle")] == ["Test -- Uke.dsbundle"]
+    second = bundle.install(second_build.bundle)
+    assert second.exists() and not first.exists()
