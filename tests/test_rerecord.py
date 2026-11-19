@@ -402,3 +402,20 @@ def test_a_hit_starts_at_its_attack_not_at_the_touch_before_it(uke):
     write(uke, take.files[0], audio, grid=[0.5])
     (hit,) = result(process(uke), take.key).hits
     assert pluck_at - 0.02 * SR <= hit.start <= pluck_at  # just before the pluck, not 80 ms early
+
+
+def test_a_rejected_recording_only_warns_when_its_velocity_keeps_nothing(uke):
+    from vinst.preset import map_samples
+
+    p = lane(uke, "p")
+    write(uke, p.files[0], take_audio(p, (0.3, 0.32)), grid=[0.5, 3.5])
+    write(uke, more_file(p, 1, p.signals[0]), take_audio(p, (0.3, 0.31), seed=9), grid=[0.5, 3.5])
+    m = process(uke)
+    more = next(t for t in m.takes if t.origin == "more")
+    for h in more.hits:
+        h.rejected = True
+    assert not [w for w in map_samples(uke, m).warnings if "rejected" in w]  # p keeps its own take's hits
+    for h in result(m, p.key).hits:
+        h.rejected = True
+    (warning,) = [w for w in map_samples(uke, m).warnings if "rejected" in w]
+    assert warning.startswith(f"“{p.title}”: all its hits are rejected")

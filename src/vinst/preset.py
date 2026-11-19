@@ -155,6 +155,8 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
     note_of: dict[tuple[str, int], str] = {}  # (pass, midi) -> note, for its own lanes
     laneless = 0
     recorded: set[tuple[str, str]] = set()
+    # Per note and velocity that has hits: a name for it, to say when none of them is kept.
+    played: dict[tuple[str, int, str], str] = {}
 
     imported = inst.recording.source == "samples"
     for t in manifest.takes:
@@ -180,6 +182,11 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
                 note_of[(t.pass_id, midi)] = t.note
                 recorded.add((t.pass_id, t.note))
             lanes = note_lanes(inst, t.note) if t.note else None
+            note_title = t.title.split(f" · {t.lane}")[0] if t.lane else t.title
+            for h in t.hits:
+                lane = h.layer if lanes is None or imported else lane_of(h, t, lanes)
+                if lane is not None:
+                    played.setdefault((t.pass_id, midi, lane), f"{note_title} · {lane}")
             for h in usable(t.hits):
                 # Imported samples keep the importer's lanes; recorded hits follow the note's lanes.
                 lane = h.layer if lanes is None or imported else lane_of(h, t, lanes)
@@ -187,8 +194,6 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
                     notes[t.pass_id][midi][lane].append(h)
                 else:
                     laneless += 1
-            if t.hits and not usable(t.hits):
-                m.warnings.append(f"“{t.title}”: all hits rejected.")
         elif t.kind == "extra" and not imported:
             extra = extras_by_base.get(t.base)
             if extra is None or extra.use == "off":
@@ -203,6 +208,12 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
                     for sig in signals:
                         m.keys.append(Entry(sig, h.files[sig], extra.key, extra.key, extra.key,
                                             seq_pos=pos, seq_len=len(hits)))
+    # A recording with every hit rejected is fine while its velocity keeps others.
+    for (pass_id, midi, lane), name in played.items():
+        kept = notes.get(pass_id, {}).get(midi, {})
+        if not kept.get(lane):
+            instead = "other velocities of the note" if any(kept.values()) else "neighbouring notes"
+            m.warnings.append(f"“{name}”: all its hits are rejected, so {instead} play there.")
     unrecorded = len({(t.pass_id, t.note_base) for t in plan.values() if t.kind == "note"} - recorded) \
         if not imported else 0
     if unrecorded:
