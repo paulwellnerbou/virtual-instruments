@@ -44,8 +44,8 @@ def write_raised(src: Path, dest: Path, gain_db: float, low_cut: tuple[float, fl
     if low_cut is not None:
         audio, taken = lowcut.removed(audio, sr, *low_cut)
     factor = 10 ** (gain_db / 20)
-    # With the removed part, the knob plays anything from the cut alone to both together; held under
-    # the ceiling at both ends, it is everywhere between, as the sum changes linearly with the knob.
+    # The knob plays anything from the cut alone to both together; held under the ceiling at both
+    # ends, it is everywhere between, as the sum changes linearly with the knob.
     peaks = audio if removed_dest is None else np.hstack([audio, audio + taken])
     gain = limiter_gain(peaks * factor, sr)[:, None]
     _write(np.clip(audio * factor * gain, -1.0, 1.0), sr, info.subtype, info.format, dest)

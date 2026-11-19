@@ -10,7 +10,7 @@ from nicegui import app, run, ui
 
 from vinst import bundle, lowcut, review, sf2, store
 from vinst.plan import layer_bounds, recording_passes
-from vinst.preset import (KNOB_Y, LOW_CUT_LABEL, UI_H, UI_W, VISIBLE_H, knob_layout, mixable_signals,
+from vinst.preset import (KNOB_Y, UI_H, UI_W, VISIBLE_H, knob_layout, low_cut_name, mixable_signals,
                           switched_passes)
 from vinst.spec import CONTROLS, Extra
 from vinst.ui.anim import Collapse
@@ -73,7 +73,7 @@ def preview_html(ed: "Editor") -> str:
         elif c == "noise" and has_release:
             labels.append("Noise")
         elif c == "lowcut" and bundle.low_cut_now(inst, _sliced(inst.meta.slug)):
-            labels.append(LOW_CUT_LABEL)
+            labels.append(f"{low_cut_name(inst)} %")
         elif c not in ("mix", "noise", "lowcut"):
             labels.append(CONTROLS[c])
     s = PREVIEW_SCALE
@@ -236,8 +236,9 @@ def step_sound(ed: "Editor") -> None:
         ui.label("Lowers what lies below each note's own pitch, e.g. the thump of a pluck on a ukulele's body; "
                  "the note itself, from its pitch up, stays as it is. Some of that low end is the "
                  "instrument's body, so start gently and listen. Applied when building: change it, build, "
-                 "listen; no slicing needed. With the Low cut knob (below), you can lessen the cut while "
-                 "playing, down to none; the instrument then also carries what was cut out. Loudness is "
+                 f"listen; no slicing needed. With the {low_cut_name(inst)} knob (below), you can blend while playing "
+                 "between the samples as recorded (0 %) and with this cut (100 %, where it starts); the "
+                 "instrument then also carries what was cut out. Loudness is "
                  "evened out for the full cut, so notes with much thump play louder with the knob turned "
                  "down.").classes("text-xs opacity-70 max-w-3xl")
 
@@ -269,7 +270,7 @@ def step_sound(ed: "Editor") -> None:
                 chosen = [c for c in CONTROLS if (c == key and e.value) or (c != key and c in p.controls)]
                 ed.set(p, "controls", chosen)
 
-            ui.checkbox(label, value=key in p.controls, on_change=toggle)
+            ui.checkbox(low_cut_name(inst) if key == "lowcut" else label, value=key in p.controls, on_change=toggle)
     with ui.row().classes("items-start gap-4"):
         ed.number("Tone default", p, "tone", cast=float, min=0, max=1, step=0.05).classes("w-28")
         ed.number("Reverb default", p, "reverb", cast=float, min=0, max=1, step=0.05).classes("w-28")
@@ -311,12 +312,25 @@ def step_build(ed: "Editor") -> None:
     """Three parts: building (and its report), then what's done with it: the DecentSampler bundle,
     and the soundfont for MuseScore and other SF2 players."""
     inst = ed.inst
-    state: dict[str, Any] = {"result": None, "busy": False}
+    state: dict[str, Any] = {"result": None, "busy": False, "progress": 0.0, "label": ""}
 
     with ui.card().classes("w-full").props("flat bordered"):
         ui.label("Build").classes("text-base font-medium")
         ui.label(f"Into {bundle.build_root() / inst.meta.slug}").classes("text-xs opacity-60")
-        build_btn = ui.button("Build & validate", icon="construction")
+        # As in the worksheet: the bar opens beside the button, with what's being done on a line below it.
+        with ui.row().classes("items-center gap-4 w-full no-wrap"):
+            build_btn = ui.button("Build & validate", icon="construction").classes("shrink-0")
+            with Collapse(False, axis="x", inner_classes="flex flex-col gap-1 min-w-0") as progress_box:
+                progress = ui.linear_progress(value=0, show_value=False).classes("w-full")
+                progress_label = ui.label().classes("text-xs opacity-70 truncate h-4 leading-4 w-0 min-w-full")
+            progress_box.outer.classes("grow min-w-48 max-w-xl")
+
+        def tick() -> None:
+            if state["busy"]:
+                progress.value = state["progress"]
+                progress_label.text = state["label"]
+
+        ui.timer(0.25, tick)
 
         @ui.refreshable
         def report() -> None:
@@ -377,9 +391,16 @@ def step_build(ed: "Editor") -> None:
             return
         ed.autosave()
         state["busy"] = True
+        state["progress"], state["label"] = 0.0, "Starting"
+        progress.value, progress_label.text = 0.0, "Starting"
         build_btn.disable()
+        progress_box.set_open(True)
+
+        def report_progress(fraction: float, what: str) -> None:  # from the worker thread
+            state["progress"], state["label"] = fraction, what
+
         try:
-            state["result"] = await run.io_bound(bundle.build, inst.model_copy(deep=True))
+            state["result"] = await run.io_bound(bundle.build, inst.model_copy(deep=True), report_progress)
         except ValueError as e:
             state["result"] = None
             ui.notify(str(e), type="warning", multi_line=True)
@@ -389,6 +410,7 @@ def step_build(ed: "Editor") -> None:
         finally:
             state["busy"] = False
             build_btn.enable()
+            progress_box.set_open(False)
         built()
 
     async def do_install() -> None:

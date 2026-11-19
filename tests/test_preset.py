@@ -379,7 +379,7 @@ def test_the_low_cut_is_applied_when_building(built, monkeypatch):
     assert below(out, root) < below(src, root)  # the sliced sample stays, the bundle's copy is cut
 
 
-def test_the_low_cut_knob_plays_back_what_the_cut_took_out(built, monkeypatch):
+def test_the_low_cut_knob_blends_the_uncut_and_the_cut_sample(built, monkeypatch):
     import soundfile as sf
 
     from vinst import lowcut
@@ -392,9 +392,9 @@ def test_the_low_cut_knob_plays_back_what_the_cut_took_out(built, monkeypatch):
     result = bundle.build(inst)
     assert not result.report.errors
     xml = etree.parse(str(result.preset_file))
-    knob = next(k for k in xml.iter("labeled-knob") if k.get("label") == preset.LOW_CUT_LABEL)
-    assert float(knob.get("value")) == float(knob.get("maxValue")) == 20.0
-    assert float(next(t for t in xml.iter("tag") if t.get("name") == LOW_TAG).get("volume")) == 0
+    knob = next(k for k in xml.iter("labeled-knob") if k.get("label") == "Thump cut %")
+    assert (float(knob.get("minValue")), float(knob.get("value")), float(knob.get("maxValue"))) == (0, 100, 100)
+    assert float(next(t for t in xml.iter("tag") if t.get("name") == LOW_TAG).get("volume")) == 0  # the full cut
     notes = next(g for g in xml.iter("group") if "notes" in g.get("tags").split(","))
     low = next(g for g in xml.iter("group") if LOW_TAG in g.get("tags").split(","))
     pairs = list(zip(notes.iter("sample"), low.iter("sample")))
@@ -413,8 +413,8 @@ def test_the_low_cut_knob_plays_back_what_the_cut_took_out(built, monkeypatch):
         f = np.fft.rfftfreq(len(x), 1 / sr)
         return spec[f < lowcut.frequency(int(a.get("rootNote")), 0.6)].sum() / spec.sum()
 
-    assert below(cut) < below(src)
-    assert below(cut + part) == pytest.approx(below(src), rel=0.02)  # knob at 0 dB: the recording
+    assert below(cut) < below(cut + 0.5 * part) < below(src)  # 100 %, where it starts; 50 %
+    assert below(cut + part) == pytest.approx(below(src), rel=0.02)  # at 0 %: no low cut
 
 
 def test_no_low_cut_knob_without_the_low_cut(built):
@@ -422,7 +422,7 @@ def test_no_low_cut_knob_without_the_low_cut(built):
     inst.preset.controls = [*inst.preset.controls, "lowcut"]
     result = bundle.build(inst)
     xml = etree.parse(str(result.preset_file))
-    assert all(k.get("label") != preset.LOW_CUT_LABEL for k in xml.iter("labeled-knob"))
+    assert all("cut" not in k.get("label") for k in xml.iter("labeled-knob"))
     assert not list(result.bundle.rglob("*-low-part*"))
 
 
@@ -440,7 +440,7 @@ def test_turning_the_knob_on_and_off_rewrites_the_built_samples(built):
     result = bundle.build(inst)
     parts = list(result.bundle.rglob("*-low-part*"))
     assert parts
-    for part in parts:  # the knob at 0 dB stays under the ceiling too
+    for part in parts:  # the knob at 0 % stays under the ceiling too
         low, _ = sf.read(str(part))
         cut, _ = sf.read(str(part).replace(bundle.REMOVED_SUFFIX, ""))
         assert np.max(np.abs(cut + low)) <= 10 ** (CEILING_DB / 20) + 1e-4
@@ -566,3 +566,19 @@ def test_musescore_s_own_soundfont_folder_is_used(tmp_path):
     assert sf2.musescore_folder(settings) == sf2.MUSESCORE_FOLDER.expanduser()  # no settings yet
     settings.write_bytes(plistlib.dumps({"application.paths.mySoundfonts": "/Volumes/EXT/Fonts;/other"}))
     assert sf2.musescore_folder(settings) == Path("/Volumes/EXT/Fonts")
+
+
+def test_the_build_reports_its_progress_in_order(built):
+    inst, _ = built
+    inst.processing.low_cut = True
+    seen: list[tuple[float, str]] = []
+    bundle.build(inst, lambda fraction, what: seen.append((fraction, what)))
+    fractions = [f for f, _ in seen]
+    assert fractions == sorted(fractions) and 0 <= fractions[0] and fractions[-1] <= 1
+    stages = [w.split(" · ")[0] for _, w in seen]
+    assert list(dict.fromkeys(stages)) == [t for t, _, _ in bundle.STAGES.values()]
+
+
+def test_the_low_cut_knob_is_named_for_what_it_does():
+    assert preset.low_cut_name(defaults.new_instrument("Uke", InstrumentType.PLUCKED)) == "Thump cut"
+    assert preset.low_cut_name(defaults.new_instrument("Flute", InstrumentType.SUSTAINED)) == "Low cut"

@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -74,7 +75,8 @@ def sync_files(sources: dict[str, Path], dest: Path) -> None:
 
 def sync_raised(sources: dict[str, Path], gains: dict[str, float], dest: Path, record: Path,
                 low_cuts: dict[str, tuple[float, float, float]] | None = None,
-                removed: dict[str, str] | None = None) -> list[float]:
+                removed: dict[str, str] | None = None,
+                step: Callable[[int, int], None] | None = None) -> list[float]:
     """Like sync_files, but each sample written raised by its gain and limited (see level), after its
     low cut if any, and what the cut took out to its file in `removed`, if it has one there; `record`
     keeps what each was written from, so unchanged ones aren't written again. Returns, per sample the
@@ -86,7 +88,9 @@ def sync_raised(sources: dict[str, Path], gains: dict[str, float], dest: Path, r
     except (OSError, ValueError):
         done = {}
     out: dict[str, dict] = {}
-    for name, src in sources.items():
+    for i, (name, src) in enumerate(sources.items()):
+        if step:
+            step(i, len(sources))
         st = src.stat()
         cut = low_cuts.get(name)
         wanted = {"source": f"{st.st_size}:{st.st_mtime_ns}", "gain": round(gains.get(name, 0.0), 2),
@@ -124,14 +128,15 @@ def low_cut_now(inst: Instrument, manifest: Manifest | None) -> bool:
     return inst.processing.low_cut and lowcut.applies(inst) and not (manifest and cut_in_samples(manifest))
 
 
-def after_low_cut(inst: Instrument, manifest: Manifest) -> Manifest:
+def after_low_cut(inst: Instrument, manifest: Manifest, step: Callable[[int, int], None] | None = None) -> Manifest:
     """`manifest` with each note's loudness as it is after the low cut."""
     p = inst.processing
     out = manifest.model_copy(deep=True)
     folder = Path(manifest.samples_dir)
-    for t in out.takes:
-        if t.kind != "note" or t.midi is None:
-            continue
+    notes = [t for t in out.takes if t.kind == "note" and t.midi is not None]
+    for i, t in enumerate(notes):
+        if step:
+            step(i, len(notes))
         for h in t.hits:
             src = folder / h.files[t.signals[0]] if t.signals and t.signals[0] in h.files else None
             if h.rejected or src is None or not src.is_file():
@@ -143,7 +148,23 @@ def after_low_cut(inst: Instrument, manifest: Manifest) -> Manifest:
     return out
 
 
-def build(inst: Instrument) -> BuildResult:
+# Share of a build's time per stage, roughly, for its progress bar: (stage, where it starts, where it ends).
+STAGES = {"measure": ("Measuring the low cut", 0.0, 0.3), "samples": ("Writing samples", 0.3, 0.85),
+          "soundfont": ("Writing the soundfont", 0.85, 0.95), "validate": ("Validating", 0.95, 1.0)}
+
+
+def build(inst: Instrument, progress: Callable[[float, str], None] | None = None) -> BuildResult:
+    """Builds the bundle; `progress` hears how far it is (0 to 1) and what it's doing."""
+
+    def stage(key: str) -> Callable[[int, int], None]:
+        title, lo, hi = STAGES[key]
+
+        def step(i: int, n: int) -> None:
+            if progress:
+                progress(lo + (hi - lo) * (i / n if n else 0), f"{title} · {i + 1}/{n}" if n > 1 else title)
+
+        return step
+
     manifest = review.load(store.manifest_path(inst.meta.slug))
     if manifest is None:
         raise ValueError("Nothing sliced yet (step 6).")
@@ -158,7 +179,7 @@ def build(inst: Instrument) -> BuildResult:
     cutting = low_cut_now(inst, manifest)
     # The cut changes how loud a note is (its thump goes), so evening out and the level work with the
     # loudness after it: measured here, as the cut is applied here.
-    mapping = preset.map_samples(inst, after_low_cut(inst, manifest) if cutting else manifest)
+    mapping = preset.map_samples(inst, after_low_cut(inst, manifest, stage("measure")) if cutting else manifest)
     if not mapping.notes:
         raise ValueError("No usable hits: record and slice some notes first.")
     if cut_in_samples(manifest):
@@ -182,7 +203,7 @@ def build(inst: Instrument) -> BuildResult:
             e.removed = removed_name(e.file)
     limited = sync_raised({f: samples_src / f for f in mapping.files}, gains, bundle / preset.SAMPLES_DIR,
                           bundle.parent / "levels.json", low_cuts,
-                          {e.file: e.removed for e in mapping.notes if e.removed})
+                          {e.file: e.removed for e in mapping.notes if e.removed}, stage("samples"))
     if abs(mapping.gain_db) >= 0.1:
         mapping.info.append(
             f"Level {'raised' if mapping.gain_db > 0 else 'lowered'} by {abs(mapping.gain_db):.1f} dB"
@@ -211,14 +232,17 @@ def build(inst: Instrument) -> BuildResult:
     remove_renamed(bundle.parent, bundle)
 
     # Beside the bundle, not in it: DecentSampler would ship it along in the library.
+    stage("soundfont")(0, 1)
     font = sf2.write(inst, mapping, bundle / preset.SAMPLES_DIR, bundle.parent / f"{name}.sf2")
     for old in bundle.parent.glob("*.sf2"):
         if old != font.path:  # from an earlier name of the instrument
             old.unlink()
 
+    stage("validate")(0, 1)
+    report = validate_bundle(bundle, preset_file)
     size = sum(p.stat().st_size for p in bundle.rglob("*") if p.is_file())
     return BuildResult(bundle, preset_file, len(mapping.files), size, mapping.warnings,
-                       validate_bundle(bundle, preset_file), mapping.info, font.path, font.samples)
+                       report, mapping.info, font.path, font.samples)
 
 
 def _marked_slug(folder: Path) -> str | None:
