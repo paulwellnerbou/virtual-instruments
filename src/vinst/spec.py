@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 import tomli_w
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 
 class InstrumentType(StrEnum):
@@ -135,6 +135,16 @@ class Extra(BaseModel):
     # How the instrument uses it: played on note release, on its own key, or not at all.
     use: Literal["release", "key", "off"] = "key"
     key: int = Field(default=48, ge=0, le=127)
+    # On its own key: whether playing it stops the notes still ringing, as a chuck mutes the strings.
+    mutes: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _chuck_mutes(cls, data: Any) -> Any:
+        # Instruments from before the setting: their chuck mutes, as one does on a real instrument.
+        if isinstance(data, dict) and "mutes" not in data and data.get("id") == "chuck":
+            return {**data, "mutes": True}
+        return data
 
 
 AUDIO_SUFFIXES = (".wav", ".aif", ".aiff", ".flac")
@@ -168,7 +178,8 @@ class Processing(BaseModel):
     # Sustain loops: from loop markers in the takes (e.g. set in WaveLab), else found automatically.
     loops: bool = False
     loop_crossfade_ms: float = Field(default=30.0, ge=0, le=500)
-    # Lowers what lies below each note's pitch, e.g. a pluck's thump (see vinst.lowcut).
+    # Lowers what lies below each note's pitch, e.g. a pluck's thump (see vinst.lowcut); applied when
+    # building, to the bundle's copies of the samples, so changing it needs no slicing.
     low_cut: bool = False
     low_cut_below: float = Field(default=0.75, ge=0.3, le=1.0, description="share of the note's pitch")
     low_cut_db: float = Field(default=12.0, ge=1, le=40)

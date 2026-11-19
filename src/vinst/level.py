@@ -32,11 +32,15 @@ def limit(audio: np.ndarray, sr: int, gain_db: float, ceiling_db: float = CEILIN
     return np.clip(y * gain[:, None], -1.0, 1.0), float(-20 * np.log10(gain.min()))
 
 
-def write_raised(src: Path, dest: Path, gain_db: float) -> float:
-    """Writes `src` raised by `gain_db` and limited to `dest`, in the same format; returns the most the
-    limiter took off, in dB."""
+def write_raised(src: Path, dest: Path, gain_db: float, low_cut: tuple[float, float, float] | None = None) -> float:
+    """Writes `src` raised by `gain_db` and limited to `dest`, in the same format, after the low cut
+    (note, share of its pitch, dB; see lowcut) if any; returns the most the limiter took off, in dB."""
+    from vinst import lowcut
+
     info = sf.info(str(src))
     audio, sr = sf.read(str(src), always_2d=True, dtype="float64")
+    if low_cut is not None:
+        audio = lowcut.reduce(audio, sr, *low_cut)
     out, reduced = limit(audio, sr, gain_db)
     part = dest.with_name(dest.name + ".part")
     sf.write(str(part), out, sr, subtype=info.subtype, format=info.format)

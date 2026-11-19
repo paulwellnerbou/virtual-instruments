@@ -41,6 +41,8 @@ class Entry:
     volume_db: float = 0.0
     loop: tuple[int, int, int] | None = None  # start, end (inclusive), crossfade frames
     sample_rate: int | None = None
+    extra: str = ""  # an extra on its own key: its id, for a group of its own
+    mutes: bool = False  # that extra stops the notes still ringing
 
 
 @dataclass
@@ -81,12 +83,14 @@ def velocity_slots(bounds: list[tuple[str, int, int]], available: set[str]) -> l
 
 
 def key_zones(roots: list[int], extend_below: int, extend_above: int) -> dict[int, tuple[int, int]]:
-    """Key range per sampled root. Between two roots the upper one gets the extra key, because
-    pitching a sample down usually sounds more natural than pitching it up."""
+    """Key range per sampled root: each root is the top of its zone, so the keys between two roots
+    play the upper one pitched down. Pitched down, a sample sounds a little darker; pitched up it
+    gets brighter and sounds "chipmunky" (DecentSampler's advice for samplists). Only above the
+    highest root are samples pitched up, as far as extend_above asks."""
     zones = {}
     for i, r in enumerate(roots):
-        lo = roots[i - 1] + (r - roots[i - 1] - 1) // 2 + 1 if i else max(0, r - extend_below)
-        hi = r + (roots[i + 1] - r - 1) // 2 if i + 1 < len(roots) else min(127, r + extend_above)
+        lo = roots[i - 1] + 1 if i else max(0, r - extend_below)
+        hi = r if i + 1 < len(roots) else min(127, r + extend_above)
         zones[r] = (lo, hi)
     return zones
 
@@ -122,6 +126,8 @@ def loudness(hit: Hit, sustained: bool) -> float:
 # part of sustained sounds) of its loudest velocity. Peaks are then held under level.CEILING_DB when
 # the samples are written.
 TARGET_LOUDNESS_DB = -16.0
+MUTE_TAG = "mutes"  # on an extra that stops the notes still ringing (see render)
+MUTE_FADE_S = 0.06
 MAX_GAIN_DB = 24.0
 
 
@@ -210,7 +216,7 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
                 for pos, h in enumerate(hits, 1):
                     for sig in signals:
                         m.keys.append(Entry(sig, h.files[sig], extra.key, extra.key, extra.key,
-                                            seq_pos=pos, seq_len=len(hits)))
+                                            seq_pos=pos, seq_len=len(hits), extra=extra.id, mutes=extra.mutes))
     # A recording with every hit rejected is fine while its velocity keeps others.
     for (pass_id, midi, lane), name in played.items():
         kept = notes.get(pass_id, {}).get(midi, {})
@@ -499,16 +505,24 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
         # Matches the menu's default (first option): other passes start switched off.
         return "false" if switched and pass_of[sig.id] != switched[0] else None
 
+    # A muting extra (a chuck) stops the notes still ringing, with a short fade as a hand on the strings.
+    muting = {"silencedByTags": MUTE_TAG, "silencingDecay": MUTE_FADE_S} if any(e.mutes for e in mapping.keys) else {}
     for sig in inst.signals:
         add_group(sig.name, tags(sig, NOTES_TAG), [e for e in mapping.notes if e.signal == sig.id],
-                  enabled=enabled(sig), seqMode="round_robin")
+                  enabled=enabled(sig), seqMode="round_robin", **muting)
     for sig in inst.signals:
         add_group(f"{sig.name} release noise", tags(sig, RELEASE_TAG),
                   [e for e in mapping.release if e.signal == sig.id], enabled=enabled(sig),
                   trigger="release", seqMode="random", pitchKeyTrack=0.0, ampVelTrack=0.0)
+    # Each extra its own group, its hits in turn: they were recorded as a sequence (e.g. chucks down
+    # and up), and a group's rotation would mix the extras' hits.
+    names = {x.id: x.name for x in inst.extras}
     for sig in inst.signals:
-        add_group(f"{sig.name} effects", tags(sig, FX_TAG), [e for e in mapping.keys if e.signal == sig.id],
-                  enabled=enabled(sig), seqMode="random", pitchKeyTrack=0.0)
+        for extra_id in dict.fromkeys(e.extra for e in mapping.keys):
+            entries = [e for e in mapping.keys if e.signal == sig.id and e.extra == extra_id]
+            more = [MUTE_TAG] if entries and entries[0].mutes else []
+            add_group(f"{sig.name} {names.get(extra_id, 'effects')}", tags(sig, FX_TAG, *more), entries,
+                      enabled=enabled(sig), seqMode="round_robin", pitchKeyTrack=0.0)
 
     fx = _el(root, "effects")
     for name in effects:

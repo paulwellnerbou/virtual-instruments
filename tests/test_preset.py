@@ -26,10 +26,10 @@ def test_missing_layer_borrows_from_below_then_above():
     assert preset.velocity_slots(bounds, {"mf", "f"}) == [("mf", 1, 85), ("f", 86, 127)]
 
 
-def test_zones_prefer_pitching_down_and_stretch_edges():
+def test_gaps_are_played_by_the_note_above_pitched_down():
     assert preset.key_zones([60, 61], 0, 0) == {60: (60, 60), 61: (61, 61)}
-    assert preset.key_zones([60, 64], 0, 0) == {60: (60, 61), 64: (62, 64)}
-    assert preset.key_zones([60, 63], 2, 3) == {60: (58, 61), 63: (62, 66)}
+    assert preset.key_zones([60, 64], 0, 0) == {60: (60, 60), 64: (61, 64)}
+    assert preset.key_zones([60, 63], 2, 3) == {60: (58, 60), 63: (61, 66)}  # only the top one goes up
 
 
 @pytest.fixture
@@ -327,3 +327,89 @@ def test_a_borrowed_hit_counts_once_for_the_level(built):
     alone = preset.map_samples(inst, manifest).gain_db
     inst.preset.neighbour_round_robins = 2  # every hit now plays on several keys
     assert preset.map_samples(inst, manifest).gain_db == alone
+
+
+def test_the_low_cut_is_applied_when_building(built, monkeypatch):
+    import soundfile as sf
+
+    from vinst import lowcut
+
+    inst, manifest = built
+    inst.processing.low_cut = True
+    monkeypatch.setattr(inst.processing, "low_cut_db", 20.0)
+    result = bundle.build(inst)
+    xml = etree.parse(str(result.preset_file))
+    s = next(iter(xml.iter("sample")))
+    name = s.get("path").split("/")[-1]
+    src, sr = sf.read(str(Path(manifest.samples_dir) / name))
+    out, _ = sf.read(str(result.bundle / preset.SAMPLES_DIR / name))
+
+    def below(x, root):  # share of energy under the cut
+        spec = np.abs(np.fft.rfft(x)) ** 2
+        f = np.fft.rfftfreq(len(x), 1 / sr)
+        return spec[f < lowcut.frequency(root, 0.6)].sum() / spec.sum()
+
+    root = int(s.get("rootNote"))
+    assert below(out, root) < below(src, root)  # the sliced sample stays, the bundle's copy is cut
+
+
+def _riff(data: bytes, at: int, end: int) -> dict[bytes, list[bytes]]:
+    import struct
+
+    out: dict[bytes, list[bytes]] = {}
+    while at < end:
+        tag, size = data[at:at + 4], struct.unpack("<I", data[at + 4:at + 8])[0]
+        assert size % 2 == 0, f"{tag!r} has an odd length: readers like MuseScore's lose their place after it"
+        out.setdefault(tag, []).append(data[at + 8:at + 8 + size])
+        at += 8 + size
+    assert at == end
+    return out
+
+
+def test_the_build_writes_a_valid_soundfont(built):
+    import struct
+
+    inst, _ = built
+    result = bundle.build(inst)
+    data = result.soundfont.read_bytes()
+    assert data[:4] == b"RIFF" and data[8:12] == b"sfbk" and struct.unpack("<I", data[4:8])[0] == len(data) - 8
+    lists = {c[:4]: _riff(c, 4, len(c)) for c in _riff(data, 12, len(data))[b"LIST"]}
+    assert struct.unpack("<HH", lists[b"INFO"][b"ifil"][0]) == (2, 4)
+    smpl, sm24 = lists[b"sdta"][b"smpl"][0], lists[b"sdta"][b"sm24"][0]
+    assert len(sm24) == len(smpl) // 2
+    pdta = {k: v[0] for k, v in lists[b"pdta"].items()}
+    sizes = {b"phdr": 38, b"pbag": 4, b"pmod": 10, b"pgen": 4, b"inst": 22, b"ibag": 4, b"imod": 10,
+             b"igen": 4, b"shdr": 46}
+    records = {k: [pdta[k][i:i + n] for i in range(0, len(pdta[k]), n)] for k, n in sizes.items()}
+    assert all(len(pdta[k]) % n == 0 for k, n in sizes.items())
+    assert records[b"phdr"][-1][:3] == b"EOP" and records[b"inst"][-1][:3] == b"EOI"
+    assert records[b"shdr"][-1][:3] == b"EOS"
+    frames = len(smpl) // 2
+    for h in records[b"shdr"][:-1]:
+        start, end, loop_start, loop_end, rate, root = struct.unpack("<IIIIIB", h[20:41])
+        assert start < end <= frames and start <= loop_start < loop_end <= end and rate == 48000
+    gens = [struct.unpack("<HH", g) for g in records[b"igen"]]
+    bags = [struct.unpack("<HH", b)[0] for b in records[b"ibag"]]
+    for a, b in zip(bags, bags[1:]):
+        zone = [op for op, _ in gens[a:b]]
+        if 53 in zone:  # a sample's zone: its ranges first, its sample last
+            assert zone[0] == 43 and zone[1] == 44 and zone[-1] == 53
+    sample_ids = {amount for op, amount in gens if op == 53}
+    assert sample_ids == set(range(len(records[b"shdr"]) - 1))
+    assert result.soundfont.parent == result.bundle.parent and result.soundfont_samples == len(sample_ids)
+
+
+def test_the_soundfont_goes_to_musescore_but_never_over_someone_elses(built, tmp_path):
+    from vinst import sf2
+
+    inst, _ = built
+    font = bundle.build(inst).soundfont
+    folder = tmp_path / "SoundFonts"
+    with pytest.raises(ValueError, match="isn't there"):
+        sf2.install(font, folder)
+    folder.mkdir()
+    assert sf2.install(font, folder).read_bytes() == font.read_bytes()
+    assert sf2.install(font, folder)  # again over its own copy
+    (folder / font.name).write_bytes(b"RIFF....sfbk someone else's")
+    with pytest.raises(ValueError, match="wasn't made by this builder"):
+        sf2.install(font, folder)

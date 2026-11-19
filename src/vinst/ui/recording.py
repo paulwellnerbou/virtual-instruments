@@ -15,11 +15,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
+import soundfile as sf
 from nicegui import ui
 
 from vinst import guide as guides
 from vinst import recorder, store, takes_meta
-from vinst.plan import more_base, more_file, plan_takes, recording_passes
+from vinst.plan import Take, more_base, more_file, note_lanes, plan_takes, recording_passes
 from vinst.plan import take_key as take_key_of
 from vinst.spec import Signal
 from vinst.ui import form
@@ -42,7 +44,7 @@ CSS = """
 .vi-rec[data-play=true] .vi-rec-big { color: white; }
 .vi-rec-title { font-size: 1.6rem; font-weight: 600; }
 .vi-rec-detail { font-size: 1.15rem; min-height: 1.5em; }
-.vi-rec-beats { display: flex; gap: 8px; min-height: 16px; }
+.vi-rec-beats { display: flex; gap: 8px; min-height: 16px; margin: 4px 0 12px; }  /* room for the beat's dot to grow */
 .vi-rec-beats span { width: 14px; height: 14px; border-radius: 50%; background: #e0e0e0;
                      transition: background-color .08s, transform .08s; }
 .vi-rec-beats span.on { background: #1976d2; transform: scale(1.3); }
@@ -173,7 +175,7 @@ def record_take(ed: "Editor", number: int, on_saved: Saved | None = None) -> Non
                 lambda n: guides.take_guide(ed.inst, take, n), count,
                 (lambda: record_take(ed, following.number, on_saved)) if following else None,
                 f"Next: {following.title}" if following else "",
-                (lambda: on_saved(take.key)) if on_saved else None)
+                (lambda: on_saved(take.key)) if on_saved else None, loudest_velocity(ed, take))
 
 
 def record_more(ed: "Editor", take_key: str, count: int, on_saved: Saved | None = None) -> None:
@@ -189,7 +191,17 @@ def record_more(ed: "Editor", take_key: str, count: int, on_saved: Saved | None 
     key = take_key_of(more_base(take, number), take.pass_id)
     open_dialog(ed, f"{take.title} · more hits", signals_of(ed, take.signals), paths,
                 lambda n: guides.more_guide(ed.inst, take, n or count), count, None, "",
-                (lambda: on_saved(key)) if on_saved else None)
+                (lambda: on_saved(key)) if on_saved else None, loudest_velocity(ed, take))
+
+
+def peak_dbfs(path: Path) -> float:
+    audio, _ = sf.read(str(path), always_2d=True, dtype="float64")
+    return float(20 * np.log10(max(float(np.max(np.abs(audio))), 1e-10)))
+
+
+def loudest_velocity(ed: "Editor", take: Take) -> bool:
+    """Whether `take` is of its note's loudest velocity: the one to set the input gain by."""
+    return take.kind == "note" and take.lane == note_lanes(ed.inst, take.note_base)[-1]
 
 
 def current_device(rescan: bool = False) -> tuple[recorder.Device | None, list[recorder.Device], str]:
@@ -202,9 +214,10 @@ def current_device(rescan: bool = False) -> tuple[recorder.Device | None, list[r
 def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str, Path],
                 guide_for: Callable[[int | None], guides.Guide], count: int | None,
                 on_next: Callable[[], None] | None, next_label: str,
-                on_saved: Callable[[], None] | None = None) -> None:
+                on_saved: Callable[[], None] | None = None, judge_level: bool = False) -> None:
     """`count`: how many hits to ask for, which the player can change before recording; None for
-    takes recorded as planned."""
+    takes recorded as planned. `judge_level`: a take of the loudest velocity, whose level says how
+    to set the input gain."""
     inst = ed.inst
     # Re-read the devices: the interface's sample rate may have changed since the app started.
     device, _, name = current_device(rescan=True)
@@ -325,6 +338,10 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
                 if result.clipped:
                     names = ", ".join(s.name for s in signals if s.id in result.clipped)
                     ui.label(f"Clipped: {names}. Turn the gain down and record again.").classes("text-negative")
+                elif judge_level:
+                    advice = recorder.level_advice(max(peak_dbfs(f) for f in result.files))
+                    if advice:
+                        ui.label(advice).classes("text-warning")
             else:
                 ui.label("Cancelled; nothing was changed.").classes("opacity-70")
         buttons(False, done=bool(result.files))

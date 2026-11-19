@@ -14,7 +14,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 
-from vinst import denoise, loops, lowcut, takes_meta
+from vinst import denoise, loops, takes_meta
 from vinst.plan import (
     Take,
     combined_base,
@@ -30,7 +30,8 @@ from vinst.spec import Instrument
 
 # Raised whenever hits are found differently, so older results are offered for slicing again.
 # 1: attack judged over ATTACK_S, starts moved to the main rise.
-HIT_FINDER = 1
+# 2: a hit's tail ends where the next sound begins, not at the next attack.
+HIT_FINDER = 2
 HOP = 256
 PREROLL_S = 0.005
 FADE_OUT_S = 0.05
@@ -79,13 +80,22 @@ def mix(signals: list[np.ndarray]) -> np.ndarray:
 
 
 def detect_onsets(ref: np.ndarray, sr: int, noise_rel_db: float) -> list[int]:
+    """Where each hit's attack begins (in frames of `ref`)."""
+    return [attack for attack, _ in detect_sounds(ref, sr, noise_rel_db)]
+
+
+def detect_sounds(ref: np.ndarray, sr: int, noise_rel_db: float) -> list[tuple[int, int]]:
+    """Per hit: where its attack begins, and where its sound begins, which can be earlier (a touch of
+    the string, the hand moving in). The sample starts at the attack; the hit before it ends before
+    the sound."""
     env = librosa.onset.onset_strength(y=ref, sr=sr, hop_length=HOP)
     frames = librosa.onset.onset_detect(onset_envelope=env, sr=sr, hop_length=HOP, backtrack=True,
                                         units="frames", wait=int(MIN_GAP_S * sr / HOP), delta=0.05)
     level = frame_rms_db(ref)
     ref_noise = noise_rel_db + float(db(np.max(np.abs(ref))))
-    out: list[int] = []
+    out: list[tuple[int, int]] = []
     for f in frames:
+        begins = int(f * HOP)
         before = level[max(0, f - 6): max(1, f - 1)]
         after = level[f: f + max(10, int(ATTACK_S * sr / HOP))]
         if after.size == 0:
@@ -96,26 +106,34 @@ def detect_onsets(ref: np.ndarray, sr: int, noise_rel_db: float) -> list[int]:
             if main > LATE_RISE_FRAMES:
                 f += main - 1  # the frame before: the attack begins within it
             sample = int(f * HOP)
-            if not out or sample - out[-1] >= MIN_GAP_S * sr:
-                out.append(sample)
+            if not out or sample - out[-1][0] >= MIN_GAP_S * sr:
+                out.append((sample, begins))
     return out
 
 
 def cut_points(ref: np.ndarray, sr: int, onsets: list[int], noise_rel_db: float,
-               noises: list[int] | None = None, ring_frames: int = 0) -> list[tuple[int, int, bool]]:
+               noises: list[int] | None = None, ring_frames: int = 0,
+               begins: dict[int, int] | None = None) -> list[tuple[int, int, bool]]:
     """(start, end, cut_off) per onset; cut_off means the hit was still ringing at the next onset.
 
     noises: onsets that aren't hits (handling noise). They end the hit before them, so the noise
     isn't in the sample, but a hit that rang for ring_frames by then isn't flagged as cut off.
+    begins: where the sound of an onset begins, if before it (see detect_sounds): a hit's tail ends
+    there, not at the next attack, or it would take in the start of the next sound.
     """
     level = frame_rms_db(ref)
     ref_noise = noise_rel_db + float(db(np.max(np.abs(ref))))
     pre = int(PREROLL_S * sr)
+
+    def sound(o: int, after: int) -> int:
+        """Where the sound of onset `o` begins, with its pre-roll, but after `after`."""
+        return max(after + 1, (begins or {}).get(o, o) - pre)
+
     cuts = []
     for i, onset in enumerate(onsets):
         start = max(0, onset - pre)
-        next_hit = (onsets[i + 1] - pre) if i + 1 < len(onsets) else len(ref)
-        noise = next((n - pre for n in (noises or []) if onset < n and n - pre < next_hit), None)
+        next_hit = sound(onsets[i + 1], onset) if i + 1 < len(onsets) else len(ref)
+        noise = next((sound(n, onset) for n in (noises or []) if onset < n and sound(n, onset) < next_hit), None)
         limit = noise if noise is not None else next_hit
         f0, f1 = start // HOP, max(start // HOP + 1, limit // HOP)
         loud = np.nonzero(level[f0:f1] > ref_noise + TAIL_ABOVE_NOISE_DB)[0]
@@ -220,14 +238,14 @@ def noise_profiles(inst: Instrument, takes_dir: Path) -> dict[str, np.ndarray]:
 
 def cleanup_setup(inst: Instrument) -> str:
     """What the written samples depend on beyond their cuts: the clean-up. "" while all of it is off,
-    as before it was kept."""
+    as before it was kept. (The low cut is applied when building, see bundle.)"""
     p = inst.processing
-    parts = []
-    if p.denoise:
-        parts.append(f"denoise {p.denoise_reduction_db:g}")
-    if p.low_cut:
-        parts.append(f"low cut {p.low_cut_below:g} {p.low_cut_db:g}")
-    return "; ".join(parts)
+    return f"denoise {p.denoise_reduction_db:g}" if p.denoise else ""
+
+
+def cut_in_samples(manifest: Manifest) -> bool:
+    """Whether the sliced samples have a low cut in them: it was applied when slicing for a while."""
+    return "low cut" in manifest.cleanup
 
 
 def sliced_cleanup(inst: Instrument, manifest: Manifest) -> str:
@@ -271,13 +289,14 @@ def find_cuts(inst: Instrument, path: Path, ref: np.ndarray, sr: int, rel_floor:
     by_hand = takes_meta.cuts(inst.meta.slug, path)
     if by_hand is not None:
         return [(max(0, a), min(len(ref), b), False) for a, b in by_hand if min(len(ref), b) > max(0, a)]
-    onsets = detect_onsets(ref, sr, rel_floor)
+    sounds = detect_sounds(ref, sr, rel_floor)
+    onsets, begins = [a for a, _ in sounds], dict(sounds)
     grid = takes_meta.hits_at(inst.meta.slug, path)
     if grid is None:
-        return cut_points(ref, sr, onsets, rel_floor)
+        return cut_points(ref, sr, onsets, rel_floor, begins=begins)
     starts = on_grid(onsets, ref, sr, grid)
     noises = [o for o in onsets if o not in starts]
-    return cut_points(ref, sr, starts, rel_floor, noises, int(inst.recording.ring_seconds * sr))
+    return cut_points(ref, sr, starts, rel_floor, noises, int(inst.recording.ring_seconds * sr), begins)
 
 
 def more_numbers(take: Take, takes_dir: Path) -> list[int]:
@@ -407,15 +426,11 @@ def analyse_cuts(inst: Instrument, take: Take, result: TakeResult, take_signals:
     out_dir.mkdir(parents=True, exist_ok=True)
     subtype = SUBTYPES.get(inst.recording.bit_depth, "PCM_24")
     p = inst.processing
-    # Only for pitched notes: a drum-kit style sound has a key, not a pitch to cut below.
-    cut = p.low_cut and take.kind == "note" and take.note is not None and take.note.sound is None
     for i, (start, end, cut_off) in enumerate(cuts):
         hit_id = f"{id_base}_{i + 1:02d}"
         files, peaks, played = {}, {}, []
         for sig, audio in zip(take_signals, signals):
             seg = audio[start:end]
-            if cut:  # a change of tone, so loudness is measured after it
-                seg = lowcut.reduce(seg, sr, take.note.midi, p.low_cut_below, p.low_cut_db)
             played.append(seg)
             peaks[sig.id] = round(float(db(np.max(np.abs(seg)))), 2)
             name = f"{hit_id}_{sig.id}.wav"
@@ -507,7 +522,10 @@ def process_one(inst: Instrument, previous: Manifest, key: str) -> Manifest:
     """
     takes_dir = Path(inst.recording.takes_dir).expanduser()
     take = next((t for t in recordings(inst, takes_dir) if t.key == key), None)
-    if take is None or inst.recording.source == "samples" or previous.setup != slicing_setup(inst):
+    # Samples sliced with the low cut in them (as it was for a while) and a new one without it would
+    # sound different, and the build can't tell which is which: slice them all, so none has it.
+    if take is None or inst.recording.source == "samples" or previous.setup != slicing_setup(inst) \
+            or cut_in_samples(previous):
         return process(inst, previous)
     old = next((t for t in previous.takes if t.key == key), None)
     out_dir = Path(previous.samples_dir)

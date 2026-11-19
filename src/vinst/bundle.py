@@ -8,9 +8,10 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from vinst import level, preset, review, store
+from vinst import level, lowcut, preset, review, sf2, store
+from vinst.review import Manifest
 from vinst.plan import slicing_setup
-from vinst.slicing import changed_takes
+from vinst.slicing import changed_takes, cut_in_samples
 from vinst.spec import Instrument
 from vinst.validate import Report, validate_bundle
 
@@ -51,6 +52,8 @@ class BuildResult:
     warnings: list[str] = field(default_factory=list)
     report: Report = field(default_factory=Report)
     info: list[str] = field(default_factory=list)
+    soundfont: Path | None = None  # the same instrument as SF2, e.g. for MuseScore (see sf2)
+    soundfont_samples: int = 0
 
 
 def sync_files(sources: dict[str, Path], dest: Path) -> None:
@@ -69,10 +72,12 @@ def sync_files(sources: dict[str, Path], dest: Path) -> None:
             existing.unlink()
 
 
-def sync_raised(sources: dict[str, Path], gains: dict[str, float], dest: Path, record: Path) -> list[float]:
-    """Like sync_files, but each sample written raised by its gain and limited (see level); `record`
-    keeps what each was written from, so unchanged ones aren't written again. Returns, per sample the
-    limiter touched, how much it took off."""
+def sync_raised(sources: dict[str, Path], gains: dict[str, float], dest: Path, record: Path,
+                low_cuts: dict[str, tuple[float, float, float]] | None = None) -> list[float]:
+    """Like sync_files, but each sample written raised by its gain and limited (see level), after its
+    low cut if any; `record` keeps what each was written from, so unchanged ones aren't written again.
+    Returns, per sample the limiter touched, how much it took off."""
+    low_cuts = low_cuts or {}
     dest.mkdir(parents=True, exist_ok=True)
     try:
         done = json.loads(record.read_text(encoding="utf-8"))
@@ -81,11 +86,13 @@ def sync_raised(sources: dict[str, Path], gains: dict[str, float], dest: Path, r
     out: dict[str, dict] = {}
     for name, src in sources.items():
         st = src.stat()
+        cut = low_cuts.get(name)
         wanted = {"source": f"{st.st_size}:{st.st_mtime_ns}", "gain": round(gains.get(name, 0.0), 2),
-                  "limiter": f"{level.CEILING_DB:g} dB, {level.LIMITER_S:g} s"}
+                  "limiter": f"{level.CEILING_DB:g} dB, {level.LIMITER_S:g} s",
+                  "low cut": list(cut) if cut else None}
         was = done.get(name)
         if not ((dest / name).exists() and was and all(was.get(k) == v for k, v in wanted.items())):
-            wanted["reduced"] = round(level.write_raised(src, dest / name, wanted["gain"]), 2)
+            wanted["reduced"] = round(level.write_raised(src, dest / name, wanted["gain"], cut), 2)
         else:
             wanted["reduced"] = was.get("reduced", 0.0)
         out[name] = wanted
@@ -94,6 +101,31 @@ def sync_raised(sources: dict[str, Path], gains: dict[str, float], dest: Path, r
             existing.unlink()
     record.write_text(json.dumps(out, indent=1), encoding="utf-8")
     return [v["reduced"] for v in out.values() if v["reduced"] > 0.05]
+
+
+def low_cut_now(inst: Instrument, manifest: Manifest) -> bool:
+    """Whether to apply the low cut in this build: when it's on, for notes with a pitch to cut below,
+    and not into samples sliced with it already."""
+    return inst.processing.low_cut and lowcut.applies(inst) and not cut_in_samples(manifest)
+
+
+def after_low_cut(inst: Instrument, manifest: Manifest) -> Manifest:
+    """`manifest` with each note's loudness as it is after the low cut."""
+    p = inst.processing
+    out = manifest.model_copy(deep=True)
+    folder = Path(manifest.samples_dir)
+    for t in out.takes:
+        if t.kind != "note" or t.midi is None:
+            continue
+        for h in t.hits:
+            src = folder / h.files[t.signals[0]] if t.signals and t.signals[0] in h.files else None
+            if h.rejected or src is None or not src.is_file():
+                continue
+            d_attack, d_body = lowcut.loudness_change(src, t.midi, p.low_cut_below, p.low_cut_db)
+            h.rms_db += d_attack
+            if h.body_db is not None:
+                h.body_db += d_body
+    return out
 
 
 def build(inst: Instrument) -> BuildResult:
@@ -108,9 +140,15 @@ def build(inst: Instrument) -> BuildResult:
     changed = changed_takes(inst, manifest)
     if changed:
         raise ValueError(changed_message(changed) + " Slice them in the worksheet (step 5) to use them.")
-    mapping = preset.map_samples(inst, manifest)
+    cutting = low_cut_now(inst, manifest)
+    # The cut changes how loud a note is (its thump goes), so evening out and the level work with the
+    # loudness after it: measured here, as the cut is applied here.
+    mapping = preset.map_samples(inst, after_low_cut(inst, manifest) if cutting else manifest)
     if not mapping.notes:
         raise ValueError("No usable hits: record and slice some notes first.")
+    if cut_in_samples(manifest):
+        mapping.warnings.append("The sliced samples still have the low cut they were sliced with, so changes to it "
+                                "don't apply; slice them again (step 5) once and it's applied when building.")
 
     name = bundle_name(inst)
     bundle = build_root() / inst.meta.slug / f"{name}.dsbundle"
@@ -122,8 +160,10 @@ def build(inst: Instrument) -> BuildResult:
     # can be limited; the preset then plays them as they are.
     gains = {e.file: mapping.gain_db for e in mapping.release + mapping.keys}
     gains.update({e.file: mapping.gain_db + e.volume_db for e in mapping.notes})
+    p = inst.processing
+    low_cuts = {e.file: (float(e.root), p.low_cut_below, p.low_cut_db) for e in mapping.notes} if cutting else {}
     limited = sync_raised({f: samples_src / f for f in mapping.files}, gains, bundle / preset.SAMPLES_DIR,
-                          bundle.parent / "levels.json")
+                          bundle.parent / "levels.json", low_cuts)
     if abs(mapping.gain_db) >= 0.1:
         mapping.info.append(
             f"Level {'raised' if mapping.gain_db > 0 else 'lowered'} by {abs(mapping.gain_db):.1f} dB"
@@ -151,9 +191,15 @@ def build(inst: Instrument) -> BuildResult:
     (bundle / MARKER).write_text(inst.meta.slug, encoding="utf-8")
     remove_renamed(bundle.parent, bundle)
 
+    # Beside the bundle, not in it: DecentSampler would ship it along in the library.
+    font = sf2.write(inst, mapping, bundle / preset.SAMPLES_DIR, bundle.parent / f"{name}.sf2")
+    for old in bundle.parent.glob("*.sf2"):
+        if old != font.path:  # from an earlier name of the instrument
+            old.unlink()
+
     size = sum(p.stat().st_size for p in bundle.rglob("*") if p.is_file())
     return BuildResult(bundle, preset_file, len(mapping.files), size, mapping.warnings,
-                       validate_bundle(bundle, preset_file), mapping.info)
+                       validate_bundle(bundle, preset_file), mapping.info, font.path, font.samples)
 
 
 def _marked_slug(folder: Path) -> str | None:

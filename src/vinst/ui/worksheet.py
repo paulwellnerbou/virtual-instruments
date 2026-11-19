@@ -9,7 +9,6 @@ import asyncio
 import io
 import itertools
 import json
-import math
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -238,7 +237,9 @@ def hit_wave(take: TakeResult, hit: Hit, height: int, loudest_db: float) -> str:
     if not env or not length:
         return ""
     n = len(env)
-    part = env[int(hit.start / length * (n - 1)):int(math.ceil(hit.end / length * (n - 1))) + 1] or [0.0, 0.0]
+    # The envelope's buckets wholly within this hit: the one it ends in can hold the next sound.
+    first = min(n - 1, int(hit.start / length * n))
+    part = env[first:max(first + 1, int(hit.end / length * n))] or [0.0, 0.0]
     if len(part) == 1:
         part = part * 2
     top_of = max(part)
@@ -492,19 +493,6 @@ def settings_cards(ed: "Editor") -> None:
                 with Collapse(proc.denoise, axis="x") as reduction:
                     ed.number("", proc, "denoise_reduction_db", cast=float, min=1, max=40, step=1,
                               suffix="dB max.").props("dense outlined").classes("w-32")
-            with form.setting("Low cut", "Lowers what lies below each note's own pitch, e.g. the thump of the pluck "
-                                         "on a ukulele's body: below the share of the pitch set here, by the dB set "
-                                         "here. The note itself, from its pitch up, stays as it is. Some of that low "
-                                         "end is the instrument's body, so start gently and listen."):
-                ui.switch(value=proc.low_cut,
-                          on_change=lambda e: (ed.set(proc, "low_cut", e.value), low_cut.set_open(e.value)))
-                with Collapse(proc.low_cut, axis="x", inner_classes="flex items-center gap-1 no-wrap") as low_cut:
-                    ui.number(value=round(proc.low_cut_below * 100), min=30, max=100, step=5, precision=0,
-                              suffix="% pitch",
-                              on_change=lambda e: e.value and ed.set(proc, "low_cut_below", float(e.value) / 100)) \
-                        .props("dense outlined").classes("w-28").tooltip("Below this share of each note's pitch")
-                    ed.number("", proc, "low_cut_db", cast=float, min=1, max=40, step=1, suffix="dB") \
-                        .props("dense outlined").classes("w-24").tooltip("By this much")
         with form.setting("Loops", "For sustained sounds: notes keep playing while the key is held. Loop markers "
                                    "in the takes (e.g. set in WaveLab) are used where they exist; otherwise a loop "
                                    "is searched in the steady part of each note."):

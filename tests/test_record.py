@@ -222,3 +222,9 @@ def test_the_count_in_is_not_written(tmp_path):
     result = rec.stop(keep=True)
     audio, _ = sf.read(tmp_path / "t_pickup.wav")
     assert result.seconds == pytest.approx(0.5) and np.allclose(audio, 0.1, atol=1e-6)
+
+
+def test_a_quiet_loud_take_says_how_much_to_turn_the_gain_up():
+    assert recorder.level_advice(-8.0) is None
+    advice = recorder.level_advice(-18.0)
+    assert "peaks at -18 dBFS" in advice and "up by about 12 dB" in advice and "same for all takes" in advice

@@ -40,6 +40,19 @@ Each instrument lives in `instruments/<slug>/`:
 
 Audio is kept outside the repo: takes in the folder set in the worksheet, sliced samples in `<takes folder>/sliced` unless set otherwise, builds in `build/`.
 
+## Slicing and analysis
+
+- Onsets are detected on a normalised mix of all signals recorded together, so every signal of a hit is cut at the same samples.
+- Takes recorded in the app keep their click grid (`recorded-in-app.json`): each hit is the strongest onset in its bar, so handling noise (a piezo hears every touch) never becomes a hit. A noise during the ring ends the hit before it.
+- Each hit gets 5 ms of pre-roll, its tail is trimmed 6 dB above the noise floor (from the noise-floor recording, or estimated from the take), it's DC-removed and gets a 50 ms fade-out. Optional denoising uses the noise-floor recording as the profile and only changes the sliced samples.
+- Pitch: YIN, restricted to ±5 semitones around the expected note, refined by a spectral peak with parabolic interpolation (YIN reads about 4 cents sharp on decaying notes); well under 1 cent on test tones.
+- Loudness is the RMS of the first 0.3 s (the attack) for plucked and struck sounds, the held part for sustained ones.
+- A take is written to a `.part` file and only replaces the existing one when it finishes; the count-in isn't recorded, apart from half a second of pre-roll.
+- Decisions in `hits.json` are carried over when slicing again while the recording's size and modification time are unchanged. The slicing setup fingerprint covers passes, signals and loops, so velocity changes don't need re-slicing.
+- Loops: a WAV `smpl` chunk is used as is; otherwise the steady part of each note is searched for the loop whose end best matches its start.
+- Level, evening out and low cut are applied at build time to the bundle's copies of the samples. The build aims the loudest velocity's median loudness at −16 dBFS, and a 2 ms limiter keeps peaks under −1 dBFS.
+- Mapping writes each sample's `tuning`, pitches samples down to fill keys between recorded notes (up only above the highest note), renumbers round robins per key and velocity cell so rejected hits leave no gaps, and plays release extras from a `trigger="release"` group.
+
 ## Reference
 
 - [builder-ui.md](builder-ui.md): what each step of the wizard does, in detail

@@ -269,3 +269,18 @@ class Recorder:
 
 def part_path(path: Path) -> Path:
     return path.with_name(path.name + PART_SUFFIX)
+
+
+LOUD_PEAK_DB = -6.0  # where the loudest playing should peak: headroom for a harder hit
+QUIET_PEAK_DB = -12.0  # below this, the loudest velocity was recorded too low
+
+
+def level_advice(peak_db: float) -> str | None:
+    """For a take of the loudest velocity: how to set the input gain, if it was too low. Soft takes
+    are quiet on purpose, so they aren't judged."""
+    if peak_db >= QUIET_PEAK_DB:
+        return None
+    up = round(LOUD_PEAK_DB - peak_db)
+    return (f"Quite quiet: the loudest hit peaks at {peak_db:.0f} dBFS. Turning the input gain up by about "
+            f"{up} dB (to peaks around {LOUD_PEAK_DB:.0f} dBFS) records less noise. Keep the gain the same for "
+            "all takes of the instrument, so soft and loud stay in proportion.")

@@ -432,3 +432,27 @@ def test_results_remember_which_hit_finding_made_them(uke):
     f = lane(uke, "f")
     write(uke, f.files[0], take_audio(f, (0.6, 0.62)), grid=[0.5, 3.5])
     assert process_one(uke, m, f.key).finder == 0  # one recording sliced again; the others are still older
+
+
+def test_a_tail_ends_before_the_next_sound_not_at_its_attack():
+    rng = np.random.default_rng(5)
+    ref = rng.normal(0, 1e-4, 5 * SR)
+    t = np.arange(int(0.3 * SR)) / SR
+    strum = 0.5 * rng.normal(0, 1, len(t)) * np.exp(-25 * t)  # a muted strum, gone in ~0.2 s
+    ref[int(0.5 * SR): int(0.5 * SR) + len(t)] += strum
+    ref[int(2.9 * SR): int(3.0 * SR)] += rng.normal(0, 0.01, int(0.1 * SR))  # the hand moving in
+    ref[int(3.0 * SR): int(3.0 * SR) + len(t)] += strum
+    onsets = [int(0.5 * SR), int(3.0 * SR)]
+    (_, end, _), _ = cut_points(ref, SR, onsets, -80, begins={onsets[1]: int(2.9 * SR)})
+    assert end < 1.0 * SR  # with the strum, not running on into the hand before the next one
+    (_, longer, _), _ = cut_points(ref, SR, onsets, -80)
+    assert longer > 2.8 * SR  # without knowing where the next sound begins
+
+
+def test_a_new_take_is_sliced_with_all_others_while_they_carry_the_old_low_cut(uke):
+    p, f = lane(uke, "p"), lane(uke, "f")
+    write(uke, p.files[0], take_audio(p, (0.3, 0.32)), grid=[0.5, 3.5])
+    m = process(uke).model_copy(update={"cleanup": "low cut 0.75 12"})  # sliced with the cut in them
+    write(uke, f.files[0], take_audio(f, (0.6, 0.62)), grid=[0.5, 3.5])
+    again = process_one(uke, m, f.key)
+    assert again.cleanup == "" and result(again, f.key).hits  # all sliced again, none cut

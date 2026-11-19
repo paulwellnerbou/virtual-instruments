@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from nicegui import app, run, ui
 
-from vinst import bundle, store
+from vinst import bundle, lowcut, sf2, store
 from vinst.plan import layer_bounds, recording_passes
 from vinst.preset import KNOB_Y, UI_H, UI_W, VISIBLE_H, knob_layout, mixable_signals, switched_passes
 from vinst.spec import CONTROLS, Extra
@@ -189,8 +189,8 @@ def step_sound(ed: "Editor") -> None:
         ui.label("Use neighbours as extra round robins:")
         ui.toggle({0: "Off", 1: "±1 semitone", 2: "±2 semitones"}, value=p.neighbour_round_robins,
                   on_change=lambda e: ed.set(p, "neighbour_round_robins", e.value))
-    ui.label("Between recorded notes, each sample is stretched to the midpoint (the upper one is pitched "
-             "down). Neighbour round robins add the hits of nearby notes, pitched to fit, to each key's "
+    ui.label("Keys between recorded notes play the recorded note above them, pitched down (pitched up, a "
+             "sample soon sounds thin; only above the highest note is it pitched up). Neighbour round robins add the hits of nearby notes, pitched to fit, to each key's "
              "rotation: more variation, slightly less faithful timbre. Stretching past the lowest and "
              "highest notes is set in step 3.").classes("text-xs opacity-70 max-w-3xl")
 
@@ -203,6 +203,22 @@ def step_sound(ed: "Editor") -> None:
     ui.label("Brings every sample of a velocity to that velocity's median loudness, so notes and their "
              "hits play alike; soft velocities stay softer than loud ones. Only the instrument's copies "
              "of the samples change.").classes("text-xs opacity-70 max-w-3xl")
+
+    proc = inst.processing
+    if lowcut.applies(inst):
+        with ui.row().classes("items-center gap-4"):
+            ui.switch("Low cut below each note's pitch", value=proc.low_cut,
+                      on_change=lambda e: (ed.set(proc, "low_cut", e.value), low_cut.set_open(e.value)))
+            with Collapse(proc.low_cut, axis="x", inner_classes="flex items-center gap-2 no-wrap") as low_cut:
+                ui.number("Below", value=round(proc.low_cut_below * 100), min=30, max=100, step=5, precision=0,
+                          suffix="% of the pitch",
+                          on_change=lambda e: e.value and ed.set(proc, "low_cut_below", float(e.value) / 100)) \
+                    .classes("w-40")
+                ed.number("By", proc, "low_cut_db", cast=float, min=1, max=40, step=1, suffix="dB").classes("w-24")
+        ui.label("Lowers what lies below each note's own pitch, e.g. the thump of a pluck on a ukulele's body; "
+                 "the note itself, from its pitch up, stays as it is. Some of that low end is the "
+                 "instrument's body, so start gently and listen. Applied when building: change it, build, "
+                 "listen; no slicing needed.").classes("text-xs opacity-70 max-w-3xl")
 
     ui.separator()
     ui.label("Extras").classes("text-base font-medium")
@@ -266,35 +282,69 @@ def extra_row(ed: "Editor", x: Extra) -> None:
 
 
 def step_build(ed: "Editor") -> None:
+    """Three parts: building (and its report), then what's done with it: the DecentSampler bundle,
+    and the soundfont for MuseScore and other SF2 players."""
     inst = ed.inst
     state: dict[str, Any] = {"result": None, "busy": False}
-    ui.label(f"Output: {bundle.build_root() / inst.meta.slug}").classes("text-xs opacity-60")
-    ui.label(f"DecentSampler library folder: {bundle.library_dir()}").classes("text-xs opacity-60")
 
-    with ui.row().classes("items-center gap-2"):
+    with ui.card().classes("w-full").props("flat bordered"):
+        ui.label("Build").classes("text-base font-medium")
+        ui.label(f"Into {bundle.build_root() / inst.meta.slug}").classes("text-xs opacity-60")
         build_btn = ui.button("Build & validate", icon="construction")
-        install_btn = ui.button("Install into DecentSampler", icon="download").props("outline")
-        package_btn = ui.button("Package .dslibrary", icon="inventory_2").props("outline")
-        reveal_btn = ui.button("Show in Finder", icon="folder_open").props("flat")
-    for b in (install_btn, package_btn, reveal_btn):
-        b.disable()
 
-    @ui.refreshable
-    def results() -> None:
+        @ui.refreshable
+        def report() -> None:
+            r = state["result"]
+            if r is None:
+                ui.label("Not built yet.").classes("opacity-70")
+                return
+            ok = r.report.ok
+            ui.label(("✓ Valid" if ok else "✗ Not valid") + f" · {r.samples} samples · {r.size_bytes / 1e6:,.0f} MB") \
+                .classes("text-base font-medium " + ("text-green-600" if ok else "text-red-600"))
+            for e in r.report.errors[:50]:
+                ui.label(f"✗ {e}").classes("text-sm text-red-600")
+            for w in r.warnings + r.report.warnings:
+                ui.label(f"⚠ {w}").classes("text-sm text-orange-600")
+            for line in r.info:
+                ui.label(f"ℹ {line}").classes("text-sm opacity-80")
+
+        report()
+
+    with ui.card().classes("w-full").props("flat bordered"):
+        ui.label("DecentSampler").classes("text-base font-medium")
+        bundle_path = ui.label("Build first.").classes("text-xs font-mono opacity-70")
+        ui.label(f"Its library folder: {bundle.library_dir()}").classes("text-xs opacity-60")
+        with ui.row().classes("items-center gap-2"):
+            install_btn = ui.button("Install into DecentSampler", icon="download").props("outline")
+            package_btn = ui.button("Package .dslibrary", icon="inventory_2").props("outline")
+            bundle_finder = ui.button("Show in Finder", icon="folder_open").props("flat")
+
+    with ui.card().classes("w-full").props("flat bordered"):
+        ui.label("Soundfont").classes("text-base font-medium")
+        ui.label("The same instrument as an SF2 soundfont: MuseScore and other SF2 players play it without "
+                 "DecentSampler. SF2 has no round robins, so each key and velocity always plays the same sample "
+                 "(its note's own, the best in tune), and release noises are left out.") \
+            .classes("text-xs opacity-70 max-w-3xl")
+        font_path = ui.label("Build first.").classes("text-xs font-mono opacity-70")
+        with ui.row().classes("items-center gap-2"):
+            download_btn = ui.button("Download", icon="file_download").props("outline")
+            musescore_btn = ui.button("Copy to MuseScore", icon="library_music").props("outline") \
+                .tooltip(f"Into MuseScore's SoundFonts folder, {sf2.MUSESCORE_FOLDER}")
+            font_finder = ui.button("Show in Finder", icon="folder_open").props("flat")
+
+    def built() -> None:
+        """After a build: what can be done with it."""
         r = state["result"]
-        if r is None:
-            ui.label("Not built yet.").classes("opacity-70")
-            return
-        ok = r.report.ok
-        ui.label(("✓ Valid" if ok else "✗ Not valid") + f" · {r.samples} samples · {r.size_bytes / 1e6:,.0f} MB") \
-            .classes("text-base font-medium " + ("text-green-600" if ok else "text-red-600"))
-        ui.label(str(r.preset_file)).classes("text-xs font-mono opacity-70")
-        for e in r.report.errors[:50]:
-            ui.label(f"✗ {e}").classes("text-sm text-red-600")
-        for w in r.warnings + r.report.warnings:
-            ui.label(f"⚠ {w}").classes("text-sm text-orange-600")
-        for line in r.info:
-            ui.label(f"ℹ {line}").classes("text-sm opacity-80")
+        report.refresh()
+        bundle_path.set_text(str(r.preset_file) if r else "Build first.")
+        for b in (install_btn, package_btn):
+            b.set_enabled(bool(r and r.report.ok))
+        bundle_finder.set_enabled(r is not None)
+        font = r.soundfont if r else None
+        font_path.set_text(f"{font} · {r.soundfont_samples} samples · {font.stat().st_size / 1e6:,.1f} MB"
+                           if font else "Build first.")
+        for b in (download_btn, musescore_btn, font_finder):
+            b.set_enabled(font is not None)
 
     async def do_build() -> None:
         if state["busy"]:
@@ -313,11 +363,7 @@ def step_build(ed: "Editor") -> None:
         finally:
             state["busy"] = False
             build_btn.enable()
-        r = state["result"]
-        for b in (install_btn, package_btn):
-            b.set_enabled(bool(r and r.report.ok))
-        reveal_btn.set_enabled(r is not None)
-        results.refresh()
+        built()
 
     async def do_install() -> None:
         try:
@@ -332,12 +378,25 @@ def step_build(ed: "Editor") -> None:
         path = await run.io_bound(bundle.package, inst, state["result"].bundle)
         ui.notify(f"Wrote {path}", type="positive", multi_line=True)
 
-    def show_bundle() -> None:
-        reveal(state["result"].bundle)
+    def do_download() -> None:
+        font = state["result"].soundfont
+        ui.download.file(font, font.name)
+
+    async def do_musescore() -> None:
+        try:
+            target = await run.io_bound(sf2.install, state["result"].soundfont)
+        except ValueError as e:
+            ui.notify(str(e), type="warning", multi_line=True)
+            return
+        ui.notify(f"Copied to {target}. Restart MuseScore, then choose “{inst.meta.name}” as the sound of a "
+                  "staff in the Mixer.", type="positive", multi_line=True)
 
     build_btn.on_click(do_build)
     install_btn.on_click(do_install)
     package_btn.on_click(do_package)
-    reveal_btn.on_click(show_bundle)
-    results()
+    bundle_finder.on_click(lambda: reveal(state["result"].bundle))
+    download_btn.on_click(do_download)
+    musescore_btn.on_click(do_musescore)
+    font_finder.on_click(lambda: reveal(state["result"].soundfont))
+    built()
 

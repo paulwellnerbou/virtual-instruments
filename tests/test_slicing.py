@@ -207,45 +207,25 @@ def test_low_cut_lowers_only_what_lies_below_the_notes_pitch():
     assert np.array_equal(reduce(thump, sr, midi, 0.75, 0), thump)
 
 
-def test_low_cut_is_part_of_the_clean_up_and_measured_after(sliced, monkeypatch):
-    from vinst.slicing import cleanup_setup
+def test_low_cut_needs_no_slicing_but_samples_cut_before_are_known(sliced, monkeypatch):
+    from vinst.slicing import cleanup_setup, cut_in_samples
 
     inst, m = sliced
-    assert m.cleanup == cleanup_setup(inst) == ""  # all off: as before it was kept
     monkeypatch.setattr(inst.processing, "low_cut", True)
-    assert cleanup_setup(inst) == "low cut 0.75 12"
-    cut = process(inst)
-    assert cut.cleanup == "low cut 0.75 12"
-    before = {h.id: h.rms_db for t in m.takes for h in t.hits}
-    after = {h.id: h.rms_db for t in cut.takes for h in t.hits}
-    assert all(after[k] <= before[k] + 0.05 for k in after if k in before)  # never louder for it
+    assert cleanup_setup(inst) == m.cleanup == ""  # applied when building, not part of the clean-up
+    assert not cut_in_samples(m)
+    assert cut_in_samples(m.model_copy(update={"cleanup": "low cut 0.75 12"}))  # sliced with it for a while
 
 
 def test_low_cut_leaves_unpitched_sounds_alone(tmp_path, monkeypatch):
-    from vinst import defaults, store
-    from vinst.plan import plan_takes
+    from vinst import bundle, defaults, store
+    from vinst.review import Manifest
     from vinst.spec import InstrumentType
 
     monkeypatch.setenv("VINST_HOME", str(tmp_path / "home"))
     inst = defaults.new_instrument("Kit", InstrumentType.UNPITCHED)
-    inst.recording.takes_dir = str(tmp_path / "takes")
-    inst.recording.noise_floor_seconds = 0
-    inst.extras = []
-    inst = store.create(inst)
-    take = next(t for t in plan_takes(inst) if t.kind == "note")
-    sr = 48000
-    rng = np.random.default_rng(1)
-    audio = rng.normal(0, 1e-4, 4 * sr)
-    t = np.arange(int(0.5 * sr)) / sr
-    audio[sr // 2: sr // 2 + len(t)] += 0.5 * np.sin(2 * np.pi * 40 * t) * np.exp(-6 * t)  # a kick's body
-    (tmp_path / "takes").mkdir()
-    sf.write(tmp_path / "takes" / take.files[0], audio, sr, subtype="PCM_24")
-    loud = {}
-    for on in (False, True):
-        inst.processing.low_cut = on
-        m = process(inst)
-        loud[on] = [h.rms_db for r in m.takes if r.key == take.key for h in r.hits]
-    assert loud[True] and loud[True] == loud[False]
+    inst.processing.low_cut = True
+    assert not bundle.low_cut_now(inst, Manifest(samples_dir=str(tmp_path)))
 
 
 def test_results_denoised_before_the_clean_up_was_kept_dont_ask_again(sliced, monkeypatch):
@@ -255,5 +235,14 @@ def test_results_denoised_before_the_clean_up_was_kept_dont_ask_again(sliced, mo
     monkeypatch.setattr(inst.processing, "denoise", True)
     m = m.model_copy(update={"cleanup": "", "denoised": True})  # as written before the clean-up was kept
     assert sliced_cleanup(inst, m) == cleanup_setup(inst) == "denoise 12"
-    monkeypatch.setattr(inst.processing, "low_cut", True)
-    assert sliced_cleanup(inst, m) != cleanup_setup(inst)
+    plain = m.model_copy(update={"denoised": False})  # sliced without denoising
+    assert sliced_cleanup(inst, plain) != cleanup_setup(inst)
+
+
+def test_a_single_sample_has_no_pitch_to_cut_below(tmp_path, monkeypatch):
+    from vinst import defaults, lowcut
+    from vinst.spec import InstrumentType
+
+    assert lowcut.applies(defaults.new_instrument("Uke", InstrumentType.PLUCKED))
+    assert not lowcut.applies(defaults.new_instrument("Drone", InstrumentType.SINGLE_SAMPLE))
+    assert not lowcut.applies(defaults.new_instrument("Kit", InstrumentType.UNPITCHED))

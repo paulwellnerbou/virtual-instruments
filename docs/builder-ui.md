@@ -1,127 +1,123 @@
-# Instrument builder UI
+# User guide
 
-A local app (`vinst ui`, opened in the browser) that walks through creating an instrument of any type.
+The builder walks you through seven steps, from describing your instrument to a finished DecentSampler instrument. Everything is saved as you go.
 
-- Every answer is saved to `instruments/<name>/instrument.toml`. The file stays readable and hand-editable. The UI is only an editor for it plus the processing steps.
-- An instrument can be duplicated as the starting point for the next one, e.g. a second ukulele from the first.
-- **Delete** removes an instrument after asking: its settings, review decisions and builds go to the Trash (on macOS); its recordings, sliced samples and the copy installed in DecentSampler's library stay. An editor still open on it no longer saves.
+On the start page you can create, open, **duplicate** and **delete** instruments. Duplicating is a quick start for the next instrument of the same kind, e.g. a second ukulele. Delete moves the instrument's settings, review decisions and builds to the Trash; your recordings, sliced samples and the copy installed in DecentSampler stay.
 
-## Steps
+## 1. Instrument
 
-### 1. Instrument
-- Name, author, version, description.
-- **Type**, which fills in sensible defaults for everything after it:
+Name, author, version and description, and the **type**, which fills in sensible defaults for everything after it:
 
 | Type | Examples | Defaults |
 |---|---|---|
-| Plucked / struck string | ukulele, harp, mandolin | decaying, no loop, 3 velocity layers, 4 round robins, release noise, strings + tuning, strum option |
-| Pitched percussion | metallophone, sansula, kalimba | decaying, no loop, 3 velocity layers, 3 round robins |
-| Sustained | violin, clarinet, flute, found-sound pads | looped, attack and release knobs, 1–2 velocity layers |
-| Unpitched percussion | body knocks, drums | one-shot, one sample per key, many round robins |
+| Plucked / struck string | ukulele, harp, mandolin | strings and tuning, 3 velocities, 4 variations per note, release noise |
+| Pitched percussion | metallophone, sansula, kalimba | 3 velocities, 3 variations |
+| Sustained | violin, clarinet, flute, pads | looped notes, attack and release knobs, 1–2 velocities |
+| Unpitched percussion | body knocks, drums | one sound per key, many variations |
 | Single sample | a found sound | one sample stretched across a key range |
 
-### 2. Signals
-- The recorded sources, e.g. a pickup, an external mic, a DI. Each one becomes a group in the instrument.
-- **Together:** recorded at the same time as the other “together” signals. They come from the same performance, are cut at identical positions, and a mix knob blends them.
-- **Own pass:** recorded in a separate run through all takes, e.g. piezo and internal mic that share one output and are switched inside the instrument. Each pass is sliced on its own, with its own noise floor. In the instrument, passes either **switch** via a menu (the default) or **layer**: played together, which sounds like two players in unison. This is set in step 6.
+Under **Samples**, choose whether to record new takes or [import existing samples](#importing-existing-samples).
 
-### 3. Range
-- **String instruments:** the strings with their tuning and fret count, e.g. G C E A, re-entrant or low G.
-  - The range and the string/fret for each note are derived from this.
-- **Everything else:** lowest and highest note.
-- **Sampling density:** chromatic, every 2nd note, or every 3rd note. Unsampled notes are filled by stretching neighbours.
-- **Beyond the recorded notes:** the lowest and highest samples can be stretched further down and up, by up to 24 semitones; the step shows the resulting playable range. This only changes the built instrument, so nothing needs recording or slicing again.
+## 2. Signals
 
-### 4. Dynamics and extras
-- **Velocities:** the dynamics every note is recorded at, quietest first, e.g. p and f, each in its own take. A slider per velocity sets where it starts ("f starts at velocity 80"), with a bar showing each one's range; the default is an even split.
-- **Variations per velocity:** how often each note is played per lane; DecentSampler alternates between them.
-- These are **defaults**: in the worksheet, single notes can get their own velocities and ranges. Changing the defaults never needs new slicing, because a hit's velocity comes from its take.
-- Ring time per hit, noise-floor length, and **extras**: release noises, chucks, body knocks, each its own take.
+What you record, e.g. a pickup, a microphone or a DI. Each becomes its own sound in the instrument.
 
-### 5. Worksheet
-Recording, slicing and review in one place, replacing the earlier recording sheet and review steps.
-- **At the top:** the takes folder, sample rate and bit depth, the audio interface and which input each signal is plugged into ("Detect" finds it), where the sliced samples go, denoising and loops, and "Slice all" for takes exported from a DAW.
-- **The noise floor** and every **extra** get a row with ● to record it and its hits.
-- **One card per note, one row per velocity:**
-  - a vertical slider beside the rows, from velocity 1 at the top to 127 at the bottom, with a dot per boundary: dragging a dot moves where the next velocity starts for this note, and gives the note custom velocities. The ranges always join up;
-  - ● records the velocity (a count-in, then one hit per bar with a visual metronome; set how many hits in the dialog before you press Record); once it's recorded, ● records more hits beside the ones there instead of replacing them, so you compare them all and reject the bad ones. The noise floor and extras are single takes, so ● records them again. ▶ plays the kept hits with their attacks 0.75 s apart;
-  - the row's hits side by side, each cut from its recording's waveform and as wide as it is long (all rows of a note to the same scale), whichever recording it comes from; rejected ones are dimmed. Each hit's tuning and attack loudness are below it, the tuning in the colour of its flags. Click a hit to review it; **drag it to another velocity** to move it, and it keeps that velocity when slicing again. **Re-slice** in a hit's dialog finds the hits of just that recording again (decisions stay with hits still cut where they were). Found one in the wrong place? **Drag the blue lines** on the dialog's waveform to set where the hit starts and ends: the recording's cuts are then kept as set by hand (also when slicing again, until the file changes), and **Find hits automatically** goes back. A recording in which no hit was found shows a **no hit found** tile in its row: open it to mark the hit by hand, re-slice it or move it. Played a take on the wrong note? **Move this recording…** in a hit's dialog renames its files to another note and velocity (as more hits there if that one is recorded already) and slices it there;
-  - **drop an audio file** (WAV, AIFF, FLAC, e.g. exported from Cubase or WaveLab) onto a row: it becomes that velocity's take, or more variations if the velocity is already recorded, so nothing is overwritten. With several signals per take, the signal id must be in the file name;
-  - below the rows, the waveform of each recording with its cut regions.
-- **"+ velocity"** adds a velocity to one note only (e.g. an ff for the low strings), × removes an empty one, and "Use default velocities" goes back to the defaults. Recordings of a removed velocity stay with the note; their hits show under "No velocity" until dragged into one.
-- **Takes:** one per note and lane, `<note>_<lane>_<signal>.wav`. More variations recorded later are `<note>_<lane>-more<n>_<signal>.wav`. Every hit in a lane take is a variation of that lane, however many there are; the planned number is only a guide.
-- **Takes from before lanes,** which held all dynamics in one file (`<note>_<signal>.wav`), still count: their hits start in the note's first lane, to be dragged into the right ones.
-- **Recording in the app** slices that recording right away. A take is written to a temporary file and only replaces the existing one when it finishes; Cancel, a failed write, the interface stopping mid-take or leaving the page all keep the old take. The count-in isn't recorded, apart from half a second of pre-roll. The app refuses to record when the interface runs at another sample rate than the instrument, or when the chosen interface isn't connected.
-- **The hit dialog:** details, a player for each signal, Rejected, Use loop, "Move to lane", and "Record a new one instead", which records one more variation and rejects this hit once it's saved.
-- **Slicing:**
-  - Onsets are detected on a normalised mix of all signals, so every signal of a hit is cut at the same samples.
-  - Each hit gets 5 ms of pre-roll, and its tail is trimmed 6 dB above the noise floor. The noise floor comes from the noise-floor recording, or is estimated from the take. Optional denoising (off by default) uses the same recording as the noise profile; it only changes the sliced samples, never the takes.
-  - **Low cut** (optional, off by default): lowers what lies below each note's own pitch, e.g. the thump of a pluck on a ukulele's body; unpitched sounds stay as they are. Both are adjustable: below which share of the note's pitch (default 75 %) and by how much (default 12 dB). The note itself, from its pitch up, stays as it is; the cut follows each note, as a fixed filter would cut into the pitch of the low notes. Loudness is measured after the cut. Changing the low cut or denoising asks you to slice again.
-  - Each hit is DC-removed and gets a 50 ms fade-out.
-  - Takes recorded in the app keep their click grid: each hit is the strongest onset in its bar, so handling noise (a piezo hears every touch) never becomes a hit. A noise during the ring ends the hit before it, so it isn't in the sample.
-- **Pitch:** YIN, restricted to ±5 semitones around the expected note, refined by a spectral peak with parabolic interpolation (YIN reads about 4 cents sharp on decaying notes); accurate to well under 1 cent on test tones.
-- **Flags:** wrong note (>50 cents), clipped, no pitch, cut off, out of tune (>20 cents; info only, the instrument corrects tuning), and loudness that fits another lane of the note better. A note whose lanes don't get louder in order is reported.
-- **Decisions** (rejections, moved lanes, loops turned off) are stored in `hits.json` and survive slicing again, as long as that recording is unchanged.
-- **Changed recordings:** takes recorded, changed or deleted since slicing are listed, and the build refuses until they're sliced again.
-- **Better hit finding:** when the app finds hits differently than when the takes were sliced, the worksheet says so; slicing again keeps decisions and cuts set by hand.
-- **Loops** (optional; on by default for sustained and single-sample instruments): loop markers in the takes (a WAV `smpl` chunk, e.g. saved by WaveLab) are used as is; otherwise the steady part of each note is searched for the loop whose end best matches its start. Weak loops are flagged, the hit dialog previews the loop repeating, and "Use loop" turns a single hit's loop off.
-- An **"Only problems"** filter hides notes that need no attention.
+- **Together:** recorded at the same time as the other "together" signals, e.g. pickup and mic on two inputs. They're cut at the same points, and a knob blends them.
+- **Own pass:** recorded in a separate run through all notes, e.g. a piezo and an internal mic that share one output. In the instrument, passes either **switch** via a menu or **layer** (play together, like two players in unison); set in step 6.
 
-### Importing existing samples (implemented)
-- **Choose it in step 1**, under "Samples": "Import existing samples" instead of "Record new takes". Step 3 isn't needed then, and step 4 only uses the lane names.
-- **The worksheet reads a folder of already-cut samples**, one note per file, subfolders included (WAV, AIFF, FLAC).
-- **Notes:**
-  - A file's note comes from its name, either a note name ("C3", "F#4", "Eb2") or a MIDI number ("055").
-  - Each candidate is confirmed by measuring the pitch from the attack, so the octave convention of a name (middle C = C3 or C4) is settled by the audio. The setting only matters when the pitch can't be measured.
-  - Files without a usable name get their note from the pitch alone. Their periodicity is checked, so noise isn't mistaken for a low note.
-  - Names that disagree with the pitch are flagged. Files that end up with no note are listed as "Not imported".
-- **Velocity lanes:**
-  - a lane name in the file name ("_mf_"),
-  - otherwise a velocity number ("v2"), ranked,
-  - otherwise the samples of each note are spread over the lanes by loudness.
+## 3. Range
 
-  Several samples in one lane become variations, ordered by "rr"/"take" numbers or the file name.
-- **Signals:** files whose names contain a signal id ("_piezo", "_mic") are paired into one hit. A hit missing a signal's file is flagged and left out.
-- **Loops:** markers stored in the file are used; otherwise the loop search applies.
-- **Files** are copied under uniform names into `instruments/<slug>/imported-samples`; the imported folder is only read.
-- **Afterwards** everything works as for recorded takes: review, rejections, loudness balancing and building. Changing the folder's contents asks you to import again.
+- **String instruments:** the strings with their tuning and number of frets, e.g. G C E A, re-entrant or low G. Each note is recorded once, on the string where it's played at the lowest fret.
+- **Everything else:** the lowest and highest note.
+- **Sampling density:** every note, every 2nd or every 3rd. Notes in between are played by stretching their neighbours.
+- **Beyond the recorded notes:** stretch the lowest and highest samples further down and up. This only changes the built instrument; nothing needs recording again. More than 2–3 semitones starts to sound unnatural.
 
-### 6. Sound and look (implemented)
-- **Tuning correction:** off, partial (a share of the measured cents) or full. This writes each sample's `tuning`.
-- **Mapping:**
-  - Every recorded note is stretched to the midpoint with its neighbours; the upper one is pitched down.
-  - Gaps from unrecorded or unusable takes are covered the same way.
-  - The lowest and highest samples can be stretched further (set in step 3).
-- **Neighbour round robins** (off, ±1 or ±2 semitones): each key also cycles through nearby notes' hits, pitched to fit.
-- **Velocity:** each note plays its own lanes with their velocity ranges. A lane without usable hits gives its range to the next lower lane.
-- **Round robins** are renumbered per key and velocity cell, so rejected hits leave no silent gaps.
-- **Extras:** played on key release (a `trigger="release"` group), on their own key (with random round robins), or not used.
-- **Even out loudness** (optional): every sample of a velocity is brought to that velocity's median loudness over all notes (the attack for plucked and struck sounds, the held part for sustained ones), by at most ±18 dB by default. Notes and the hits within a note then play alike, while soft velocities stay softer than loud ones. The correction goes into the bundle's copies of the samples; the audio files are untouched.
-- **Level:** recordings keep their level, often well below full scale. The build makes the instrument as loud as its notes need: the median loudness of its loudest velocity (the attack, or the held part of sustained sounds) at −16 dBFS. The gain goes into the bundle's copies of the samples (with each sample's evening-out correction), and a 2 ms limiter holds their peaks, mostly the click at the start of a pluck, under −1 dBFS. Sliced samples and takes stay as they are; the build reports the gain and how many samples were limited.
+Note names follow DecentSampler: middle C is C3 (MIDI 60).
+
+## 4. Dynamics and extras
+
+- **Velocities:** the dynamics every note is recorded at, quietest first, e.g. p and f, each in its own take. A slider sets where each one starts ("f starts at velocity 80").
+- **Variations per velocity:** how many hits of each note and velocity to record; DecentSampler alternates between them, so repeated notes don't sound mechanical.
+- These are **defaults**: in the worksheet, a single note can get its own velocities and ranges.
+- How long each hit rings, the length of the noise-floor recording, and **extras**: release noises, chucks, body knocks, each recorded as one take.
+
+## 5. Worksheet
+
+Record, check and fix everything in one place.
+
+**Beside the notes** are the settings for recording: the takes folder, sample rate and bit depth, your audio interface and which input each signal is plugged into ("Detect" finds it while you play), and where the sliced samples go, with optional denoising and loops.
+
+**The noise floor** comes first: 30 seconds of silence, which tells the builder what is noise and what is your instrument. Below it is a card for each note and one row for each **extra**.
+
+![The worksheet](images/worksheet.png)
+
+### Recording
+
+- **● on a row** records it: a count-in, then one hit per bar, guided by a visual metronome. Choose how many hits before you press Record.
+- Once a velocity is recorded, ● records **more hits** beside the ones you have, so you can compare them all and reject the weak ones. The noise floor and extras are single takes, so ● records them again.
+- A recording only replaces the old one when it finishes: cancelling or a problem with the interface keeps what you had. The app won't record when the interface runs at another sample rate than the instrument.
+- **Recorded elsewhere?** Drop an audio file (WAV, AIFF, FLAC) from your DAW onto a row. It becomes that velocity's take, or more hits if the velocity is already recorded, so nothing is overwritten. With several signals per take, put the signal's name in the file name (e.g. `…_piezo.wav`).
+- Files in the takes folder are named `<note>_<velocity>_<signal>.wav`, e.g. `060_C-0_p_pickup.wav`; more hits recorded later are `…_p-more1_pickup.wav`. Files you put there yourself are picked up with **Slice them**.
+
+### Checking
+
+- Each recording is **cut into hits** right away. A row shows its hits side by side, as wide as they are long, with each hit's **tuning** and **attack loudness** below it.
+- **Flags** in colour: wrong note (more than 50 cents off), clipped, no pitch found, cut off, out of tune (more than 20 cents; just for information, as the instrument corrects tuning), and a hit whose loudness fits another velocity better. A note whose velocities don't get louder in order is reported too.
+- **▶** plays a row's kept hits one after another, their attacks 0.75 s apart, so you can compare them.
+- **Show only notes with problems** hides the notes that need no attention.
+
+### Fixing
+
+Click a hit to open it:
+
+![Reviewing a hit](images/hit-review.png)
+
+- **Rejected** leaves it out of the instrument. **Record a new one instead** records one more hit and rejects this one once the new one is saved.
+- **Move to velocity**, or drag the hit onto another row of the same note.
+- **Drag the blue lines** to change where the hit starts and ends. The cuts you set are kept, also when slicing again; "Find hits automatically" goes back.
+- **Re-slice** finds the hits of just this recording again.
+- **Move this recording…** if you played a take on the wrong note: its files go to the right note and velocity.
+- A recording in which no hit was found shows a **no hit found** tile; open it to mark the hit by hand.
+
+Your decisions are kept when you slice again, as long as the recording hasn't changed. If recordings were added, changed or deleted since slicing, the worksheet lists them, and the build waits until they're sliced again. After an update that finds hits better, the worksheet suggests slicing again; that keeps your decisions and the cuts you set.
+
+### Velocities per note
+
+- Drag the dots on the slider beside a note to set where its next velocity starts.
+- **+ velocity** adds a velocity to this note only, e.g. an ff for the low strings; × removes an empty one; **Use default velocities** goes back to step 4's.
+- Hits of a removed velocity stay with the note under "No velocity" until you drag them into one.
+
+### Loops
+
+For sustained sounds (on by default for sustained and single-sample instruments): notes keep playing while the key is held. Loop markers saved in the file (e.g. by WaveLab) are used as they are; otherwise the builder searches each note for a loop. Weak loops are flagged, the hit dialog lets you hear the loop repeat, and "Use loop" turns it off for one hit.
+
+## Importing existing samples
+
+Choose **Import existing samples** in step 1 to build from a folder of already-cut samples, one note per file (WAV, AIFF, FLAC, subfolders included). Step 3 isn't needed then, and step 4 only uses the velocity names. The folder is only read; the files are copied into the instrument.
+
+- **Notes** come from the file name, as a note name ("C3", "F#4", "Eb2") or a MIDI number ("055"). The builder checks each against the measured pitch, which also settles whether the names use middle C = C3 or C4. Files without a usable name get their note from the pitch alone; names that disagree with the pitch are flagged, and files without a note are listed as "Not imported".
+- **Velocities** come from a velocity name in the file name ("_mf_"), otherwise a velocity number ("v2"), otherwise each note's samples are spread over the velocities by loudness. Several samples for one velocity become variations, ordered by "rr" or "take" numbers or by file name.
+- **Signals:** files whose names contain a signal name ("_piezo", "_mic") are paired into one hit.
+
+After importing, the worksheet works as for recorded takes. Change the folder's contents and it asks you to import again.
+
+## 6. Sound and look
+
+- **Tuning correction:** off, partial (keeps some natural detune) or full.
+- **Mapping:** keys between recorded notes play the recorded note above them, pitched down, as pitching down sounds more natural than pitching up. Unrecorded or unusable notes are covered the same way. **Neighbour round robins** (±1 or ±2 semitones) also cycle each key through nearby notes' hits, for more variation.
+- **Even out loudness** (optional): brings every sample of a velocity to that velocity's typical loudness, so notes play alike while soft velocities stay softer than loud ones.
+- **Low cut** (optional): lowers what lies below each note's own pitch, e.g. the thump of a pluck on a ukulele's body. It follows each note, so it never cuts into the low notes. Only pitched notes are affected, never extras or unpitched sounds. It's applied when building, so you can change it, build and listen without slicing again.
+- **Level:** recordings often sit well below full scale; the build makes the instrument as loud as it needs to be and keeps the peaks from clipping.
+- **Extras:** play on key release, on their own key, or not at all.
 - **Envelope:** attack, release and velocity sensitivity.
-- **Knobs:** signal mix (an equal-power crossfade for two signals, one volume per signal for more), tone (lowpass), attack, release, reverb, chorus, release-noise volume. CC1 drives the tone knob.
-- **Look:** background image (812 × 375), background and text colours, and a live preview.
+- **Knobs:** signal mix, tone, attack, release, reverb, chorus, release-noise volume. The mod wheel drives the tone knob.
+- **Look:** background image (812 × 375 px), background and text colours, with a live preview.
 
-### 7. Build (implemented)
-- Writes `build/<slug>/<Name>.dsbundle`: the preset, `Samples/` (only used, non-rejected hits, copied incrementally), `Images/` and `DSLibraryInfo.xml`.
-- **Validation:**
-  - the vendored DecentSampler XSD and the engine's vocabulary of binding parameters, types and levels
-  - sample files, with exact case
-  - key and velocity coverage of every note group
-  - round-robin positions
-- Installs into the DecentSampler library folder, refusing to replace bundles this tool didn't create.
-- Packages `<Name>-<version>.dslibrary`, a zip with the bundle folder at the top.
+Only the built instrument changes here; your recordings and sliced samples stay as they are.
 
-## Technology
+## 7. Build
 
-The proposal is **Python only**. The backend does the audio work (slicing, pitch detection) anyway.
+**Build** creates the instrument and checks it: the preset against DecentSampler's format, that every sample file exists, that every key and velocity is covered, and the variations. Warnings and errors are listed. You can build before everything is recorded, e.g. to try the first few notes.
 
-- **Candidate:** [NiceGUI](https://nicegui.io), which provides wizard steps, file pickers, audio playback and charts for waveforms, without a separate frontend build.
-- **Alternative if NiceGUI feels limiting:** a FastAPI backend with a small HTML frontend.
-
-## Build order
-
-1. Spec format and core: notes, signals, range, layers. Then the recording sheet (steps 1–5). This is enough to go and record.
-2. Slicing, analysis and the review grid (step 6), tested against the first real takes.
-3. Preset generation, validation and install (steps 7–8). This produces the first playable ukulele.
-4. Strum page (chord sequences from the single notes, re-entrant or low-G voicing) and the other instrument types, including loops for sustained instruments. Import an existing sample library as a test.
+- **DecentSampler:** **Install into DecentSampler** copies it into your DecentSampler library folder (`~/DecentSampler`), replacing only instruments this builder created. **Package .dslibrary** makes a single file to share. **Show in Finder** shows the built instrument.
+- **Soundfont:** the same instrument as an SF2 file, for MuseScore and other SF2 players, which play it without DecentSampler. SF2 has no variations, so each key and velocity always plays one sample (its own note's, the best in tune), and release noises are left out. **Download** saves it; **Copy to MuseScore** puts it into `~/Documents/MuseScore4/SoundFonts` (never over a soundfont made elsewhere): restart MuseScore and choose it as a staff's sound in the Mixer. **Show in Finder** shows the file.
