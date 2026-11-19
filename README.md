@@ -4,12 +4,30 @@ A framework for building [DecentSampler](https://www.decentsamples.com/product/d
 
 ## Usage
 
+### As an app (macOS)
+
+```bash
+uv run vinst install-app
+```
+
+This puts **DecentSampler Instrument Builder.app** into `~/Applications`. It always runs the builder from this checkout. Starting it (Dock, Spotlight, Finder):
+
+- starts the builder's server, unless it's already running,
+- opens the builder: in its own window if you've installed it as a Chrome app (see below), otherwise in your browser at http://127.0.0.1:4780.
+
+The launcher then quits. The server stops by itself about two minutes after the last builder page or window closes, so nothing keeps running in the background. If the builder can't start (e.g. port 4780 is taken), the launcher shows an alert with the reason. The log is `~/Library/Logs/vinst.log`, trimmed when it passes 1 MB.
+
+**Own window:** open the builder once in Chrome and install it as an app (⋮ → Cast, save and share → Install page as app). From then on, the launcher opens that window. Start the builder through the launcher, not the Chrome app itself: the Chrome app can't start the server.
+
+### For development
+
 ```bash
 uv run vinst ui
 ```
 
 Other commands:
 
+- `uv run vinst open`: what the launcher runs: starts the server if needed and opens the browser
 - `uv run vinst list`
 - `uv run vinst new "Name" --type plucked`
 - `uv run vinst sheet <slug>`: writes the recording sheet as HTML and CSV next to the spec

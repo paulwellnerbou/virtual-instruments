@@ -582,5 +582,10 @@ def step_sheet(ed: Editor) -> None:
     ed.on_change_hooks.append(table.refresh)
 
 
-def run(port: int = 8080, show: bool = True) -> None:
-    ui.run(title=APP_TITLE, port=port, show=show, reload=False, dark=None, favicon="🎸", host="127.0.0.1")
+def run(port: int = 8080, show: bool = True, idle_exit: float = 0) -> None:
+    if idle_exit > 0:
+        from vinst.ui import idle
+
+        idle.enable(idle_exit)
+    ui.run(title=APP_TITLE, port=port, show=show, reload=False, dark=None, favicon="🎸", host="127.0.0.1",
+           show_welcome_message=idle_exit <= 0)

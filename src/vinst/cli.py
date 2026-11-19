@@ -1,8 +1,10 @@
+import shutil
+from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from vinst import defaults, sheet, store
+from vinst import defaults, launcher, sheet, store
 from vinst.plan import summarize
 from vinst.spec import InstrumentType
 
@@ -13,11 +15,47 @@ app = typer.Typer(
 
 
 @app.command()
-def ui(port: int = 8080, show: bool = True) -> None:
-    """Open the instrument builder in the browser."""
+def ui(
+    port: int = 8080,
+    show: bool = True,
+    idle_exit: Annotated[float, typer.Option(help="stop after this many seconds without an open page; 0: never")] = 0,
+) -> None:
+    """Run the instrument builder and open it in the browser."""
     from vinst.ui.app import run
 
-    run(port=port, show=show)
+    run(port=port, show=show, idle_exit=idle_exit)
+
+
+@app.command("open")
+def open_(
+    port: int = launcher.APP_PORT,
+    idle_exit: Annotated[float, typer.Option(help="seconds without an open page before the server stops")] = 120,
+) -> None:
+    """Open the builder, starting its server first if needed (what the launcher app runs)."""
+    try:
+        launcher.open_builder(port, idle_exit)
+    except launcher.LaunchError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+
+
+@app.command("install-app")
+def install_app(
+    folder: Annotated[str, typer.Option(help="where to put the app")] = "~/Applications",
+) -> None:
+    """Create a macOS launcher app that runs the builder from this checkout."""
+    uv = shutil.which("uv")
+    if uv is None:
+        typer.echo("uv not found on PATH.", err=True)
+        raise typer.Exit(1)
+    try:
+        repo = launcher.project_root()
+    except launcher.LaunchError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+    bundle = Path(folder).expanduser() / f"{launcher.APP_NAME}.app"
+    launcher.write_launcher(bundle, repo, Path(uv))
+    typer.echo(f"Installed {bundle}")
 
 
 @app.command("list")
@@ -118,3 +156,7 @@ def build_(
         typer.echo(f"installed: {bundle.install(result.bundle)}")
     if package:
         typer.echo(f"packaged: {bundle.package(inst, result.bundle)}")
+
+
+if __name__ == "__main__":
+    app()
