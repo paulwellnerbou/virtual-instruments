@@ -13,8 +13,8 @@ from vinst.slicing import changed_takes
 from vinst.spec import Instrument
 from vinst.validate import Report, validate_bundle
 
-STALE_MESSAGE = ("Signals, recording passes, range, extras, layers, round robins or the loop setting changed "
-                 "since the takes were sliced. Slice again (step 6); your rejections are kept.")
+STALE_MESSAGE = ("Signals, recording passes or the loop setting changed since the takes were sliced. "
+                 "Slice again (step 5); your decisions are kept.")
 def changed_message(changed: list[str]) -> str:
     names = ", ".join(changed[:3]) + (f" and {len(changed) - 3} more" if len(changed) > 3 else "")
     return f"Recorded again since slicing: {names}. Slice again (step 6) to use the new recordings."

@@ -29,7 +29,7 @@ from vinst.spec import (
     Sound,
     slugify,
 )
-from vinst.ui import anim, keyboard, recording
+from vinst.ui import anim, keyboard, recording, theme
 from vinst.ui.build_steps import step_build, step_sound, velocity_layers
 from vinst.ui.finder import can_choose_folder, choose_folder, ensure_folder, reveal
 from vinst.ui.worksheet import step_worksheet
@@ -74,8 +74,12 @@ def not_needed(text: str) -> None:
     ui.label(text).classes("opacity-70")
 
 
+theme.apply()
+
+
 def header() -> None:
     anim.add_css()
+    theme.add_css()
     recording.add_assets()
     with ui.header().classes("items-center justify-between"):
         ui.link(APP_TITLE, "/").classes("text-white text-lg no-underline")

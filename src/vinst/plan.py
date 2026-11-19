@@ -260,7 +260,16 @@ def recorded_files(inst: Instrument, takes: list[Take] | None = None) -> int:
     if folder is None or not folder.is_dir():
         return 0
     present = _listing(str(folder), folder.stat().st_mtime_ns)
-    return sum(f in present for f in expected_files(inst, takes))
+    count = 0
+    for t in takes if takes is not None else plan_takes(inst):
+        if all(f in present for f in t.files):
+            count += len(t.files)
+        elif t.kind == "note" and t.lane == note_lanes(inst, t.note_base)[0] \
+                and all(f"{combined_base(t)}_{s}.wav" in present for s in t.signals):
+            count += len(t.files)  # a take from before lanes counts for the note's first lane
+        else:
+            count += sum(f in present for f in t.files)
+    return count
 
 
 def summarize(inst: Instrument) -> Summary:

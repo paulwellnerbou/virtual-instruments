@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 import numpy as np
 from lxml import etree
 
-from vinst.plan import Pass, Take, lane_bounds, plan_takes, recording_passes
-from vinst.review import Hit, Manifest
+from vinst.plan import Pass, Take, lane_bounds, note_lanes, plan_takes, recording_passes
+from vinst.review import Hit, Manifest, lane_of
 from vinst.spec import CONTROLS, SUSTAINED_TYPES, FX_TAG, NOTES_TAG, RELEASE_TAG, Instrument, Signal, file_token
 
 MIN_VERSION = "1.13.0"
@@ -153,6 +153,7 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
     pass_signals: dict[str, list[str]] = {}
     hit_rate: dict[str, int | None] = {}
     note_of: dict[tuple[str, int], str] = {}  # (pass, midi) -> note, for its own lanes
+    laneless = 0
     recorded: set[tuple[str, str]] = set()
 
     imported = inst.recording.source == "samples"
@@ -178,9 +179,14 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
             if t.note:
                 note_of[(t.pass_id, midi)] = t.note
                 recorded.add((t.pass_id, t.note))
+            lanes = note_lanes(inst, t.note) if t.note else None
             for h in usable(t.hits):
-                if h.layer is not None:
-                    notes[t.pass_id][midi][h.layer].append(h)
+                # Imported samples keep the importer's lanes; recorded hits follow the note's lanes.
+                lane = h.layer if lanes is None or imported else lane_of(h, t, lanes)
+                if lane is not None:
+                    notes[t.pass_id][midi][lane].append(h)
+                else:
+                    laneless += 1
             if t.hits and not usable(t.hits):
                 m.warnings.append(f"“{t.title}”: all hits rejected.")
         elif t.kind == "extra" and not imported:
@@ -201,6 +207,9 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
         if not imported else 0
     if unrecorded:
         m.warnings.append(f"{unrecorded} planned notes aren't recorded yet; neighbouring samples cover them.")
+    if laneless:
+        m.warnings.append(f"{laneless} hits have no lane (theirs was removed from the note) and are left out; "
+                          "drag them into a lane in the worksheet.")
     if not notes:
         return m
 

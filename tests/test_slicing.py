@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 from conftest import piezo_and_mic
@@ -141,11 +143,17 @@ def test_stale_files_from_previous_run_are_removed(sliced):
     mf = next(t for t in m.takes if t.base == "055_G-0_mf")
     old_file = folder / mf.hits[0].files["piezo"]
     assert old_file.exists()
-    changed = inst.model_copy(deep=True)
-    changed.dynamics.layers = ["p", "f"]  # the mf lane is gone: its samples are no longer produced
-    again = process(changed, previous=m)
+    takes = Path(inst.recording.takes_dir)
+    moved = takes / "deleted"
+    moved.mkdir()
+    for name in ("055_G-0_mf_piezo.wav", "055_G-0_mf_mic.wav"):  # the mf take is deleted
+        (takes / name).rename(moved / name)
+    again = process(inst, previous=m)
     assert not old_file.exists()
     assert (folder / next(t for t in again.takes if t.base == "055_G-0_p").hits[0].files["piezo"]).exists()
+    for name in ("055_G-0_mf_piezo.wav", "055_G-0_mf_mic.wav"):
+        (moved / name).rename(takes / name)
+    again = process(inst, previous=again)
     unrelated = folder / "my_own_file.wav"
     unrelated.write_bytes(b"")
     process(inst, previous=again)

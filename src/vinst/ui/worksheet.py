@@ -22,7 +22,7 @@ from nicegui import app, run, ui
 from vinst import loops, review, slicing, store
 from vinst.bundle import STALE_MESSAGE, changed_message
 from vinst.plan import SAFE_LANE, Take, lane_bounds, note_lanes, plan_takes, recording_passes, slicing_setup
-from vinst.review import FLAGS, Hit, Manifest, TakeResult, check_lanes, settle
+from vinst.review import FLAGS, Hit, Manifest, TakeResult, check_lanes, lane_of, settle
 from vinst.spec import NoteLanes
 from vinst.ui import recording
 from vinst.ui.anim import Collapse
@@ -125,7 +125,7 @@ def hit_color(h: Hit) -> str:
     return COLORS["rejected"] if h.rejected else COLORS[h.severity()]
 
 
-def waveform(take: TakeResult) -> str:
+def waveform(take: TakeResult, highlight: str | None = None) -> str:
     env = take.envelope
     if not env:
         return ""
@@ -137,7 +137,7 @@ def waveform(take: TakeResult) -> str:
     if take.length:
         for hit in take.hits:
             x0, x1 = hit.start / take.length * w, hit.end / take.length * w
-            c = hit_color(hit)
+            c = hit_color(hit) if highlight in (None, hit.id) else COLORS["rejected"]
             marks.append(f"<rect x='{x0:.1f}' y='0' width='{max(1, x1 - x0):.1f}' height='{h}' fill='{c}' "
                          f"fill-opacity='0.12'><title>{escape(hit.id)}</title></rect>"
                          f"<line x1='{x0:.1f}' x2='{x0:.1f}' y1='0' y2='{h}' stroke='{c}' stroke-width='1.5'/>")
@@ -346,11 +346,14 @@ def step_worksheet(ed: "Editor") -> None:
         hit = next((h for h in take.hits if h.id == hit_id), None) if take else None
         return (take, hit) if hit else None
 
-    def move(ref: str, lane: str) -> None:
+    def move(ref: str, lane: str, note: str, pass_id: str) -> None:
         found = find(ref)
         if not found or importing:
             return
         take, hit = found
+        if (take.note, take.pass_id) != (note, pass_id):
+            ui.notify("Hits can only move between the lanes of their own note.", type="warning")
+            return
         hit.layer_set = None if lane == take.lane else lane
         saved(take)
 
@@ -364,12 +367,13 @@ def step_worksheet(ed: "Editor") -> None:
         saved(take)
 
     def choose_lane(take: TakeResult, hit: Hit, lane: str) -> None:
-        move(f"{take.key}|{hit.id}", lane)
+        move(f"{take.key}|{hit.id}", lane, take.note, take.pass_id)
         open_hit(take, hit, autoplay=False)
 
     def record_instead(take: TakeResult, hit: Hit) -> None:
         """A new hit for this lane; the old one is rejected once the new one is saved."""
-        plan = next((t for t in plan_takes(inst) if t.note_base == take.note and t.lane == hit.layer
+        lane = lane_of(hit, take, note_lanes(inst, take.note))
+        plan = next((t for t in plan_takes(inst) if t.note_base == take.note and t.lane == lane
                      and t.pass_id == take.pass_id), None)
         if plan is None:
             return
@@ -387,7 +391,9 @@ def step_worksheet(ed: "Editor") -> None:
         with dialog_card:
             ui.label(f"{take.title}").classes("text-lg font-medium")
             ui.label(hit.id).classes("text-xs font-mono opacity-70")
-            facts = [("Lane", hit.layer or "–"),
+            lanes = note_lanes(inst, take.note) if take.note else []
+            lane = lane_of(hit, take, lanes) if take.note and not importing else hit.layer
+            facts = [("Lane", lane or "–"),
                      ("Length", f"{(hit.end - hit.start) / (hit.sample_rate or take.sample_rate or 1):.2f} s"),
                      ("Loudness (first 0.3 s)", f"{hit.rms_db:.1f} dBFS")]
             if hit.cents is not None:
@@ -397,9 +403,11 @@ def step_worksheet(ed: "Editor") -> None:
                 for k, v in facts:
                     ui.label(k).classes("opacity-70")
                     ui.label(v)
-            lanes = note_lanes(inst, take.note) if take.note else []
+            if take.envelope:
+                ui.label(f"Where it was cut in {take.title}").classes("text-xs opacity-60")
+                ui.html(waveform(take, hit.id), sanitize=False).classes("w-full")
             if take.kind == "note" and not importing and len(lanes) > 1:
-                ui.select({lane: lane for lane in lanes}, value=hit.layer, label="Move to lane",
+                ui.select({la: la for la in lanes}, value=lane, label="Move to lane",
                           on_change=lambda e: choose_lane(take, hit, e.value)).props("dense").classes("w-40")
             for f in hit.flags:
                 sev, text = FLAGS.get(f, ("info", f))
@@ -426,7 +434,7 @@ def step_worksheet(ed: "Editor") -> None:
                         ui.switch("Use loop", value=not hit.loop_off,
                                   on_change=lambda e: toggle_loop(take, hit, e.value))
                 with ui.row().classes("gap-1"):
-                    if take.kind == "note" and not importing and hit.layer:
+                    if take.kind == "note" and not importing and lane:
                         ui.button("Record a new one instead", icon="fiber_manual_record",
                                   on_click=lambda: record_instead(take, hit)).props("flat color=red") \
                             .tooltip("Records one more hit for this lane; this one is rejected once it's saved")
@@ -478,6 +486,9 @@ def step_worksheet(ed: "Editor") -> None:
                 lane, at = (name.value or "").strip(), int(start.value or 0)
                 if not SAFE_LANE.fullmatch(lane) or lane.lower() in {e.lower() for e in existing}:
                     ui.notify("Use a new name with letters, digits and “-” only.", type="warning")
+                    return
+                if at <= 1 or at in {lo for _, lo, _ in bounds}:
+                    ui.notify(f"Another lane already starts at velocity {at}; choose another.", type="warning")
                     return
                 entries = sorted([(lo, n) for n, lo, _ in bounds if n] + [(at, lane)])
                 entries = [(max(1, lo), n) for lo, n in entries]
@@ -560,10 +571,11 @@ def step_worksheet(ed: "Editor") -> None:
             return
         title = first.title.replace(f" · {first.lane}", "")
         own = note in inst.note_lanes
+        lanes = note_lanes(inst, note)
         by_lane: dict[str | None, list[tuple[TakeResult, Hit]]] = {}
         for r in recs:
             for h in r.hits:
-                by_lane.setdefault(h.layer, []).append((r, h))
+                by_lane.setdefault(lane_of(h, r, lanes), []).append((r, h))
         with ui.card().classes("w-full").props("flat bordered"):
             with ui.row().classes("items-center gap-2 w-full"):
                 ui.label(title).classes("font-medium")
@@ -581,15 +593,15 @@ def step_worksheet(ed: "Editor") -> None:
                 result = results_by_key.get(take.key)
                 recorded = result is not None and result.status != "missing"
                 hits = by_lane.get(lane, [])
-                with ui.row().classes("vi-lane items-center gap-1 w-full no-wrap") as row:
+                with ui.row().classes("vi-lane items-center gap-1 w-full no-wrap min-h-[44px]") as row:
                     ui.label(lane).classes("w-10 font-medium")
                     if i == 0:
-                        ui.label(f"1–{hi}").classes("w-20 text-xs opacity-70")
+                        ui.label(f"1 – {hi}").classes("w-28 text-xs opacity-70 whitespace-nowrap")
                     else:
-                        with ui.row().classes("w-20 items-center gap-0 no-wrap"):
+                        with ui.row().classes("w-28 items-center gap-1 no-wrap"):
                             # Applied on Enter or leaving the field: redrawing while typing would lose focus.
                             start = ui.number(value=lo, min=2, max=127, precision=0) \
-                                .props("dense borderless input-class=text-xs").classes("w-10") \
+                                .props("dense input-class=text-xs").classes("w-16") \
                                 .tooltip(f"Velocity where {lane} starts for this note")
                             # The typed text comes with the event: the field's value may not have reached
                             # the server yet when it loses focus.
@@ -597,7 +609,7 @@ def step_worksheet(ed: "Editor") -> None:
                                 start.on(event, js_handler="(e) => emit((e.target || {}).value)",
                                          handler=lambda e, n=note, k=i, old=lo:
                                          e.args not in (None, "", str(old)) and set_start(n, k, e.args))
-                            ui.label(f"–{hi}").classes("text-xs opacity-70")
+                            ui.label(f"– {hi}").classes("text-xs opacity-70 whitespace-nowrap")
                     record_button(take, recorded)
                     ui.button(icon="add", color=None,
                               on_click=lambda t=take: recording.record_more(ed, t.key, inst.dynamics.round_robins,
@@ -616,14 +628,16 @@ def step_worksheet(ed: "Editor") -> None:
                             .props("flat dense round size=xs").tooltip(f"Remove the {lane} lane from this note")
                 row.on("dragover", js_handler=DRAG_OVER_JS)
                 row.on("dragleave", js_handler=DRAG_LEAVE_JS)
-                row.on("drop", js_handler=DROP_JS, handler=lambda e, la=lane: move(e.args, la))
+                row.on("drop", js_handler=DROP_JS,
+                       handler=lambda e, la=lane, n=note, ps=first.pass_id: move(e.args, la, n, ps))
             orphans = by_lane.get(None, [])
             if orphans:
                 with ui.row().classes("items-center gap-1 w-full"):
                     ui.label("No lane:").classes("text-xs opacity-70")
                     for n, (r, h) in enumerate(orphans, 1):
                         chip(r, h, n)
-                    ui.label("their lane is gone; drag them into one").classes("text-xs opacity-60")
+                    ui.label("their lane was removed from this note; drag them into one, or they're left out") \
+                        .classes("text-xs opacity-60")
 
     def import_card(take: TakeResult) -> None:
         label, color = STATUS[take.status]
@@ -693,5 +707,19 @@ def step_worksheet(ed: "Editor") -> None:
                 for t in extras:
                     take_row(t, results_by_key.get(t.key))
 
+    def shown() -> str:
+        """What the worksheet depends on in the spec; other edits (a name, a colour) don't redraw it."""
+        return repr((rec.takes_dir, rec.samples_dir, rec.source, inst.note_lanes, inst.preset.velocity_splits,
+                     [(t.key, t.files, t.hits, t.title) for t in plan_takes(inst)]))
+
+    state["shown"] = shown()
+
+    def spec_changed() -> None:
+        now = shown()
+        if now != state["shown"]:
+            state["shown"] = now
+            state["stale"] = None
+            results.refresh()
+
     results()
-    ed.on_change_hooks.append(lambda: (state.update(stale=None), results.refresh()))
+    ed.on_change_hooks.append(spec_changed)

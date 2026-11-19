@@ -98,7 +98,15 @@ def settle(take: TakeResult, lanes: list[str]) -> None:
         return
     take.status = "ok"  # a lane take holds variations of one dynamic: any number of hits is fine
     for h in take.hits:
-        h.layer = h.layer_set if h.layer_set in lanes else take.lane if take.lane in lanes else None
+        h.layer = lane_of(h, take, lanes)
+
+
+def lane_of(hit: Hit, take: "TakeResult", lanes: list[str]) -> str | None:
+    """The lane a recorded hit plays in, given its note's current lanes; None if that lane is gone.
+
+    Worked out where it's used, so a change to a note's lanes shows at once, before slicing again.
+    """
+    return hit.layer_set if hit.layer_set in lanes else take.lane if take.lane in lanes else None
 
 
 def check_lanes(results: list["TakeResult"], lanes: list[str]) -> None:

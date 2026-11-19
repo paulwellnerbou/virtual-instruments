@@ -266,12 +266,44 @@ def recordings(inst: Instrument, takes_dir: Path) -> list[Take]:
         for n in more_numbers(t, takes_dir):
             out.append(replace(t, base_name=more_base(t, n), files=[more_file(t, n, s) for s in t.signals],
                                origin="more", title=f"{t.title} · more ({n})", hits=0))
-        if t.lane == note_lanes(inst, t.note_base)[0]:
-            files = [f"{combined_base(t)}_{s}.wav" for s in t.signals]
+        lanes = note_lanes(inst, t.note_base)
+        if t.lane != lanes[0]:
+            continue
+        files = [f"{combined_base(t)}_{s}.wav" for s in t.signals]
+        if all((takes_dir / f).exists() for f in files):
+            out.append(replace(t, base_name=combined_base(t), files=files, origin="combined",
+                               title=t.title.replace(f" · {t.lane}", " · all lanes in one take"), hits=0))
+        # Recordings of lanes this note no longer has: their hits stay, without a lane, so they
+        # can be dragged into one, and hits already moved out of them keep their place.
+        note_title = t.title.replace(f" · {t.lane}", "")
+        for lane, number in sorted(lane_files(t, takes_dir), key=lambda f: (f[0], f[1] or 0)):
+            if lane in lanes:
+                continue
+            base = f"{t.note_base}_{lane}" + (f"-more{number}" if number else "")
+            files = [f"{base}_{s}.wav" for s in t.signals]
             if all((takes_dir / f).exists() for f in files):
-                out.append(replace(t, base_name=combined_base(t), files=files, origin="combined",
-                                   title=t.title.replace(f" · {t.lane}", " · all lanes in one take"), hits=0))
+                out.append(replace(t, base_name=base, files=files, lane=lane, hits=0,
+                                   origin="more" if number else "unplanned",
+                                   title=f"{note_title} · {lane}" + (f" · more ({number})" if number else "")
+                                   + " (lane removed)"))
     return out
+
+
+LANE_FILE = re.compile(r"^_(?P<lane>[A-Za-z0-9-]+?)(?:-more(?P<n>\d+))?_(?P<sig>.+)\.wav$")
+NOT_A_LANE = re.compile(r"^(hit\d+(-\d+)?|add-.*)$")  # single-hit files of an earlier version
+
+
+def lane_files(take: Take, takes_dir: Path) -> set[tuple[str, int | None]]:
+    """(lane, "more" number) of the lane recordings of a take's note that exist on disk."""
+    if not takes_dir.is_dir() or not take.signals:
+        return set()
+    sig = take.signals[0]
+    found = set()
+    for path in takes_dir.glob(glob.escape(take.note_base) + f"_*_{sig}.wav"):
+        m = LANE_FILE.match(path.name[len(take.note_base):])
+        if m and m["sig"] == sig and not NOT_A_LANE.match(m["lane"]):
+            found.add((m["lane"], int(m["n"]) if m["n"] else None))
+    return found
 
 
 def process_take(inst: Instrument, take: Take, takes_dir: Path, out_dir: Path,

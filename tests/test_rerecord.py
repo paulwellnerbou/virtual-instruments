@@ -163,7 +163,8 @@ def test_hits_of_a_removed_lane_are_left_out(uke):
     review.save(process(uke), store.manifest_path(uke.meta.slug))
     uke.note_lanes[take.note_base] = NoteLanes(layers=["p"])  # this note now has only a p lane
     m = process(uke, previous=review.load(store.manifest_path(uke.meta.slug)))
-    assert all(r.key != take.key for r in m.takes)  # the f take isn't planned any more
+    kept = result(m, take.key)  # not planned any more, but kept so its hits can be dragged into a lane
+    assert kept.origin == "unplanned" and all(h.layer is None for h in kept.hits)
     review.save(m, store.manifest_path(uke.meta.slug))
     built = bundle.build(uke)
     vels = {(s.get("loVel"), s.get("hiVel")) for s in etree.parse(str(built.preset_file)).iter("sample")
@@ -212,3 +213,59 @@ def test_compare_plays_the_attacks_one_after_another(uke):
     assert abs(audio[step - 1]) < 1e-6  # faded out before the next attack
     with pytest.raises(Exception):
         compare_file(uke.meta.slug, ["../instrument.toml"])
+
+
+def test_a_removed_lane_keeps_its_recording_and_moved_hits(uke):
+    p, f = lane(uke, "p"), lane(uke, "f")
+    write(uke, p.files[0], take_audio(p, (0.2, 0.22)))
+    write(uke, f.files[0], take_audio(f, (0.7, 0.72)))
+    m = process(uke)
+    f_take = result(m, f.key)
+    f_take.hits[0].layer_set = "p"  # dragged into p
+    review.settle(f_take, ["p", "f"])
+    uke.note_lanes[f.note_base] = NoteLanes(layers=["p"])  # then the f lane is removed from the note
+    again = process(uke, previous=m)
+    kept = result(again, f.key)
+    assert kept.origin == "unplanned" and "lane removed" in kept.title
+    assert [h.layer for h in kept.hits] == ["p", None]  # the moved one stays in p, the other has no lane
+    review.save(again, store.manifest_path(uke.meta.slug))
+    built = bundle.build(uke)
+    assert any("have no lane" in w for w in built.warnings)
+    paths = {s.get("path").split("/")[-1] for s in etree.parse(str(built.preset_file)).iter("sample")}
+    assert kept.hits[0].files["pickup"] in paths and kept.hits[1].files["pickup"] not in paths
+
+
+def test_lanes_follow_a_change_before_slicing_again(uke):
+    from vinst.review import lane_of
+
+    p, f = lane(uke, "p"), lane(uke, "f")
+    write(uke, f.files[0], take_audio(f, (0.7, 0.72)))
+    write(uke, p.files[0], take_audio(p, (0.2, 0.22)))
+    m = process(uke)
+    r = result(m, f.key)
+    assert [lane_of(h, r, ["p"]) for h in r.hits] == [None, None]  # f removed: no lane, at once
+    review.save(m, store.manifest_path(uke.meta.slug))
+    uke.note_lanes[f.note_base] = NoteLanes(layers=["p"])
+    built = bundle.build(uke)  # not sliced again: the f take is reported, its hits stay out
+    assert any("not in the current plan" in w for w in built.warnings)
+    paths = {s.get("path").split("/")[-1] for s in etree.parse(str(built.preset_file)).iter("sample")}
+    assert not any(h.files["pickup"] in paths for h in r.hits)
+
+
+def test_files_of_earlier_versions_are_not_lanes(uke):
+    from vinst.slicing import recordings
+
+    p = lane(uke, "p")
+    write(uke, f"{p.note_base}_hit3_{p.signals[0]}.wav", take_audio(p, (0.2,)))
+    write(uke, f"{p.note_base}_add-f-1_{p.signals[0]}.wav", take_audio(p, (0.2,)))
+    takes_dir = store.instrument_dir(uke.meta.slug).parent.parent / "takes"
+    assert not [t for t in recordings(uke, takes_dir) if t.origin == "unplanned"]
+
+
+def test_takes_from_before_lanes_count_as_recorded(uke):
+    from vinst.plan import summarize
+
+    p = lane(uke, "p")
+    assert summarize(uke).recorded_files == 0
+    write(uke, f"{combined_base(p)}_{p.signals[0]}.wav", take_audio(p, (0.2, 0.7)))
+    assert summarize(uke).recorded_files == 1
