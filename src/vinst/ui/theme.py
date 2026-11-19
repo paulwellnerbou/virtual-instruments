@@ -12,7 +12,8 @@ CSS = f"""
 .q-dialog .q-card {{ border-radius: 16px !important; }}
 .q-btn:not(.q-btn--round) {{ border-radius: {SMALL_RADIUS}; }}
 .q-btn-group {{ border-radius: {SMALL_RADIUS}; overflow: hidden; }}
-.q-btn-group > .q-btn {{ border-radius: 0; }}
+/* More specific than the rule above, so a toggle's segments stay square inside the rounded group. */
+.q-btn-group > .q-btn:not(.q-btn--round) {{ border-radius: 0; }}
 .q-field--outlined .q-field__control {{ border-radius: {SMALL_RADIUS}; }}
 .q-field--outlined .q-field__control:before {{ border-color: rgba(0, 0, 0, .2); }}
 .q-chip {{ border-radius: 6px !important; }}
@@ -28,12 +29,13 @@ _applied = False
 
 
 def apply() -> None:
-    """Once per process: every input-like element is drawn as an outlined box."""
+    """Once per process: every input-like element is drawn as an outlined box, at its usual height
+    (compact only where an element asks for it)."""
     global _applied
     if _applied:
         return
     for element in (ui.input, ui.number, ui.select, ui.textarea):
-        element.default_props("outlined dense")
+        element.default_props("outlined")
     _applied = True
 
 
