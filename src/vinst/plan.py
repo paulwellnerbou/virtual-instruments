@@ -164,6 +164,10 @@ def slicing_setup(inst: Instrument) -> str:
     Stored in hits.json; when it no longer matches, the hits don't fit the spec any more (e.g. a
     signal moved to its own pass, a layer was renamed) and the takes must be sliced again.
     """
+    if inst.recording.source == "samples":
+        from vinst.importer import import_setup
+
+        return import_setup(inst)
     takes = [(t.key, t.kind, t.files, t.hits) for t in plan_takes(inst)]
     data = json.dumps({"takes": takes, "layers": inst.dynamics.layers, "rr": inst.dynamics.round_robins,
                        "loops": inst.processing.loops})

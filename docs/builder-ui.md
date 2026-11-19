@@ -38,6 +38,25 @@ A local app (`vinst ui`, opened in the browser) that walks through creating an i
 - A generated, printable take list: take number, note, string/fret, what to play, and the expected file name.
 - Shows the total hit count and estimated recording time.
 
+### Importing existing samples (implemented)
+- **Choose it in step 1**, under "Samples": "Import existing samples" instead of "Record new takes". Steps 3 and 5 aren't needed then, and step 4 only uses the layer names.
+- **Step 6 reads a folder of already-cut samples**, one note per file, subfolders included (WAV, AIFF, FLAC).
+- **Notes:**
+  - A file's note comes from its name, either a note name ("C3", "F#4", "Eb2") or a MIDI number ("055").
+  - Each candidate is confirmed by measuring the pitch from the attack, so the octave convention of a name (middle C = C3 or C4) is settled by the audio. The setting only matters when the pitch can't be measured.
+  - Files without a usable name get their note from the pitch alone. Their periodicity is checked, so noise isn't mistaken for a low note.
+  - Names that disagree with the pitch are flagged. Files that end up with no note are listed as "Not imported".
+- **Velocity layers:**
+  - a layer name in the file name ("_mf_"),
+  - otherwise a velocity number ("v2"), ranked,
+  - otherwise the samples of each note are spread over the layers by loudness.
+
+  Several samples in one layer become round robins, ordered by "rr"/"take" numbers or the file name.
+- **Signals:** files whose names contain a signal id ("_piezo", "_mic") are paired into one hit. A hit missing a signal's file is flagged and left out.
+- **Loops:** markers stored in the file are used; otherwise the loop search applies.
+- **Files** are copied under uniform names into `instruments/<slug>/imported-samples`; the imported folder is only read.
+- **Afterwards** everything works as for recorded takes: review, rejections, loudness balancing and building. Changing the folder's contents asks you to import again.
+
 ### 6. Import and review (implemented)
 - **Slicing:**
   - Onsets are detected on a normalised mix of all signals, so every signal of a hit is cut at the same samples.

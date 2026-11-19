@@ -31,7 +31,7 @@ Other commands:
 - `uv run vinst list`
 - `uv run vinst new "Name" --type plucked`
 - `uv run vinst sheet <slug>`: writes the recording sheet as HTML and CSV next to the spec
-- `uv run vinst slice <slug>`: cuts the recorded takes into hits, analyses them and writes `hits.json`
+- `uv run vinst slice <slug>`: cuts the recorded takes into hits (or, for an instrument that imports existing samples, imports its folder), analyses them and writes `hits.json`
 - `uv run vinst build <slug> [--install] [--package]`: generates and validates the `.dsbundle`; optionally installs it into `~/DecentSampler` and writes a `.dslibrary`
 - `uv run vinst synth-takes <slug> <folder>`: writes fake takes, with a few deliberate mistakes, for trying out slicing and review before recording
 - `uv run pytest`

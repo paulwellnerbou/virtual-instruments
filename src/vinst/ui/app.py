@@ -1,14 +1,23 @@
 """The instrument builder wizard (NiceGUI)."""
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from fastapi.responses import HTMLResponse
-from nicegui import app, ui
+from nicegui import app, run, ui
 from pydantic import ValidationError
 
-from vinst import defaults, notes, sheet, store
-from vinst.plan import Summary, playable_range, plan_takes, recording_passes, sampled_notes, summarize
+from vinst import defaults, notes, review, sheet, store
+from vinst.plan import (
+    SampledNote,
+    Summary,
+    playable_range,
+    plan_takes,
+    recording_passes,
+    sampled_notes,
+    summarize,
+)
 from vinst.spec import (
     SUSTAINED_TYPES,
     TYPE_LABELS,
@@ -20,8 +29,9 @@ from vinst.spec import (
     Sound,
     slugify,
 )
-from vinst.ui import keyboard
+from vinst.ui import anim, keyboard
 from vinst.ui.build_steps import step_build, step_sound
+from vinst.ui.finder import can_choose_folder, choose_folder, ensure_folder, reveal
 from vinst.ui.review_step import step_review
 
 APP_TITLE = "DecentSampler Instrument Builder"
@@ -46,7 +56,31 @@ def recording_status(s: Summary) -> str:
     return f"Recorded {s.recorded_files} of {s.files} take files"
 
 
+def imported_notes(inst: Instrument) -> dict[int, int] | None:
+    """note -> number of samples, from the last import; None if nothing was imported yet."""
+    try:
+        manifest = review.load(store.manifest_path(inst.meta.slug))
+    except Exception:  # unreadable hits.json is reported in step 6
+        return None
+    if manifest is None or manifest.source != "samples":  # e.g. sliced takes from before switching
+        return None
+    return {t.midi: len([h for h in t.hits if not h.rejected]) for t in manifest.takes if t.midi is not None}
+
+
+def import_status(inst: Instrument) -> str:
+    found = imported_notes(inst)
+    if not found:
+        return "Not imported yet"
+    lo, hi = min(found), max(found)
+    return f"Imported: {len(found)} notes, {sum(found.values())} samples, {notes.label(lo)} – {notes.label(hi)}"
+
+
+def not_needed(text: str) -> None:
+    ui.label(text).classes("opacity-70")
+
+
 def header() -> None:
+    anim.add_css()
     with ui.header().classes("items-center justify-between"):
         ui.link(APP_TITLE, "/").classes("text-white text-lg no-underline")
         with ui.row().classes("items-center gap-1 text-sm"):
@@ -67,13 +101,17 @@ def home() -> None:
                 ui.label(str(store.instrument_dir(slug) / store.SPEC_FILE)).classes("text-xs opacity-60")
                 ui.label(error).classes("text-sm font-mono whitespace-pre-wrap")
         for inst in instruments:
-            s = summarize(inst)
             with ui.card().classes("w-full"), ui.row().classes("w-full items-center"):
                 with ui.column().classes("gap-0 grow"):
                     ui.label(inst.meta.name).classes("text-lg font-medium")
-                    ui.label(f"{TYPE_LABELS[inst.meta.type]} · {s.range_text}").classes("text-sm opacity-70")
-                    ui.label(f"{recording_status(s)} · plan: {s.sampled} notes, {s.hits} hits, "
-                             f"~{s.sample_mb:,.0f} MB of samples").classes("text-sm opacity-70")
+                    if inst.recording.source == "samples":
+                        ui.label(f"{TYPE_LABELS[inst.meta.type]} · imported samples").classes("text-sm opacity-70")
+                        ui.label(import_status(inst)).classes("text-sm opacity-70")
+                    else:
+                        s = summarize(inst)
+                        ui.label(f"{TYPE_LABELS[inst.meta.type]} · {s.range_text}").classes("text-sm opacity-70")
+                        ui.label(f"{recording_status(s)} · plan: {s.sampled} notes, {s.hits} hits, "
+                                 f"~{s.sample_mb:,.0f} MB of samples").classes("text-sm opacity-70")
                 ui.button("Duplicate", on_click=lambda i=inst: duplicate_dialog(i)).props("flat")
                 ui.button("Open", on_click=lambda i=inst: ui.navigate.to(f"/i/{i.meta.slug}"))
 
@@ -92,6 +130,19 @@ def home() -> None:
 
                 ui.button("Create", on_click=create)
 
+        with ui.card().classes("w-full"):
+            ui.label("Settings").classes("text-lg font-medium")
+            settings = store.load_settings()
+
+            def set_recordings(value: str) -> None:
+                settings.recordings_dir = value
+                store.save_settings(settings)
+
+            folder_field("Recordings folder", settings.recordings_dir, set_recordings,
+                         "Folder where new instruments keep their takes", wide=True)
+            ui.label("New instruments record into a folder named after the instrument inside it.") \
+                .classes("text-xs opacity-60")
+
 
 def duplicate_dialog(inst: Instrument) -> None:
     with ui.dialog() as dialog, ui.card():
@@ -108,6 +159,20 @@ def duplicate_dialog(inst: Instrument) -> None:
     dialog.open()
 
 
+def folder_field(label: str, value: str, on_set: Callable[[str], None], prompt: str, wide: bool = False,
+                 **kw: Any) -> ui.input:
+    with ui.row().classes("items-center no-wrap grow gap-1" + (" w-full" if wide else "")):
+        inp = ui.input(label, value=value, on_change=lambda e: on_set(e.value), **kw).classes("grow")
+        if can_choose_folder():
+            async def choose() -> None:
+                picked = await run.io_bound(choose_folder, prompt, inp.value or "")
+                if picked:
+                    inp.set_value(picked)
+
+            ui.button("Choose…", icon="folder", on_click=choose).props("flat dense")
+    return inp
+
+
 class Editor:
     """Per-page editing state: the instrument, autosave, and the refreshable summary."""
 
@@ -121,6 +186,10 @@ class Editor:
         self.dirty = True
         if self.status:
             self.status.set_text("Unsaved…")
+        self.refresh()
+
+    def refresh(self) -> None:
+        """Redraw what depends on the instrument, e.g. after hits.json changed."""
         for hook in self.on_change_hooks:
             hook()
 
@@ -156,6 +225,10 @@ class Editor:
 
         return ui.number(label, value=getattr(obj, attr), on_change=handle, **kw)
 
+    def folder(self, label: str, obj: Any, attr: str, prompt: str, **kw: Any) -> ui.input:
+        """A path field with a "Choose…" button that opens the system's folder dialog."""
+        return folder_field(label, getattr(obj, attr), lambda v: self.set(obj, attr, v), prompt, **kw)
+
     def note(self, label: str, obj: Any, attr: str, **kw: Any) -> ui.input:
         def check(v: str) -> str | None:
             try:
@@ -184,6 +257,10 @@ def editor_page(slug: str) -> None:
     header()
     try:
         ed = Editor(store.load(slug))
+        if not ed.inst.recording.takes_dir:
+            # Instruments from before the recordings-folder setting: use its default, as new ones do.
+            ed.inst.recording.takes_dir = store.default_takes_dir(ed.inst.meta.name)
+            ed.dirty = True
     except Exception as e:  # missing or hand-edited spec that doesn't validate
         with ui.column().classes("w-full max-w-4xl mx-auto"):
             ui.label(f"Can't open “{slug}”").classes("text-2xl")
@@ -208,14 +285,21 @@ def editor_page(slug: str) -> None:
                 with ui.step("Signals", icon="settings_input_component"):
                     step_signals(ed)
                     nav(stepper)
+                importing = inst.recording.source == "samples"
                 with ui.step("Range", icon="piano"):
-                    step_range(ed)
+                    if importing:
+                        not_needed("Not needed when importing: the notes come from the samples (step 6).")
+                    else:
+                        step_range(ed)
                     nav(stepper)
                 with ui.step("Dynamics & extras", icon="graphic_eq"):
                     step_dynamics(ed)
                     nav(stepper)
                 with ui.step("Recording sheet", icon="checklist"):
-                    step_sheet(ed)
+                    if importing:
+                        not_needed("Not needed when importing existing samples.")
+                    else:
+                        step_sheet(ed)
                     nav(stepper)
                 with ui.step("Import & review", icon="content_cut"):
                     step_review(ed)
@@ -243,8 +327,18 @@ def summary_panel(ed: Editor) -> None:
     @ui.refreshable
     def body() -> None:
         inst = ed.inst
-        s = summarize(inst)
         ui.label("Summary").classes("text-lg font-medium")
+        if inst.recording.source == "samples":
+            found = imported_notes(inst) or {}
+            span = (min(found), max(found)) if found else None
+            ui.html(keyboard.render([SampledNote(midi=m) for m in found], span, []), sanitize=False) \
+                .classes("w-full")
+            ui.label(import_status(inst)).classes("text-sm font-medium")
+            ui.label(f"Signals: {', '.join(x.name for x in inst.signals) or '–'}").classes("text-sm opacity-70")
+            for p in inst.problems():
+                ui.label(f"⚠ {p}").classes("text-sm text-orange-600")
+            return
+        s = summarize(inst)
         strings = [st.name for st in inst.range.strings] if inst.range.mode == "strings" else []
         ui.html(keyboard.render(sampled_notes(inst), playable_range(inst), strings), sanitize=False) \
             .classes("w-full")
@@ -272,6 +366,19 @@ def step_instrument(ed: Editor) -> None:
             ed.text("Author", meta, "author").classes("grow")
             ed.text("Version", meta, "version").classes("w-32")
         ed.text("Description", meta, "description").props("autogrow type=textarea").classes("w-full")
+
+        def source_changed(e: Any) -> None:
+            # Each mode has its own default output folder; a folder chosen for sliced takes could
+            # be the very folder an import reads from.
+            inst.recording.samples_dir = ""
+            ed.set(inst.recording, "source", e.value)
+            ed.autosave()
+            # Steps 3–6 show different things for imports; rebuild them.
+            ui.navigate.reload()
+
+        ui.label("Samples").classes("text-sm opacity-70 mt-2")
+        ui.toggle({"takes": "Record new takes", "samples": "Import existing samples"},
+                  value=inst.recording.source, on_change=source_changed)
 
         async def type_changed(e: Any) -> None:
             new = InstrumentType(e.value)
@@ -504,6 +611,12 @@ def step_dynamics(ed: Editor) -> None:
             layers.refresh()
 
     layers()
+    if inst.recording.source == "samples":
+        ui.label("When importing: a sample whose file name contains a layer name (e.g. “_mf_”) goes to that "
+                 "layer; a velocity number like “v2” is ranked; otherwise the samples of each note are "
+                 "spread over the layers by loudness, and several samples in one layer become round "
+                 "robins.").classes("text-sm opacity-70 max-w-3xl")
+        return
     with ui.row():
         ed.number("Round robins (takes per layer)", dyn, "round_robins", min=1, max=32, precision=0).classes("w-64")
         ed.number("Ring / hold time per hit", rec, "ring_seconds", cast=float, min=0.5, max=60, step=0.5,
@@ -544,9 +657,22 @@ def step_dynamics(ed: Editor) -> None:
 
 def step_sheet(ed: Editor) -> None:
     inst, rec = ed.inst, ed.inst.recording
-    with ui.row().classes("w-full items-start"):
-        ed.text("Folder for the exported takes", rec, "takes_dir",
-                placeholder="/path/to/takes").classes("grow")
+    with ui.row().classes("w-full items-start no-wrap"):
+        takes = ed.folder("Folder for the exported takes", rec, "takes_dir", "Folder for the exported takes",
+                          placeholder=store.default_takes_dir(inst.meta.name))
+
+        def show_takes() -> None:
+            folder = Path(rec.takes_dir or store.default_takes_dir(inst.meta.name)).expanduser()
+            try:
+                ensure_folder(folder)
+            except OSError as e:
+                ui.notify(str(e), type="warning")
+                return
+            if not rec.takes_dir:
+                takes.set_value(str(folder))
+            reveal(folder)
+
+        ui.button("Show in Finder", icon="folder_open", on_click=show_takes).props("flat dense")
         ui.select([44100, 48000, 88200, 96000], label="Sample rate", value=rec.sample_rate,
                   on_change=lambda e: ed.set(rec, "sample_rate", e.value)).classes("w-32")
         ui.select([16, 24, 32], label="Bit depth", value=rec.bit_depth,
@@ -556,12 +682,17 @@ def step_sheet(ed: Editor) -> None:
         ui.button("Open printable sheet", icon="print",
                   on_click=lambda: (ed.autosave(), ui.navigate.to(f"/sheet/{inst.meta.slug}", new_tab=True)))
 
+        sheet_file = store.instrument_dir(inst.meta.slug) / sheet.HTML_NAME
+
         def write_files() -> None:
             ed.autosave()
             html_path, csv_path = sheet.write(inst, store.instrument_dir(inst.meta.slug))
             ui.notify(f"Wrote {html_path.name} and {csv_path.name} to {html_path.parent}", type="positive")
+            show.enable()
 
         ui.button("Save sheet as HTML + CSV", icon="save", on_click=write_files).props("outline")
+        show = ui.button("Show in Finder", icon="folder_open", on_click=lambda: reveal(sheet_file)).props("flat")
+        show.set_enabled(sheet_file.is_file())
 
     columns = [
         {"name": "number", "label": "#", "field": "number", "align": "right"},

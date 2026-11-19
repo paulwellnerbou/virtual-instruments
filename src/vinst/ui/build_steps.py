@@ -1,6 +1,5 @@
 """Wizard steps 7 (sound & look) and 8 (build, install, package)."""
 
-import subprocess
 from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -13,6 +12,8 @@ from vinst import bundle, store
 from vinst.plan import recording_passes
 from vinst.preset import KNOB_Y, UI_H, UI_W, VISIBLE_H, knob_layout, mixable_signals, switched_passes
 from vinst.spec import CONTROLS, Extra
+from vinst.ui.anim import Collapse
+from vinst.ui.finder import reveal
 
 if TYPE_CHECKING:
     from vinst.ui.app import Editor
@@ -90,19 +91,15 @@ def step_sound(ed: "Editor") -> None:
 
     ui.label("Tuning").classes("text-base font-medium")
     with ui.row().classes("items-center gap-4"):
-        amount = ui.slider(min=0, max=1, step=0.05, value=p.tuning_amount,
-                           on_change=lambda e: ed.set(p, "tuning_amount", e.value)).classes("w-48")
-        amount_label = ui.label().bind_text_from(p, "tuning_amount", lambda v: f"corrects {v:.0%}")
-
         def tuning_changed(e: Any) -> None:
             ed.set(p, "tuning", e.value)
-            amount.set_visibility(e.value == "partial")
-            amount_label.set_visibility(e.value == "partial")
+            partial.set_open(e.value == "partial")
 
-        ui.toggle({"off": "Off", "partial": "Partial", "full": "Full"}, value=p.tuning,
-                  on_change=tuning_changed).move(target_index=0)
-        amount.set_visibility(p.tuning == "partial")
-        amount_label.set_visibility(p.tuning == "partial")
+        ui.toggle({"off": "Off", "partial": "Partial", "full": "Full"}, value=p.tuning, on_change=tuning_changed)
+        with Collapse(p.tuning == "partial", axis="x", inner_classes="flex items-center gap-4 pr-2") as partial:
+            ui.slider(min=0, max=1, step=0.05, value=p.tuning_amount,
+                      on_change=lambda e: ed.set(p, "tuning_amount", e.value)).classes("w-48")
+            ui.label().bind_text_from(p, "tuning_amount", lambda v: f"corrects {v:.0%}").classes("whitespace-nowrap")
     ui.label("Uses the cents measured in step 6. Partial keeps some natural detune.").classes("text-xs opacity-70")
 
     if len(recording_passes(inst)) > 1:
@@ -131,10 +128,10 @@ def step_sound(ed: "Editor") -> None:
 
     with ui.row().classes("items-center gap-4"):
         ui.switch("Even out loudness between notes", value=p.balance,
-                  on_change=lambda e: (ed.set(p, "balance", e.value), max_db.set_visibility(e.value)))
-        max_db = ed.number("At most", p, "balance_max_db", cast=float, min=0.5, max=24, step=0.5,
-                           suffix="dB").classes("w-28")
-        max_db.set_visibility(p.balance)
+                  on_change=lambda e: (ed.set(p, "balance", e.value), max_db.set_open(e.value)))
+        with Collapse(p.balance, axis="x") as max_db:
+            ed.number("At most", p, "balance_max_db", cast=float, min=0.5, max=24, step=0.5,
+                      suffix="dB").classes("w-28")
     ui.label("Compares each note with its neighbours per velocity layer and corrects only the ones that "
              "stick out, through the sample volume in the instrument. The audio files stay unchanged, and "
              "the difference between soft and loud layers is kept.").classes("text-xs opacity-70 max-w-3xl")
@@ -189,15 +186,15 @@ def step_sound(ed: "Editor") -> None:
 def extra_row(ed: "Editor", x: Extra) -> None:
     with ui.row().classes("items-start gap-4"):
         ui.label(x.name).classes("w-48 mt-4")
-        key = ed.note("Key", x, "key").classes("w-28")
 
         def use_changed(e: Any) -> None:
             ed.set(x, "use", e.value)
-            key.set_visibility(e.value == "key")
+            key.set_open(e.value == "key")
 
         ui.select({"release": "Play on key release", "key": "Own key", "off": "Don't use"}, value=x.use,
-                  label="Use", on_change=use_changed).classes("w-52").move(target_index=1)
-        key.set_visibility(x.use == "key")
+                  label="Use", on_change=use_changed).classes("w-52")
+        with Collapse(x.use == "key", axis="x") as key:
+            ed.note("Key", x, "key").classes("w-28")
 
 
 def step_build(ed: "Editor") -> None:
@@ -267,12 +264,12 @@ def step_build(ed: "Editor") -> None:
         path = await run.io_bound(bundle.package, inst, state["result"].bundle)
         ui.notify(f"Wrote {path}", type="positive", multi_line=True)
 
-    def reveal() -> None:
-        subprocess.run(["open", "-R", str(state["result"].bundle)], check=False)
+    def show_bundle() -> None:
+        reveal(state["result"].bundle)
 
     build_btn.on_click(do_build)
     install_btn.on_click(do_install)
     package_btn.on_click(do_package)
-    reveal_btn.on_click(reveal)
+    reveal_btn.on_click(show_bundle)
     results()
 

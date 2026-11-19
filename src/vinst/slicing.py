@@ -194,7 +194,8 @@ def process_take(inst: Instrument, take: Take, takes_dir: Path, out_dir: Path,
                  noise_db: float | None, profiles: dict[str, np.ndarray] | None = None) -> TakeResult:
     """Slice and analyse one take. The first signal is the reference for pitch and loudness."""
     result = TakeResult(number=take.number, base=take.base_name, pass_id=take.pass_id, title=take.title,
-                        kind=take.kind, status="ok", expected_hits=take.hits)
+                        kind=take.kind, status="ok", expected_hits=take.hits,
+                        midi=take.note.midi if take.note else None, signals=take.signals)
     by_id = {s.id: s for s in inst.signals}
     take_signals = [by_id[i] for i in take.signals]
     # Hit ids must differ between passes: the same note is recorded once per pass.
@@ -346,6 +347,10 @@ def remove_stale_files(previous: Manifest, current: Manifest) -> int:
 
 
 def process(inst: Instrument, previous: Manifest | None = None, progress: Progress | None = None) -> Manifest:
+    if inst.recording.source == "samples":
+        from vinst import importer
+
+        return importer.process(inst, previous, progress)
     problems = inst.problems()
     if problems:
         raise ValueError("Fix these first: " + " ".join(problems))

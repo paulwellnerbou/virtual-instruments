@@ -9,6 +9,10 @@ from vinst.plan import plan_takes, recording_passes, summarize
 from vinst.spec import Instrument, TYPE_LABELS
 
 
+HTML_NAME = "recording-sheet.html"
+CSV_NAME = "recording-sheet.csv"
+
+
 def checklist(inst: Instrument) -> list[str]:
     rec = inst.recording
     passes = recording_passes(inst)
@@ -117,8 +121,8 @@ def render_csv(inst: Instrument) -> str:
 
 def write(inst: Instrument, directory: Path) -> tuple[Path, Path]:
     directory.mkdir(parents=True, exist_ok=True)
-    html_path = directory / "recording-sheet.html"
-    csv_path = directory / "recording-sheet.csv"
+    html_path = directory / HTML_NAME
+    csv_path = directory / CSV_NAME
     html_path.write_text(render_html(inst), encoding="utf-8")
     csv_path.write_text(render_csv(inst), encoding="utf-8")
     return html_path, csv_path

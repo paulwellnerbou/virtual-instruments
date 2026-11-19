@@ -127,8 +127,17 @@ class Extra(BaseModel):
     key: int = Field(default=48, ge=0, le=127)
 
 
+AUDIO_SUFFIXES = (".wav", ".aif", ".aiff", ".flac")
+
+
 class Recording(BaseModel):
+    # "takes": record new takes from the recording sheet; "samples": import already-cut samples.
+    source: Literal["takes", "samples"] = "takes"
     takes_dir: str = ""
+    import_dir: str = ""
+    # How to read note names like "C3" in imported file names when the pitch can't be measured:
+    # "c3" = middle C is C3 (Decent Sampler, Cubase), "c4" = middle C is C4 (scientific, Logic).
+    import_note_names: Literal["c3", "c4"] = "c3"
     samples_dir: str = Field(default="", description="sliced samples; empty means <takes_dir>/sliced")
     sample_rate: int = 48000
     bit_depth: int = 24
@@ -226,8 +235,14 @@ class Instrument(BaseModel):
                 out.append(f"Colour “{color}” must be 8 hex digits (AARRGGBB).")
         keys = [x.key for x in self.extras if x.use == "key"]
         _dupes(out, "extra key", [str(k) for k in keys])
+        if self.recording.source == "samples":
+            if not self.recording.import_dir:
+                out.append("Choose the folder with the samples to import (step 6).")
+            if any(sig.recorded == "separate" for sig in self.signals):
+                out.append("Imported samples can't be in separate recording passes; set all signals to "
+                           "“Together” (step 2).")
         span = self.range.span()
-        if span is not None and self.range.mode != "sounds":
+        if span is not None and self.range.mode != "sounds" and self.recording.source == "takes":
             lo, hi = span[0] - self.preset.extend_below, span[1] + self.preset.extend_above
             for x in self.extras:
                 if x.use == "key" and lo <= x.key <= hi:

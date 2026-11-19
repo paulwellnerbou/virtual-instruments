@@ -157,39 +157,44 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
     hit_rate: dict[str, int | None] = {}
     unrecorded = 0
 
+    imported = inst.recording.source == "samples"
     for t in manifest.takes:
         take = plan.get(t.key)
-        if take is None:
+        if take is None and not imported:
             if t.hits:
                 m.warnings.append(f"“{t.title}” is in hits.json but not in the current plan; slice again.")
             continue
-        pass_signals[take.pass_id] = take.signals
+        # Notes and signals come from hits.json; plans from before they were stored there fill in.
+        midi = t.midi if t.midi is not None else (take.note.midi if take and take.note else None)
+        signals = t.signals or (take.signals if take else [])
+        if signals:  # e.g. the import's "not imported" list has none and must not blank the pass
+            pass_signals[t.pass_id] = signals
         if t.status == "missing":
-            unrecorded += take.kind == "note"
+            unrecorded += t.kind == "note"
             continue
         if t.status in ("count_mismatch", "error"):
             m.warnings.append(f"“{t.title}”: {t.message}. Its hits are left out.")
             continue
         for h in t.hits:
-            hit_rate[h.id] = t.sample_rate
-        if take.kind == "note" and take.note is not None:
+            hit_rate[h.id] = h.sample_rate or t.sample_rate
+        if t.kind == "note" and midi is not None:
             for h in usable(t.hits):
                 if h.layer is not None:
-                    notes[take.pass_id][take.note.midi][h.layer].append(h)
+                    notes[t.pass_id][midi][h.layer].append(h)
             if t.hits and not usable(t.hits):
                 m.warnings.append(f"“{t.title}”: all hits rejected.")
-        elif take.kind == "extra":
+        elif t.kind == "extra" and not imported:
             extra = extras_by_base.get(t.base)
             if extra is None or extra.use == "off":
                 continue
             hits = usable(t.hits)
             if extra.use == "release":
-                m.release += [Entry(sig, h.files[sig], 60, 0, 0) for h in hits for sig in take.signals]
+                m.release += [Entry(sig, h.files[sig], 60, 0, 0) for h in hits for sig in signals]
             else:
                 if extra.key not in m.fx_keys:
                     m.fx_keys.append(extra.key)
                 for pos, h in enumerate(hits, 1):
-                    for sig in take.signals:
+                    for sig in signals:
                         m.keys.append(Entry(sig, h.files[sig], extra.key, extra.key, extra.key,
                                             seq_pos=pos, seq_len=len(hits)))
     if unrecorded:

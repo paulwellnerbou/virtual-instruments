@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from conftest import piezo_and_mic
 
@@ -153,3 +155,26 @@ def test_new_instruments_default_to_the_system_user_as_author():
     inst = defaults.new_instrument("X", InstrumentType.PLUCKED)
     assert inst.meta.author == defaults.system_author() != ""
     assert defaults.new_instrument("Y", InstrumentType.PLUCKED, author="").meta.author == ""
+
+
+def test_new_and_duplicated_instruments_get_a_default_takes_folder(tmp_path, monkeypatch):
+    monkeypatch.setenv("VINST_HOME", str(tmp_path))
+    assert store.load_settings().recordings_dir == store.DEFAULT_RECORDINGS_DIR
+    store.save_settings(store.Settings(recordings_dir="/Volumes/Audio/Recordings"))
+    a = store.create(defaults.new_instrument("Tenor: Uke", InstrumentType.PLUCKED))
+    assert a.recording.takes_dir == "/Volumes/Audio/Recordings/Tenor- Uke"
+    b = store.duplicate(a.meta.slug, "Second Uke")
+    assert b.recording.takes_dir == "/Volumes/Audio/Recordings/Second Uke"
+    (tmp_path / store.SETTINGS_FILE).write_text("not = [valid")
+    assert store.load_settings().recordings_dir == store.DEFAULT_RECORDINGS_DIR
+
+
+def test_ensure_folder_never_fakes_a_disconnected_disk(tmp_path):
+    from vinst.ui.finder import ensure_folder, nearest_existing
+
+    with pytest.raises(OSError, match="isn't connected"):
+        ensure_folder(Path("/Volumes/NoSuchDisk-vinst-test/Recordings"))
+    target = tmp_path / "a" / "b"
+    ensure_folder(target)
+    assert target.is_dir()
+    assert nearest_existing(tmp_path / "missing" / "deeper") == tmp_path

@@ -15,6 +15,8 @@ from vinst import loops, review, slicing, store
 from vinst.bundle import STALE_MESSAGE
 from vinst.plan import slicing_setup
 from vinst.review import FLAGS, Hit, Manifest, TakeResult
+from vinst.ui.anim import Collapse
+from vinst.ui.finder import can_choose_folder, choose_folder
 
 if TYPE_CHECKING:
     from vinst.ui.app import Editor
@@ -91,47 +93,88 @@ def step_review(ed: "Editor") -> None:
     slug = inst.meta.slug
     path = store.manifest_path(slug)
     state: dict[str, Any] = {"manifest": None, "problems_only": False, "busy": False,
-                             "progress": 0.0, "label": ""}
+                             "progress": 0.0, "label": "", "stale": None}
+    ed.on_change_hooks.append(lambda: state.update(stale=None))  # re-check after any spec change
     try:
         state["manifest"] = review.load(path)
     except Exception as e:  # e.g. written by an older version; slicing again replaces it
         ui.label(f"{path.name} can't be read ({e.__class__.__name__}); slice again to replace it. "
                  "Rejections stored in it are lost.").classes("text-sm text-orange-600")
 
-    ui.markdown("Cuts each take into single hits (all signals at the same positions), checks pitch "
-                "and loudness, and lets you listen to every hit. Rejected hits are left out of the "
-                "instrument. Re-slicing keeps your rejections, unless a take was re-recorded.").classes("max-w-3xl")
-    with ui.row().classes("w-full items-start"):
-        ui.input("Takes folder (set in step 5)").bind_value_from(inst.recording, "takes_dir") \
-            .props("readonly").classes("grow")
-        ed.text("Sliced samples folder (empty: <takes folder>/sliced)", inst.recording, "samples_dir") \
-            .classes("grow")
+    importing = inst.recording.source == "samples"
+    if not importing:
+        ui.markdown("Cuts each take into single hits (all signals at the same positions), checks pitch "
+                    "and loudness, and lets you listen to every hit. Rejected hits are left out of the "
+                    "instrument. Re-slicing keeps your rejections, unless a take was re-recorded.") \
+            .classes("max-w-3xl")
+    if importing:
+        ui.markdown("Reads a folder of already-cut samples, one note per file (subfolders included). The "
+                    "note comes from the file name (“C3”, “F#4”, “055”) and is checked against the measured "
+                    "pitch; without a name, the pitch decides. Files are copied under uniform names; the "
+                    "folder itself isn't changed.").classes("max-w-3xl")
+        with ui.row().classes("w-full items-start"):
+            ed.text("Folder with the samples", inst.recording, "import_dir",
+                    placeholder="/path/to/samples").classes("grow")
+            ui.select({"c3": "Middle C is C3 (Decent Sampler, Cubase)", "c4": "Middle C is C4 (scientific, Logic)"},
+                      label="Note names in file names", value=inst.recording.import_note_names,
+                      on_change=lambda e: ed.set(inst.recording, "import_note_names", e.value)).classes("w-80") \
+                .tooltip("Only used when a sample's pitch can't be measured; otherwise the pitch decides "
+                         "which octave a name means.")
+    else:
+        with ui.row().classes("w-full items-start"):
+            ui.input("Takes folder (set in step 5)").bind_value_from(inst.recording, "takes_dir") \
+                .props("readonly").classes("grow")
+
+    @ui.refreshable
+    def samples_line() -> None:
+        folder = review.samples_dir(inst)
+        with ui.row().classes("items-center gap-2 text-sm"):
+            ui.label("Imported copies go to" if importing else "Sliced samples go to").classes("opacity-70")
+            ui.label(str(folder) if folder else "–").classes("font-mono text-xs")
+            if can_choose_folder():
+                ui.button("Change…", on_click=change_samples_dir).props("flat dense no-caps")
+            if inst.recording.samples_dir:
+                ui.button("Use default", on_click=lambda: set_samples_dir("")).props("flat dense no-caps")
+
+    def set_samples_dir(value: str) -> None:
+        ed.set(inst.recording, "samples_dir", value)
+        samples_line.refresh()
+
+    async def change_samples_dir() -> None:
+        current = review.samples_dir(inst)
+        picked = await run.io_bound(choose_folder, "Folder for the sliced samples", str(current or ""))
+        if picked:
+            set_samples_dir(picked)
+
+    samples_line()
 
     proc = inst.processing
-    with ui.row().classes("items-center w-full gap-4"):
-        ui.switch("Denoise the samples", value=proc.denoise,
-                  on_change=lambda e: (ed.set(proc, "denoise", e.value), reduction.set_visibility(e.value)))
-        reduction = ed.number("Max. reduction", proc, "denoise_reduction_db", cast=float, min=1, max=40,
-                              step=1, suffix="dB").classes("w-36")
-        reduction.set_visibility(proc.denoise)
-        ui.label("Uses the noise-floor recording as the noise profile and only changes the sliced "
-                 "samples, never your takes. Leave it off if you already cleaned the takes, e.g. in "
-                 "WaveLab or Cubase.").classes("text-xs opacity-70 max-w-xl")
+    if not importing:  # imports have no noise-floor recording to learn from
+        with ui.row().classes("items-center w-full gap-4"):
+            ui.switch("Denoise the samples", value=proc.denoise,
+                      on_change=lambda e: (ed.set(proc, "denoise", e.value), reduction.set_open(e.value)))
+            with Collapse(proc.denoise, axis="x") as reduction:
+                ed.number("Max. reduction", proc, "denoise_reduction_db", cast=float, min=1, max=40,
+                          step=1, suffix="dB").classes("w-36")
+            ui.label("Uses the noise-floor recording as the noise profile and only changes the sliced "
+                     "samples, never your takes. Leave it off if you already cleaned the takes, e.g. in "
+                     "WaveLab or Cubase.").classes("text-xs opacity-70 max-w-xl")
     with ui.row().classes("items-center w-full gap-4"):
         ui.switch("Find loops", value=proc.loops,
-                  on_change=lambda e: (ed.set(proc, "loops", e.value), crossfade.set_visibility(e.value)))
-        crossfade = ed.number("Loop crossfade", proc, "loop_crossfade_ms", cast=float, min=0, max=500,
-                              step=5, suffix="ms").classes("w-36")
-        crossfade.set_visibility(proc.loops)
+                  on_change=lambda e: (ed.set(proc, "loops", e.value), crossfade.set_open(e.value)))
+        with Collapse(proc.loops, axis="x") as crossfade:
+            ed.number("Loop crossfade", proc, "loop_crossfade_ms", cast=float, min=0, max=500,
+                      step=5, suffix="ms").classes("w-36")
         ui.label("For sustained sounds: notes keep playing while the key is held. Loop markers in the "
                  "takes (e.g. set in WaveLab) are used where they exist; otherwise a loop is searched "
                  "in the steady part of each note.").classes("text-xs opacity-70 max-w-xl")
 
     with ui.row().classes("items-center w-full"):
-        button = ui.button("Slice & analyse", icon="content_cut")
-        progress = ui.linear_progress(value=0, show_value=False).classes("w-64")
-        progress_label = ui.label().classes("text-sm opacity-70")
-        progress.visible = False
+        button = ui.button("Import & analyse" if importing else "Slice & analyse",
+                           icon="file_download" if importing else "content_cut")
+        with Collapse(False, axis="x", inner_classes="flex items-center gap-4") as progress_box:
+            progress = ui.linear_progress(value=0, show_value=False).classes("w-64")
+            progress_label = ui.label().classes("text-sm opacity-70 whitespace-nowrap")
 
     def tick() -> None:
         progress.value = state["progress"]
@@ -145,7 +188,7 @@ def step_review(ed: "Editor") -> None:
         ed.autosave()
         state["busy"] = True
         button.disable()
-        progress.visible = True
+        progress_box.set_open(True)
 
         def report(i: int, n: int, title: str) -> None:
             state["progress"], state["label"] = (i / n if n else 1), f"{i}/{n} · {title}"
@@ -161,14 +204,16 @@ def step_review(ed: "Editor") -> None:
         else:
             review.save(manifest, path)
             state["manifest"] = manifest
+            state["stale"] = False
             results.refresh()
+            ed.refresh()  # the summary shows what was imported
             c = manifest.counts()
             ui.notify(f"{c['hits']} hits from {c['takes_ok']} takes; {c['errors']} errors, "
                       f"{c['warnings']} warnings", type="positive")
         finally:
             state["busy"] = False
             button.enable()
-            progress.visible = False
+            progress_box.set_open(False)
             state["label"] = ""
 
     button.on_click(slice_all)
@@ -194,7 +239,7 @@ def step_review(ed: "Editor") -> None:
             ui.label(f"{take.title}").classes("text-lg font-medium")
             ui.label(hit.id).classes("text-xs font-mono opacity-70")
             facts = [("Layer / round robin", f"{hit.layer or '–'} / {hit.rr or '–'}"),
-                     ("Length", f"{(hit.end - hit.start) / (take.sample_rate or 1):.2f} s"),
+                     ("Length", f"{(hit.end - hit.start) / (hit.sample_rate or take.sample_rate or 1):.2f} s"),
                      ("Loudness (first 0.3 s)", f"{hit.rms_db:.1f} dBFS")]
             if hit.cents is not None:
                 facts.append(("Tuning", f"{hit.cents:+.1f} cents"))
@@ -212,7 +257,7 @@ def step_review(ed: "Editor") -> None:
                 ui.label(sig).classes("text-sm font-medium mt-2")
                 ui.audio(f"/audio/{slug}/{quote(name)}?v={mtime}", autoplay=(i == 0)).classes("w-full")
             if hit.loop_start is not None and hit.loop_end is not None:
-                sr = take.sample_rate or 1
+                sr = hit.sample_rate or take.sample_rate or 1
                 source = "marker from the take" if hit.loop_source == "marker" else \
                     f"found automatically, match {hit.loop_score:.2f}"
                 ui.label(f"Loop {hit.loop_start / sr:.2f}–{hit.loop_end / sr:.2f} s ({source})") \
@@ -237,7 +282,9 @@ def step_review(ed: "Editor") -> None:
         if manifest is None:
             ui.label("Nothing sliced yet.").classes("opacity-70")
             return
-        if manifest.setup != slicing_setup(inst):
+        if state["stale"] is None:  # computing it scans the import folder, so only after changes
+            state["stale"] = manifest.setup != slicing_setup(inst)
+        if state["stale"]:
             ui.label("⚠ " + STALE_MESSAGE).classes("text-sm text-orange-600")
         c = manifest.counts()
         with ui.row().classes("items-center gap-4 w-full"):

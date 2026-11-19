@@ -20,6 +20,8 @@ FLAGS: dict[str, tuple[str, str]] = {
     "out_of_tune": ("info", "more than 20 cents off; the instrument will correct it"),
     "loop_poor": ("warning", "the automatic loop may click or pulse; listen to it"),
     "no_loop": ("warning", "no sustained part long enough to loop"),
+    "name_mismatch": ("warning", "the file name says a different note than the measured pitch; the pitch was used"),
+    "incomplete": ("error", "not every signal has a file for this sample, so it is left out"),
     "loop_in_fade": ("warning", "the loop marker ends in the sample's final fade-out, so the loop pulses; "
                                 "move the marker earlier"),
 }
@@ -46,6 +48,7 @@ class Hit(BaseModel):
     loop_score: float | None = None
     loop_source: str | None = None  # "marker" | "auto"
     loop_off: bool = False  # the user turned this hit's loop off in the review
+    sample_rate: int | None = None  # imported files can differ; sliced hits use their take's rate
 
     def severity(self) -> str | None:
         levels = [FLAGS[f][0] for f in self.flags if f in FLAGS]
@@ -56,6 +59,8 @@ class TakeResult(BaseModel):
     number: int
     base: str
     pass_id: str = MAIN_PASS
+    midi: int | None = None  # the note's key; None for extras and the noise floor
+    signals: list[str] = []  # signal ids, as in each hit's files
     title: str
     kind: str
     status: Literal["ok", "missing", "count_mismatch", "error", "noise_floor"]
@@ -80,6 +85,7 @@ class TakeResult(BaseModel):
 class Manifest(BaseModel):
     samples_dir: str
     setup: str = ""  # plan.slicing_setup() at slicing time
+    source: Literal["takes", "samples"] = "takes"  # sliced recorded takes, or imported samples
     noise_floor_db: float | None = None
     denoised: bool = False
     takes: list[TakeResult] = []
@@ -102,6 +108,11 @@ def samples_dir(inst: Instrument) -> Path | None:
     rec = inst.recording
     if rec.samples_dir:
         return Path(rec.samples_dir).expanduser()
+    if rec.source == "samples":
+        # Copies with uniform names; the imported folder itself is never written to.
+        from vinst.store import instrument_dir
+
+        return instrument_dir(inst.meta.slug) / "imported-samples"
     if rec.takes_dir:
         return Path(rec.takes_dir).expanduser() / "sliced"
     return None

@@ -1,7 +1,12 @@
 """Instruments on disk: <home>/<slug>/instrument.toml."""
 
 import os
+import re
+import tomllib
 from pathlib import Path
+
+import tomli_w
+from pydantic import BaseModel, ValidationError
 
 from vinst.spec import Instrument, slugify
 
@@ -52,8 +57,38 @@ def unique_slug(name: str) -> str:
     return slug
 
 
+SETTINGS_FILE = "settings.toml"
+DEFAULT_RECORDINGS_DIR = "~/Music/DecentSampler Recordings"
+
+
+class Settings(BaseModel):
+    """App-wide preferences, stored next to the instruments."""
+
+    recordings_dir: str = DEFAULT_RECORDINGS_DIR  # new instruments record into <this>/<instrument name>
+
+
+def load_settings() -> Settings:
+    path = home() / SETTINGS_FILE
+    try:
+        return Settings.model_validate(tomllib.loads(path.read_text(encoding="utf-8")))
+    except (OSError, tomllib.TOMLDecodeError, ValidationError):
+        return Settings()
+
+
+def save_settings(settings: Settings) -> None:
+    home().mkdir(parents=True, exist_ok=True)
+    (home() / SETTINGS_FILE).write_text(tomli_w.dumps(settings.model_dump()), encoding="utf-8")
+
+
+def default_takes_dir(name: str) -> str:
+    folder = re.sub(r'[/\\:*?"<>|]+', "-", name).strip() or "instrument"
+    return str(Path(load_settings().recordings_dir) / folder)
+
+
 def create(inst: Instrument) -> Instrument:
     inst.meta.slug = unique_slug(inst.meta.name)
+    if not inst.recording.takes_dir:
+        inst.recording.takes_dir = default_takes_dir(inst.meta.name)
     save(inst)
     return inst
 
