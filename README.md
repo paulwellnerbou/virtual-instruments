@@ -1,99 +1,71 @@
 # DecentSampler Instrument Builder
 
-A framework for building [DecentSampler](https://www.decentsamples.com/product/decent-sampler-plugin/) instruments from recordings. It takes raw takes and produces a validated `.dsbundle` / `.dslibrary`.
+Turn your own recordings of an instrument into a playable [DecentSampler](https://www.decentsamples.com/product/decent-sampler-plugin/) instrument. You describe the instrument, record each note in the app (or bring files from your DAW), check the samples, and the builder writes a ready-to-load `.dsbundle`.
 
-## Usage
+It was made for ukuleles, but works for any plucked or struck string instrument, pitched percussion (kalimba, metallophone), sustained instruments, drums and single sounds.
 
-### As an app (macOS)
+![The worksheet: one card per note, one row per velocity, every recorded hit with its tuning and loudness](docs/images/worksheet.png)
+
+## What you need
+
+- A Mac (the app launcher is macOS only; the builder itself runs anywhere Python does)
+- [uv](https://docs.astral.sh/uv/getting-started/installation/), which installs everything else
+- [DecentSampler](https://www.decentsamples.com/product/decent-sampler-plugin/), to play the result
+- An audio interface or microphone, if you record in the app
+
+## Install
+
+```bash
+git clone https://github.com/paulwellnerbou/virtual-instruments.git
+```
+
+```bash
+cd virtual-instruments
+```
 
 ```bash
 uv run vinst install-app
 ```
 
-This puts **DecentSampler Instrument Builder.app** into `~/Applications`. It always runs the builder from this checkout. Starting it (Dock, Spotlight, Finder):
+This puts **DecentSampler Instrument Builder.app** into `~/Applications`. Start it from the Dock, Spotlight or Finder: it opens the builder in your browser. It stops by itself a couple of minutes after you close the page.
 
-- starts the builder's server, unless it's already running,
-- opens the builder: in its own window if you've installed it as a Chrome app (see below), otherwise in your browser at http://127.0.0.1:4780.
+**In its own window:** open the builder once in Chrome and install it as an app (⋮ → Cast, save and share → Install page as app). From then on the launcher opens that window. Always start it through the launcher.
 
-The launcher then quits. The server stops by itself about two minutes after the last builder page or window closes, so nothing keeps running in the background. If the builder can't start (e.g. port 4780 is taken), the launcher shows an alert with the reason. The log is `~/Library/Logs/vinst.log`, trimmed when it passes 1 MB.
+## How it works
 
-**Own window:** open the builder once in Chrome and install it as an app (⋮ → Cast, save and share → Install page as app). From then on, the launcher opens that window. Start the builder through the launcher, not the Chrome app itself: the Chrome app can't start the server.
+The builder walks you through seven steps. Everything is saved as you go, so you can stop and come back any time.
 
-### For development
+1. **Instrument:** name and type. The type fills in sensible defaults for everything after it. You can also choose to import a folder of existing samples instead of recording.
+2. **Signals:** what you record, e.g. a pickup, a microphone or both. Each one becomes a sound you can blend or switch in the instrument.
+3. **Range:** for string instruments the strings, their tuning and how many frets; otherwise the lowest and highest note.
+4. **Dynamics & extras:** the velocities to record (e.g. soft and loud), how many variations of each note, and extra sounds such as release noise, a muted strum or a body knock.
+5. **Worksheet:** record, check and fix every note (see below).
+6. **Sound & look:** tuning correction, knobs, effects, colours and a background image.
+7. **Build:** creates the instrument, checks it, installs it into DecentSampler and can package it as a `.dslibrary` to share.
 
-```bash
-uv run vinst ui
-```
+### Recording and checking in the worksheet
 
-Other commands:
+- **Record in the app:** press ● on a velocity row. After a count-in, a visual metronome tells you when to play each hit. Choose your audio interface and its input in the Recording panel beside the notes; "Detect" finds the input you play into.
+- **Or use your DAW:** record wherever you like and drop the audio file (WAV, AIFF, FLAC) onto the right row.
+- **Every hit is cut and analysed for you:** you see its waveform, how far it is out of tune and how loud its attack is. Wrong notes, clipping and hits that belong to another velocity are flagged.
+- **Listen and compare:** ▶ plays the hits of a row one after another, so you can pick the best ones.
+- **Fix what's wrong:** click a hit to review it. You can reject it, record a new one instead, move it to another velocity (or drag it there), or drag the blue lines to change where it was cut.
+- **Per-note velocities:** drag the dots on the slider beside a note to set where the next velocity starts, or add a velocity to just that note.
 
-- `uv run vinst open`: what the launcher runs: starts the server if needed and opens the browser
-- `uv run vinst list`
-- `uv run vinst new "Name" --type plucked`
-- `uv run vinst slice <slug>`: cuts the recorded takes into hits (or, for an instrument that imports existing samples, imports its folder), analyses them and writes `hits.json`
-- `uv run vinst build <slug> [--install] [--package]`: generates and validates the `.dsbundle`; optionally installs it into `~/DecentSampler` and writes a `.dslibrary`
-- `uv run vinst synth-takes <slug> <folder>`: writes fake lane takes, with a few deliberate mistakes, for trying out slicing and review before recording
-- `uv run pytest`
+![Reviewing a hit: details, where it was cut, and what to do with it](docs/images/hit-review.png)
 
-Each instrument lives in `instruments/<slug>/`:
+### Where your files go
 
-- `instrument.toml`: the wizard's answers
-- `hits.json`: slicing and analysis results, plus your reject decisions
+- Your recordings go to a folder of your choice (by default `~/Music/DecentSampler Recordings/<instrument>`). The builder never changes them.
+- The finished instrument is installed into your DecentSampler library folder (`~/DecentSampler`). The builder only ever replaces instruments it created itself.
 
-Denoising is optional and off by default. Turn it on in step 6 to use the noise-floor recording as the noise profile; it only changes the sliced samples, never the takes. Leave it off if you clean the takes in WaveLab or Cubase.
+### Tips
 
-Record in the app (a Record button per note and velocity lane, with a visual metronome), or export one file per lane from any DAW. The worksheet (step 5) records, slices and reviews in one place; see [docs/builder-ui.md](docs/builder-ui.md).
+- Record the noise floor first (30 s of silence): it tells the builder what is noise and what is your instrument.
+- Record a few more hits than you need and reject the weak ones; the builder keeps your decisions when you slice again.
+- You can try the first few notes before recording everything: build, play them in DecentSampler, then carry on.
 
-Audio is kept outside the repo. Takes go in the takes folder set in step 5; sliced samples go in `<takes folder>/sliced` unless you set another folder.
-
-Status: milestones 1–3 are done. The whole wizard works, from the spec through recording, slicing and review in the worksheet to building, validating, installing and packaging. Milestone 4 adds strumming and the other instrument types.
-
-Environment variables:
-
-- `VINST_HOME`: where instruments live (default `./instruments`)
-- `VINST_BUILD`: build output (default `./build`)
-- `VINST_DS_LIBRARY`: DecentSampler library folder (default `~/DecentSampler`)
-
-Installing only ever replaces bundles this tool created.
-
-## Research notes
-
-- [docs/decentsampler-reference.md](docs/decentsampler-reference.md): the format, gotchas and the tool landscape
-- [docs/builder-ui.md](docs/builder-ui.md): the wizard UI for creating instruments of any type
-
-## Why build our own
-
-- No maintained library for generating DecentSampler presets exists. The available tools either convert from SFZ/EXS or are small one-off scripts.
-- Writing the earlier instruments by hand caused real bugs: invalid XML, misspelled attributes that were silently ignored, octave-shifted mappings, and backslash paths.
-- The tedious part is getting from raw takes to mapped samples. A preset editor doesn't help with that, and the steps are easy to automate.
-
-## Proposed design (Python, managed with `uv`)
-
-```
-src/vinst/
-  notes.py      MIDI ↔ names. DecentSampler names middle C "C3" (= 60); MIDI numbers are used everywhere internally.
-  plan.py       spec → notes, their velocity lanes, one take per note and lane, file names
-  slice.py      takes → hits: onset detection on the mic track, with the same cut points applied to the DI;
-                pre-roll, tail trim at the noise floor, fade-out, DC removal
-  analyze.py    per hit: pitch (pYIN) → check against the plan, cents → `tuning`;
-                loudness → layer sanity check and outliers; writes a review report
-  mapping.py    zones (chromatic or spread), velocity layers, round-robin positions, release groups
-  model.py      typed preset model (groups/samples/ui/effects/midi/tags) → XML
-  ui.py         reusable layouts: knob row, Mic↔DI equal-power crossfade, Tone table, strum page
-  validate.py   vendored XSD + engine-vocabulary.json, file existence and case, key/velocity coverage gaps
-  package.py    .dsbundle + DSLibraryInfo.xml, .dslibrary zip, symlink into ~/DecentSampler for audition
-  cli.py        vinst ui | open | list | new | slice | build | synth-takes
-instruments/<name>/instrument.toml   declarative spec: range, strings, layers, RR, voices, UI, effects
-instruments/<name>/artwork/
-vendor/decentsampler-schema/          XSD + engine-vocabulary.json (MIT)
-```
-
-- **Audio stays out of the repo.** Raw takes live wherever you record them (e.g. an external audio drive), set per instrument in its spec, and builds go to `build/` (gitignored).
-- **Planned dependencies:** `numpy`, `soundfile`, `scipy`, `librosa` (onsets and pYIN), `lxml` (XSD validation) and `typer`.
-- **Possible later additions:**
-  - render MIDI test phrases through the DecentSampler VST3 with `pedalboard`, for automated listening checks (it's unverified whether a preset can be loaded headlessly);
-  - export to SFZ/Kontakt with ConvertWithMoss.
-- **Importing existing sample libraries** into specs is a good regression test for the generator.
+More detail on every step is in [docs/builder-ui.md](docs/builder-ui.md). For working on the builder itself, see [docs/development.md](docs/development.md).
 
 ## Licence
 
