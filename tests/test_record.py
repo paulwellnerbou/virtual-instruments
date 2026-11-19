@@ -226,5 +226,6 @@ def test_the_count_in_is_not_written(tmp_path):
 
 def test_a_quiet_loud_take_says_how_much_to_turn_the_gain_up():
     assert recorder.level_advice(-8.0) is None
+    assert recorder.level_advice(-55.0) is None  # nothing played: no gain to suggest
     advice = recorder.level_advice(-18.0)
     assert "peaks at -18 dBFS" in advice and "up by about 12 dB" in advice and "same for all takes" in advice

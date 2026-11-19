@@ -5,7 +5,7 @@ import tomllib
 import unicodedata
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import tomli_w
 from pydantic import AliasChoices, BaseModel, Field, model_validator

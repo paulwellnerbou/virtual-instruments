@@ -277,8 +277,10 @@ def extra_row(ed: "Editor", x: Extra) -> None:
 
         ui.select({"release": "Play on key release", "key": "Own key", "off": "Don't use"}, value=x.use,
                   label="Use", on_change=use_changed).classes("w-52")
-        with Collapse(x.use == "key", axis="x") as key:
+        with Collapse(x.use == "key", axis="x", inner_classes="flex items-start gap-4 no-wrap") as key:
             ed.note("Key", x, "key").classes("w-28")
+            ui.switch("Stops ringing notes", value=x.mutes, on_change=lambda e: ed.set(x, "mutes", e.value)) \
+                .classes("mt-2").tooltip("As a chuck mutes the strings: playing it fades out the notes still ringing")
 
 
 def step_build(ed: "Editor") -> None:

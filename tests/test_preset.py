@@ -96,8 +96,32 @@ def test_extras_become_release_and_key_groups(built):
     release = [g for g in doc.iter("group") if g.get("trigger") == "release"]
     assert len(release) == 2  # one per signal
     assert {s.get("loNote") for s in release[0].iter("sample")} == {"55"}
-    fx = [s.attrib for g in doc.iter("group") if g.get("name") == "Piezo effects" for s in g.iter("sample")]
-    assert {s["rootNote"] for s in fx} == {"48", "50"}
+    fx = {g.get("name"): {s.get("rootNote") for s in g.iter("sample")} for g in doc.iter("group")
+          if g.get("name", "").startswith("Piezo") and "fx" in g.get("tags", "").split(",")}
+    assert fx == {"Piezo Chuck / muted strum": {"48"}, "Piezo Body knock": {"50"}}  # each in its own group
+
+
+def test_a_chuck_stops_ringing_notes_and_plays_its_hits_in_turn(built):
+    inst, _ = built
+    result = bundle.build(inst)
+    assert result.report.ok, result.report.errors  # the schema knows silencedByTags and silencingDecay
+    doc = etree.parse(str(result.preset_file))
+    groups = {g.get("name"): g for g in doc.iter("group")}
+    chuck, knock, notes = groups["Piezo Chuck / muted strum"], groups["Piezo Body knock"], groups["Piezo"]
+    assert preset.MUTE_TAG in chuck.get("tags").split(",") and preset.MUTE_TAG not in knock.get("tags").split(",")
+    assert notes.get("silencedByTags") == preset.MUTE_TAG and float(notes.get("silencingDecay")) > 0
+    assert chuck.get("seqMode") == "round_robin"  # recorded down, up, down…: played that way
+    inst.extras = [x.model_copy(update={"mutes": False}) for x in inst.extras]
+    doc = etree.parse(str(bundle.build(inst).preset_file))
+    assert all(g.get("silencedByTags") is None for g in doc.iter("group"))
+
+
+def test_older_instruments_get_a_muting_chuck():
+    from vinst.spec import Extra
+
+    assert Extra.model_validate({"id": "chuck", "name": "Chuck"}).mutes
+    assert not Extra.model_validate({"id": "knock", "name": "Knock"}).mutes
+    assert not Extra.model_validate({"id": "chuck", "name": "Chuck", "mutes": False}).mutes
 
 
 def test_neighbour_round_robins_are_valid(built):

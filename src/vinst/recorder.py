@@ -273,12 +273,14 @@ def part_path(path: Path) -> Path:
 
 LOUD_PEAK_DB = -6.0  # where the loudest playing should peak: headroom for a harder hit
 QUIET_PEAK_DB = -12.0  # below this, the loudest velocity was recorded too low
+NOTHING_PLAYED_DB = -45.0  # below this, the take holds no hit at all, only the room
 
 
 def level_advice(peak_db: float) -> str | None:
     """For a take of the loudest velocity: how to set the input gain, if it was too low. Soft takes
     are quiet on purpose, so they aren't judged."""
-    if peak_db >= QUIET_PEAK_DB:
+    # Nothing played (stopped early, or the wrong input): no gain to suggest from it.
+    if peak_db >= QUIET_PEAK_DB or peak_db < NOTHING_PLAYED_DB:
         return None
     up = round(LOUD_PEAK_DB - peak_db)
     return (f"Quite quiet: the loudest hit peaks at {peak_db:.0f} dBFS. Turning the input gain up by about "

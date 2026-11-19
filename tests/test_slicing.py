@@ -218,7 +218,7 @@ def test_low_cut_needs_no_slicing_but_samples_cut_before_are_known(sliced, monke
 
 
 def test_low_cut_leaves_unpitched_sounds_alone(tmp_path, monkeypatch):
-    from vinst import bundle, defaults, store
+    from vinst import bundle, defaults
     from vinst.review import Manifest
     from vinst.spec import InstrumentType
 
