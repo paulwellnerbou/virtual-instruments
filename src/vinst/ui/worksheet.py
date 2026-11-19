@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, Response
 from nicegui import app, run, ui
 
 from vinst import loops, relocate, review, slicing, store, takes_meta
-from vinst.bundle import STALE_MESSAGE, changed_message
+from vinst.bundle import CLEANUP_MESSAGE, FINDER_MESSAGE, STALE_MESSAGE, changed_message
 from vinst.plan import (
     Take,
     lane_bounds,
@@ -492,6 +492,19 @@ def settings_cards(ed: "Editor") -> None:
                 with Collapse(proc.denoise, axis="x") as reduction:
                     ed.number("", proc, "denoise_reduction_db", cast=float, min=1, max=40, step=1,
                               suffix="dB max.").props("dense outlined").classes("w-32")
+            with form.setting("Low cut", "Lowers what lies below each note's own pitch, e.g. the thump of the pluck "
+                                         "on a ukulele's body: below the share of the pitch set here, by the dB set "
+                                         "here. The note itself, from its pitch up, stays as it is. Some of that low "
+                                         "end is the instrument's body, so start gently and listen."):
+                ui.switch(value=proc.low_cut,
+                          on_change=lambda e: (ed.set(proc, "low_cut", e.value), low_cut.set_open(e.value)))
+                with Collapse(proc.low_cut, axis="x", inner_classes="flex items-center gap-1 no-wrap") as low_cut:
+                    ui.number(value=round(proc.low_cut_below * 100), min=30, max=100, step=5, precision=0,
+                              suffix="% pitch",
+                              on_change=lambda e: e.value and ed.set(proc, "low_cut_below", float(e.value) / 100)) \
+                        .props("dense outlined").classes("w-28").tooltip("Below this share of each note's pitch")
+                    ed.number("", proc, "low_cut_db", cast=float, min=1, max=40, step=1, suffix="dB") \
+                        .props("dense outlined").classes("w-24").tooltip("By this much")
         with form.setting("Loops", "For sustained sounds: notes keep playing while the key is held. Loop markers "
                                    "in the takes (e.g. set in WaveLab) are used where they exist; otherwise a loop "
                                    "is searched in the steady part of each note."):
@@ -531,6 +544,8 @@ def step_worksheet(ed: "Editor") -> None:
         runs, this one waits for it: a change made meanwhile (a recording moved, a cut set) is sliced too."""
         while state["busy"]:
             await asyncio.sleep(0.1)
+        if not still_there():
+            return
         ed.autosave()
         state["busy"] = True
         button.disable()
@@ -583,8 +598,18 @@ def step_worksheet(ed: "Editor") -> None:
         manifest = state["manifest"]
         return [t for t in manifest.takes if t.note == note and t.pass_id == pass_id] if manifest else []
 
+    def still_there() -> bool:
+        """False once the instrument was deleted, e.g. from the list in another tab: then nothing is
+        written, or its folder would come back without its settings."""
+        if store.exists(slug):
+            return True
+        ui.notify("This instrument was deleted; nothing is saved.", type="warning")
+        return False
+
     def saved(take: TakeResult) -> None:
         """After a decision: lanes and loudness checks again, save, redraw."""
+        if not still_there():
+            return
         if take.kind == "note" and not importing:
             lanes = note_lanes(inst, take.note)
             settle(take, lanes)
@@ -841,12 +866,16 @@ def step_worksheet(ed: "Editor") -> None:
         takes_meta.save_cuts(slug, first_file(take), cuts)
         if hit is not None:
             hit.start, hit.end = a, b  # so its decisions stay with it when sliced again
-        dialog.close()
+        # The dialog stays open: its contents are replaced once the recording is sliced.
         await slice_all(only=take.key)
         found = next((t for t in state["manifest"].takes if t.key == take.key), None) if state["manifest"] else None
         again = next((h for h in found.hits if h.start == a), None) if found else None
         if found and again:
             open_hit(found, again)
+        elif found:
+            open_recording(found)
+        else:
+            dialog.close()
 
     def move_take(take: TakeResult) -> None:
         """The whole recording to another note or velocity; there it's sliced afresh."""
@@ -1246,6 +1275,10 @@ def step_worksheet(ed: "Editor") -> None:
             return "Takes in the folder aren't sliced yet." if found else ""
         if manifest.setup != slicing_setup(inst):
             return STALE_MESSAGE
+        if manifest.finder != slicing.HIT_FINDER and manifest.source == "takes":
+            return FINDER_MESSAGE
+        if slicing.sliced_cleanup(inst, manifest) != slicing.cleanup_setup(inst) and manifest.source == "takes":
+            return CLEANUP_MESSAGE
         changed = slicing.changed_takes(inst, manifest)
         return changed_message(changed) if changed else ""
 
@@ -1261,13 +1294,18 @@ def step_worksheet(ed: "Editor") -> None:
             ui.label("⚠ " + state["stale"]).classes("text-sm text-orange-600")
 
     # Buttons and the switch stay out of the redrawn parts: the switch keeps its animation.
-    with ui.row().classes("items-center gap-4 w-full"):
-        overview_box = ui.column().classes("gap-0")
+    # One line that never wraps: a long message wraps within its own column, and the progress bar fills
+    # the rest with the take's name on one line of its own below it, so nothing moves as names change.
+    with ui.row().classes("items-center gap-4 w-full no-wrap"):
+        overview_box = ui.column().classes("gap-0 min-w-0 shrink")
         button = ui.button("Import & analyse" if importing else "Slice them",
-                           icon="file_download" if importing else "content_cut", on_click=lambda: slice_all())
-        with Collapse(False, axis="x", inner_classes="flex items-center gap-4") as progress_box:
-            progress = ui.linear_progress(value=0, show_value=False).classes("w-64")
-            progress_label = ui.label().classes("text-sm opacity-70 whitespace-nowrap")
+                           icon="file_download" if importing else "content_cut", on_click=lambda: slice_all()) \
+            .classes("shrink-0")
+        with Collapse(False, axis="x", inner_classes="flex flex-col gap-1 min-w-0") as progress_box:
+            progress = ui.linear_progress(value=0, show_value=False).classes("w-full")
+            # w-0 min-w-full: as wide as the bar, never wider, whatever the take is called.
+            progress_label = ui.label().classes("text-xs opacity-70 truncate h-4 leading-4 w-0 min-w-full")
+        progress_box.outer.classes("grow min-w-48")
     with overview_box:
         overview()
     # The list's own controls, right above it; the noise floor is the list's first recording.
@@ -1282,6 +1320,7 @@ def step_worksheet(ed: "Editor") -> None:
     def shown() -> str:
         """What the worksheet depends on in the spec; other edits (a name, a colour) don't redraw it."""
         return repr((rec.takes_dir, rec.samples_dir, rec.source, inst.note_lanes, inst.preset.velocity_splits,
+                     slicing_setup(inst), slicing.cleanup_setup(inst),
                      [(t.key, t.files, t.hits, t.title) for t in plan_takes(inst)]))
 
     state["shown"] = shown()

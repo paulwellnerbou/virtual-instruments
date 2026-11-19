@@ -1,6 +1,8 @@
 """The instrument builder wizard (NiceGUI)."""
 
+import sys
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import nicegui
@@ -29,7 +31,7 @@ from vinst.spec import (
 )
 from vinst.ui import anim, keyboard, recording, theme
 from vinst.ui.build_steps import step_build, step_sound, velocity_layers
-from vinst.ui.finder import can_choose_folder, choose_folder
+from vinst.ui.finder import can_choose_folder, choose_folder, trash
 from vinst.ui.worksheet import settings_cards, step_worksheet
 
 APP_TITLE = "DecentSampler Instrument Builder"
@@ -113,6 +115,7 @@ def home() -> None:
                 ui.label(f"{slug}: {store.SPEC_FILE} can't be read").classes("text-lg font-medium text-red-600")
                 ui.label(str(store.instrument_dir(slug) / store.SPEC_FILE)).classes("text-xs opacity-60")
                 ui.label(error).classes("text-sm font-mono whitespace-pre-wrap")
+                ui.button("Delete", on_click=lambda s=slug: delete_dialog(s, s, None)).props("flat color=negative")
         for inst in instruments:
             with ui.card().classes("w-full"), ui.row().classes("w-full items-center"):
                 with ui.column().classes("gap-0 grow"):
@@ -125,6 +128,8 @@ def home() -> None:
                         ui.label(f"{TYPE_LABELS[inst.meta.type]} · {s.range_text}").classes("text-sm opacity-70")
                         ui.label(f"{recording_status(s)} · plan: {s.sampled} notes, {s.hits} hits, "
                                  f"~{s.sample_mb:,.0f} MB of samples").classes("text-sm opacity-70")
+                ui.button("Delete", on_click=lambda i=inst: delete_dialog(i.meta.slug, i.meta.name, i)) \
+                    .props("flat color=negative")
                 ui.button("Duplicate", on_click=lambda i=inst: duplicate_dialog(i)).props("flat")
                 ui.button("Open", on_click=lambda i=inst: ui.navigate.to(f"/i/{i.meta.slug}"))
 
@@ -155,6 +160,50 @@ def home() -> None:
                          "Folder where new instruments keep their takes", wide=True)
             ui.label("New instruments record into a folder named after the instrument inside it.") \
                 .classes("text-xs opacity-60")
+
+
+def delete_dialog(slug: str, name: str, inst: Instrument | None) -> None:
+    """What goes and what stays, before anything is deleted."""
+    from vinst import bundle
+
+    folder = store.instrument_dir(slug)
+    builds = bundle.build_root() / slug
+    def short(path: str | Path) -> str:
+        p, user = Path(path).expanduser(), Path.home()
+        return f"~/{p.relative_to(user)}" if p.is_relative_to(user) else str(p)
+
+    kept = []
+    if inst is not None and inst.recording.takes_dir:
+        kept.append(f"your recordings in {short(inst.recording.takes_dir)}")
+        samples = review.samples_dir(inst)
+        if samples is not None:
+            kept.append(f"the sliced samples in {short(samples)}")
+    if inst is not None and (bundle.library_dir() / f"{bundle.bundle_name(inst)}.dsbundle").exists():
+        kept.append("the instrument installed in DecentSampler's library")
+    where = "go to the Trash" if sys.platform == "darwin" else "are deleted"
+    with ui.dialog() as dialog, ui.card().classes("w-[32rem] max-w-full"):
+        ui.label(f"Delete “{name}”?").classes("text-lg font-medium")
+        ui.label(f"Its settings and review decisions (rejections, velocities, cuts set by hand) {where}, "
+                 f"with its builds.").classes("text-sm")
+        if kept:
+            ui.label("These stay as they are: " + "; ".join(kept) + ".").classes("text-sm opacity-70")
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Cancel", on_click=dialog.close).props("flat")
+
+            def go() -> None:
+                try:
+                    went = trash(folder)
+                    if builds.exists():
+                        trash(builds)
+                except OSError as e:
+                    ui.notify(f"Couldn't delete it: {e}", type="negative", multi_line=True)
+                    return
+                dialog.close()
+                ui.notify(f"“{name}” moved to the Trash." if went else f"“{name}” deleted.", type="positive")
+                ui.navigate.to("/")
+
+            ui.button("Delete", on_click=go).props("color=negative")
+    dialog.open()
 
 
 def duplicate_dialog(inst: Instrument) -> None:
@@ -220,6 +269,10 @@ class Editor:
         except ValidationError as e:
             if self.status:
                 self.status.set_text(f"Not saved: {e.errors()[0]['msg']}")
+            return
+        if not store.exists(self.inst.meta.slug):  # deleted, e.g. from the list in another tab
+            if self.status:
+                self.status.set_text("Deleted; not saved")
             return
         store.save(self.inst)
         self.dirty = False

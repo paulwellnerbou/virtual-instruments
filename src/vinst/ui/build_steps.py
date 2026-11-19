@@ -195,14 +195,14 @@ def step_sound(ed: "Editor") -> None:
              "highest notes is set in step 3.").classes("text-xs opacity-70 max-w-3xl")
 
     with ui.row().classes("items-center gap-4"):
-        ui.switch("Even out loudness between notes", value=p.balance,
+        ui.switch("Even out loudness within each velocity", value=p.balance,
                   on_change=lambda e: (ed.set(p, "balance", e.value), max_db.set_open(e.value)))
         with Collapse(p.balance, axis="x") as max_db:
-            ed.number("At most", p, "balance_max_db", cast=float, min=0.5, max=24, step=0.5,
+            ed.number("At most", p, "balance_max_db", cast=float, min=0.5, max=30, step=0.5,
                       suffix="dB").classes("w-28")
-    ui.label("Compares each note with its neighbours per velocity layer and corrects only the ones that "
-             "stick out, through the sample volume in the instrument. The audio files stay unchanged, and "
-             "the difference between soft and loud layers is kept.").classes("text-xs opacity-70 max-w-3xl")
+    ui.label("Brings every sample of a velocity to that velocity's median loudness, so notes and their "
+             "hits play alike; soft velocities stay softer than loud ones. Only the instrument's copies "
+             "of the samples change.").classes("text-xs opacity-70 max-w-3xl")
 
     ui.separator()
     ui.label("Extras").classes("text-base font-medium")

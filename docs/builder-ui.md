@@ -4,6 +4,7 @@ A local app (`vinst ui`, opened in the browser) that walks through creating an i
 
 - Every answer is saved to `instruments/<name>/instrument.toml`. The file stays readable and hand-editable. The UI is only an editor for it plus the processing steps.
 - An instrument can be duplicated as the starting point for the next one, e.g. a second ukulele from the first.
+- **Delete** removes an instrument after asking: its settings, review decisions and builds go to the Trash (on macOS); its recordings, sliced samples and the copy installed in DecentSampler's library stay. An editor still open on it no longer saves.
 
 ## Steps
 
@@ -55,12 +56,14 @@ Recording, slicing and review in one place, replacing the earlier recording shee
 - **Slicing:**
   - Onsets are detected on a normalised mix of all signals, so every signal of a hit is cut at the same samples.
   - Each hit gets 5 ms of pre-roll, and its tail is trimmed 6 dB above the noise floor. The noise floor comes from the noise-floor recording, or is estimated from the take. Optional denoising (off by default) uses the same recording as the noise profile; it only changes the sliced samples, never the takes.
+  - **Low cut** (optional, off by default): lowers what lies below each note's own pitch, e.g. the thump of a pluck on a ukulele's body; unpitched sounds stay as they are. Both are adjustable: below which share of the note's pitch (default 75 %) and by how much (default 12 dB). The note itself, from its pitch up, stays as it is; the cut follows each note, as a fixed filter would cut into the pitch of the low notes. Loudness is measured after the cut. Changing the low cut or denoising asks you to slice again.
   - Each hit is DC-removed and gets a 50 ms fade-out.
   - Takes recorded in the app keep their click grid: each hit is the strongest onset in its bar, so handling noise (a piezo hears every touch) never becomes a hit. A noise during the ring ends the hit before it, so it isn't in the sample.
 - **Pitch:** YIN, restricted to ±5 semitones around the expected note, refined by a spectral peak with parabolic interpolation (YIN reads about 4 cents sharp on decaying notes); accurate to well under 1 cent on test tones.
 - **Flags:** wrong note (>50 cents), clipped, no pitch, cut off, out of tune (>20 cents; info only, the instrument corrects tuning), and loudness that fits another lane of the note better. A note whose lanes don't get louder in order is reported.
 - **Decisions** (rejections, moved lanes, loops turned off) are stored in `hits.json` and survive slicing again, as long as that recording is unchanged.
 - **Changed recordings:** takes recorded, changed or deleted since slicing are listed, and the build refuses until they're sliced again.
+- **Better hit finding:** when the app finds hits differently than when the takes were sliced, the worksheet says so; slicing again keeps decisions and cuts set by hand.
 - **Loops** (optional; on by default for sustained and single-sample instruments): loop markers in the takes (a WAV `smpl` chunk, e.g. saved by WaveLab) are used as is; otherwise the steady part of each note is searched for the loop whose end best matches its start. Weak loops are flagged, the hit dialog previews the loop repeating, and "Use loop" turns a single hit's loop off.
 - An **"Only problems"** filter hides notes that need no attention.
 
@@ -93,7 +96,8 @@ Recording, slicing and review in one place, replacing the earlier recording shee
 - **Velocity:** each note plays its own lanes with their velocity ranges. A lane without usable hits gives its range to the next lower lane.
 - **Round robins** are renumbered per key and velocity cell, so rejected hits leave no silent gaps.
 - **Extras:** played on key release (a `trigger="release"` group), on their own key (with random round robins), or not used.
-- **Even out loudness** (optional): per velocity layer, each note's level is compared with a running median over its five neighbouring notes, and the difference (at most ±6 dB by default) goes into the sample's `volume`. Only notes that stick out change; the shape across the range and the gaps between layers stay as recorded, and the audio files are untouched.
+- **Even out loudness** (optional): every sample of a velocity is brought to that velocity's median loudness over all notes (the attack for plucked and struck sounds, the held part for sustained ones), by at most ±18 dB by default. Notes and the hits within a note then play alike, while soft velocities stay softer than loud ones. The correction goes into the bundle's copies of the samples; the audio files are untouched.
+- **Level:** recordings keep their level, often well below full scale. The build makes the instrument as loud as its notes need: the median loudness of its loudest velocity (the attack, or the held part of sustained sounds) at −16 dBFS. The gain goes into the bundle's copies of the samples (with each sample's evening-out correction), and a 2 ms limiter holds their peaks, mostly the click at the start of a pluck, under −1 dBFS. Sliced samples and takes stay as they are; the build reports the gain and how many samples were limited.
 - **Envelope:** attack, release and velocity sensitivity.
 - **Knobs:** signal mix (an equal-power crossfade for two signals, one volume per signal for more), tone (lowpass), attack, release, reverb, chorus, release-noise volume. CC1 drives the tone knob.
 - **Look:** background image (812 × 375), background and text colours, and a live preview.

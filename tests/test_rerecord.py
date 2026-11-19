@@ -419,3 +419,16 @@ def test_a_rejected_recording_only_warns_when_its_velocity_keeps_nothing(uke):
         h.rejected = True
     (warning,) = [w for w in map_samples(uke, m).warnings if "rejected" in w]
     assert warning.startswith(f"“{p.title}”: all its hits are rejected")
+
+
+def test_results_remember_which_hit_finding_made_them(uke):
+    from vinst.slicing import HIT_FINDER
+
+    p = lane(uke, "p")
+    write(uke, p.files[0], take_audio(p, (0.3, 0.32)), grid=[0.5, 3.5])
+    m = process(uke)
+    assert m.finder == HIT_FINDER
+    m.finder = 0  # sliced before hits were found as they are now
+    f = lane(uke, "f")
+    write(uke, f.files[0], take_audio(f, (0.6, 0.62)), grid=[0.5, 3.5])
+    assert process_one(uke, m, f.key).finder == 0  # one recording sliced again; the others are still older

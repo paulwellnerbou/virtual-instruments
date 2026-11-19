@@ -14,7 +14,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 
-from vinst import denoise, loops, takes_meta
+from vinst import denoise, loops, lowcut, takes_meta
 from vinst.plan import (
     Take,
     combined_base,
@@ -28,6 +28,9 @@ from vinst.plan import (
 from vinst.review import Hit, Manifest, TakeResult, check_lanes, samples_dir, settle
 from vinst.spec import Instrument
 
+# Raised whenever hits are found differently, so older results are offered for slicing again.
+# 1: attack judged over ATTACK_S, starts moved to the main rise.
+HIT_FINDER = 1
 HOP = 256
 PREROLL_S = 0.005
 FADE_OUT_S = 0.05
@@ -215,6 +218,26 @@ def noise_profiles(inst: Instrument, takes_dir: Path) -> dict[str, np.ndarray]:
     return profiles
 
 
+def cleanup_setup(inst: Instrument) -> str:
+    """What the written samples depend on beyond their cuts: the clean-up. "" while all of it is off,
+    as before it was kept."""
+    p = inst.processing
+    parts = []
+    if p.denoise:
+        parts.append(f"denoise {p.denoise_reduction_db:g}")
+    if p.low_cut:
+        parts.append(f"low cut {p.low_cut_below:g} {p.low_cut_db:g}")
+    return "; ".join(parts)
+
+
+def sliced_cleanup(inst: Instrument, manifest: Manifest) -> str:
+    """The clean-up `manifest` was sliced with. Results from before it was kept only say whether they
+    were denoised, so then the current amount is assumed."""
+    if manifest.cleanup or not manifest.denoised:
+        return manifest.cleanup
+    return f"denoise {inst.processing.denoise_reduction_db:g}"
+
+
 def fingerprint(paths: list[Path]) -> str:
     return ";".join(f"{p.name}:{p.stat().st_size}:{p.stat().st_mtime_ns}" for p in paths)
 
@@ -383,22 +406,27 @@ def analyse_cuts(inst: Instrument, take: Take, result: TakeResult, take_signals:
         result.info = f"{len(cuts)} hit{'' if len(cuts) == 1 else 's'}, {take.hits} planned"
     out_dir.mkdir(parents=True, exist_ok=True)
     subtype = SUBTYPES.get(inst.recording.bit_depth, "PCM_24")
+    p = inst.processing
+    # Only for pitched notes: a drum-kit style sound has a key, not a pitch to cut below.
+    cut = p.low_cut and take.kind == "note" and take.note is not None and take.note.sound is None
     for i, (start, end, cut_off) in enumerate(cuts):
         hit_id = f"{id_base}_{i + 1:02d}"
-        files, peaks = {}, {}
+        files, peaks, played = {}, {}, []
         for sig, audio in zip(take_signals, signals):
             seg = audio[start:end]
+            if cut:  # a change of tone, so loudness is measured after it
+                seg = lowcut.reduce(seg, sr, take.note.midi, p.low_cut_below, p.low_cut_db)
+            played.append(seg)
             peaks[sig.id] = round(float(db(np.max(np.abs(seg)))), 2)
             name = f"{hit_id}_{sig.id}.wav"
-            # Analysis above and below uses the original audio; only the written sample is cleaned.
-            out = (denoise.reduce(seg, profiles[sig.id], inst.processing.denoise_reduction_db)
-                   if profiles else seg.copy())
+            # Pitch and loudness are measured without denoising; only the written sample is cleaned.
+            out = (denoise.reduce(seg, profiles[sig.id], p.denoise_reduction_db) if profiles else seg.copy())
             sf.write(out_dir / name, finish(out, sr), sr, subtype=subtype)
             files[sig.id] = name
-        win = signals[0][start: start + int(LOUDNESS_WINDOW_S * sr)]
+        win = played[0][: int(LOUDNESS_WINDOW_S * sr)]
         hit = Hit(id=hit_id, index=i, layer=take.lane if take.kind == "note" else None, start=start, end=end,
                   files=files, rms_db=round(float(db(np.sqrt(np.mean(win ** 2)))), 2),
-                  body_db=body_level(signals[0][start:end], sr), peak_db=peaks)
+                  body_db=body_level(played[0], sr), peak_db=peaks)
         if any(p >= -0.02 for p in peaks.values()):
             hit.flags.append("clipped")
         if cut_off and take.kind == "note":
@@ -554,7 +582,8 @@ def process(inst: Instrument, previous: Manifest | None = None, progress: Progre
     profiles = noise_profiles(inst, takes_dir) if inst.processing.denoise else None
     earlier = by_take(previous)
     takes = recordings(inst, takes_dir)
-    manifest = Manifest(samples_dir=str(out_dir), setup=slicing_setup(inst),
+    manifest = Manifest(samples_dir=str(out_dir), setup=slicing_setup(inst), finder=HIT_FINDER,
+                        cleanup=cleanup_setup(inst),
                         noise_floor_db=next(iter(noise.values()), None), denoised=profiles is not None)
     for i, take in enumerate(takes):
         if progress:

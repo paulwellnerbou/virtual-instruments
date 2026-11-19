@@ -52,6 +52,7 @@ class Mapping:
     fx_keys: list[int] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     info: list[str] = field(default_factory=list)
+    gain_db: float = 0.0  # for all samples: the recordings keep their level, the instrument is made louder
 
     @property
     def files(self) -> set[str]:
@@ -117,24 +118,26 @@ def loudness(hit: Hit, sustained: bool) -> float:
     return hit.body_db if sustained and hit.body_db is not None else hit.rms_db
 
 
-def balance_corrections(pass_notes: dict[int, dict[str, list[Hit]]], layers: list[str],
-                        max_db: float, sustained: bool = False) -> dict[tuple[int, str], float]:
-    """dB per (note, layer) that pulls each note towards its neighbours' loudness.
+# The instrument is made as loud as this: the median loudness (see loudness(): the attack, or the held
+# part of sustained sounds) of its loudest velocity. Peaks are then held under level.CEILING_DB when
+# the samples are written.
+TARGET_LOUDNESS_DB = -16.0
+MAX_GAIN_DB = 24.0
 
-    Per layer, a running median over five neighbouring notes gives the expected level, so the
-    overall shape across the range and the differences between layers stay as recorded; only
-    notes that stick out are corrected, by at most max_db.
-    """
-    out: dict[tuple[int, str], float] = {}
+
+def balance_corrections(pass_notes: dict[int, dict[str, list[Hit]]], layers: list[str],
+                        max_db: float, sustained: bool = False) -> dict[str, float]:
+    """dB per hit (by id) that brings it to its velocity's median loudness over all notes, by at most
+    max_db. Every sample of a velocity then plays alike, from note to note and from one hit of a note
+    to the next; soft velocities stay softer than loud ones."""
+    out: dict[str, float] = {}
     for layer in layers:
-        points = sorted((root, float(np.median([loudness(h, sustained) for h in by_layer[layer]])))
-                        for root, by_layer in pass_notes.items() if by_layer.get(layer))
-        if len(points) < 3:
+        hits = [h for by_layer in pass_notes.values() for h in by_layer.get(layer, [])]
+        if len(hits) < 2:
             continue
-        values = np.array([v for _, v in points])
-        expected = np.array([np.median(values[max(0, i - 2): i + 3]) for i in range(len(values))])
-        for (root, _), corr in zip(points, np.clip(expected - values, -max_db, max_db)):
-            out[(root, layer)] = round(float(corr), 2)
+        median = float(np.median([loudness(h, sustained) for h in hits]))
+        for h in hits:
+            out[h.id] = round(float(np.clip(median - loudness(h, sustained), -max_db, max_db)), 2)
     return out
 
 
@@ -226,6 +229,9 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
 
     n = inst.preset.neighbour_round_robins
     spans = []
+    # Per velocity and hit (each once, however many keys borrow it): its loudness as played.
+    played: dict[str, dict[str, float]] = defaultdict(dict)
+    sustained = inst.meta.type in SUSTAINED_TYPES
     balanced: list[float] = []
     for pass_id, pass_notes in notes.items():
         roots = sorted(pass_notes)
@@ -254,14 +260,20 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
                             if other != root and abs(other - k_lo) <= n:
                                 candidates += [(other, h) for h in pass_notes[other].get(layer, [])]
                     for pos, (h_root, h) in enumerate(candidates, 1):
+                        played[layer][h.id] = loudness(h, sustained) + corrections.get(h.id, 0.0)
                         for sig in pass_signals[pass_id]:
                             m.notes.append(Entry(sig, h.files[sig], h_root, k_lo, k_hi, v_lo, v_hi,
                                                  tuning_for(inst, h), pos, len(candidates),
-                                                 corrections.get((h_root, layer), 0.0),
+                                                 corrections.get(h.id, 0.0),
                                                  loop_for(inst, h, hit_rate.get(h.id)), hit_rate.get(h.id)))
     m.span = (min(lo for lo, _ in spans), max(hi for _, hi in spans))
+    if played:
+        # Recordings are kept at their level, often well below full scale; the instrument plays them
+        # louder, as loud as its notes need rather than as its loudest click allows.
+        loudest = max(float(np.median(list(v.values()))) for v in played.values())
+        m.gain_db = round(min(MAX_GAIN_DB, TARGET_LOUDNESS_DB - loudest), 1)
     if inst.preset.balance:
-        m.info.append(f"Loudness balanced: {len(balanced)} note layers corrected"
+        m.info.append(f"Loudness evened out: {len(balanced)} samples corrected"
                       + (f", largest {max(balanced, key=abs):+.1f} dB." if balanced else "."))
     if inst.processing.loops:
         looped = {e.file for e in m.notes if e.loop}
@@ -463,7 +475,8 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
 
     vel_track = p.vel_track if p.vel_track is not None else (0.3 if len(inst.dynamics.layers) > 1 else 0.8)
     groups = _el(root, "groups", attack=float(p.attack), decay=25.0, sustain=1.0, release=float(p.release),
-                 ampVelTrack=float(vel_track))
+                 ampVelTrack=float(vel_track),
+                 volume=f"{mapping.gain_db:.1f}dB" if abs(mapping.gain_db) >= 0.1 else None)
 
     def add_group(name: str, tags: str, entries: list[Entry], **attrs: object) -> None:
         if not entries:

@@ -27,6 +27,8 @@ def _load(slug: str) -> dict:
 
 
 def _save(slug: str, data: dict) -> None:
+    if not store.exists(slug):  # deleted meanwhile: writing would bring its folder back without settings
+        return
     target = store.instrument_dir(slug) / FILE
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(data, indent=1), encoding="utf-8")

@@ -5,6 +5,7 @@ from lxml import etree
 
 from vinst import bundle, defaults, loops, review, store
 from vinst.preset import balance_corrections
+from vinst.preset import map_samples as preset_map
 from vinst.review import Hit
 from vinst.slicing import process
 from vinst.spec import InstrumentType
@@ -93,36 +94,37 @@ def test_turning_loops_on_after_slicing_asks_to_slice_again(sustained):
         bundle.build(sustained)
 
 
-def _hit(rms: float) -> Hit:
-    return Hit(id="x", index=0, start=0, end=1, files={}, rms_db=rms, peak_db={})
+def _hit(rms: float, id: str = "x") -> Hit:
+    return Hit(id=id, index=0, start=0, end=1, files={}, rms_db=rms, peak_db={})
 
 
-def test_balance_only_corrects_notes_that_stick_out():
-    levels = {60: -20, 61: -20.5, 62: -21, 63: -14, 64: -22, 65: -22.5, 66: -23}
-    notes = {r: {"mf": [_hit(v)], "f": [_hit(v + 10)]} for r, v in levels.items()}
-    corr = balance_corrections(notes, ["mf", "f"], max_db=6)
-    assert corr[(63, "mf")] == pytest.approx(-6.0)  # 7 dB louder than its neighbours, clamped to 6
-    assert corr[(63, "f")] == pytest.approx(-6.0)
-    assert all(abs(c) < 1 for (r, _), c in corr.items() if r != 63)
-    assert balance_corrections(notes, ["mf"], max_db=3)[(63, "mf")] == -3.0
+def test_every_sample_of_a_velocity_is_brought_to_its_median():
+    levels = {60: [-20, -30], 61: [-21], 62: [-26, -22], 63: [-14]}
+    notes = {r: {"mf": [_hit(v, f"mf{r}_{i}") for i, v in enumerate(vs)],
+                 "f": [_hit(v + 10, f"f{r}_{i}") for i, v in enumerate(vs)]} for r, vs in levels.items()}
+    corr = balance_corrections(notes, ["mf", "f"], max_db=18)
+    median = -21.5  # of -20, -30, -21, -26, -22, -14
+    assert corr["mf60_1"] == pytest.approx(median + 30)  # the quiet hit of a note, not just the note
+    assert corr["mf63_0"] == pytest.approx(median + 14)
+    assert corr["f60_1"] == pytest.approx(corr["mf60_1"])  # each velocity to its own median: f stays louder
+    assert balance_corrections(notes, ["mf"], max_db=3)["mf60_1"] == 3.0
 
 
 def test_balance_writes_sample_volumes(sustained):
     manifest = process(sustained)
     review.save(manifest, store.manifest_path(sustained.meta.slug))
     sustained.preset.balance = True
-    doc = etree.parse(str(bundle.build(sustained).preset_file))
-    # Three synthetic notes at similar levels: only small corrections, if any, and never above the limit.
-    vols = [float(s.get("volume")[:-2]) for s in doc.iter("sample") if s.get("volume")]
-    assert all(abs(v) <= sustained.preset.balance_max_db for v in vols)
+    mapping = preset_map(sustained, manifest)
+    assert mapping.notes and all(abs(e.volume_db) <= sustained.preset.balance_max_db for e in mapping.notes)
+    assert any("Loudness evened out" in i for i in mapping.info)
 
 
-def test_sustained_notes_are_balanced_by_their_held_level():
-    # Note 63 starts quieter (slow attack) but holds at the same level as its neighbours.
-    notes = {r: {"mf": [Hit(id="x", index=0, start=0, end=1, files={}, peak_db={},
+def test_sustained_notes_are_evened_out_by_their_held_level():
+    # Note 63 starts quieter (slow attack) but holds at the same level as the others.
+    notes = {r: {"mf": [Hit(id=f"h{r}", index=0, start=0, end=1, files={}, peak_db={},
                             rms_db=-26.0 if r == 63 else -20.0, body_db=-18.0)]} for r in range(60, 67)}
-    assert balance_corrections(notes, ["mf"], 6, sustained=True)[(63, "mf")] == 0
-    assert balance_corrections(notes, ["mf"], 6, sustained=False)[(63, "mf")] == 6.0
+    assert balance_corrections(notes, ["mf"], 18, sustained=True)["h63"] == 0
+    assert balance_corrections(notes, ["mf"], 18, sustained=False)["h63"] == 6.0
 
 
 def test_marker_problems_are_reported(sustained):

@@ -1,5 +1,6 @@
 """Write the .dsbundle, install it into the DecentSampler library folder, package a .dslibrary."""
 
+import json
 import os
 import re
 import shutil
@@ -7,13 +8,17 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from vinst import preset, review, store
+from vinst import level, preset, review, store
 from vinst.plan import slicing_setup
 from vinst.slicing import changed_takes
 from vinst.spec import Instrument
 from vinst.validate import Report, validate_bundle
 
 # Also shown in the worksheet, next to its slice button: so no pointer to a step here.
+FINDER_MESSAGE = ("Hits are now found more precisely than when these takes were sliced. Slicing again keeps "
+                  "your decisions and your cuts set by hand.")
+CLEANUP_MESSAGE = ("The clean-up of the sliced samples (low cut, denoise) changed since they were sliced. "
+                   "Slicing again applies it to all of them; your decisions are kept.")
 STALE_MESSAGE = ("Signals, recording passes or the loop setting changed since the takes were sliced; "
                  "slicing again keeps your decisions.")
 def changed_message(changed: list[str]) -> str:
@@ -64,6 +69,33 @@ def sync_files(sources: dict[str, Path], dest: Path) -> None:
             existing.unlink()
 
 
+def sync_raised(sources: dict[str, Path], gains: dict[str, float], dest: Path, record: Path) -> list[float]:
+    """Like sync_files, but each sample written raised by its gain and limited (see level); `record`
+    keeps what each was written from, so unchanged ones aren't written again. Returns, per sample the
+    limiter touched, how much it took off."""
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        done = json.loads(record.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        done = {}
+    out: dict[str, dict] = {}
+    for name, src in sources.items():
+        st = src.stat()
+        wanted = {"source": f"{st.st_size}:{st.st_mtime_ns}", "gain": round(gains.get(name, 0.0), 2),
+                  "limiter": f"{level.CEILING_DB:g} dB, {level.LIMITER_S:g} s"}
+        was = done.get(name)
+        if not ((dest / name).exists() and was and all(was.get(k) == v for k, v in wanted.items())):
+            wanted["reduced"] = round(level.write_raised(src, dest / name, wanted["gain"]), 2)
+        else:
+            wanted["reduced"] = was.get("reduced", 0.0)
+        out[name] = wanted
+    for existing in dest.iterdir():
+        if existing.name not in sources and existing.is_file():
+            existing.unlink()
+    record.write_text(json.dumps(out, indent=1), encoding="utf-8")
+    return [v["reduced"] for v in out.values() if v["reduced"] > 0.05]
+
+
 def build(inst: Instrument) -> BuildResult:
     manifest = review.load(store.manifest_path(inst.meta.slug))
     if manifest is None:
@@ -86,7 +118,20 @@ def build(inst: Instrument) -> BuildResult:
     missing = [f for f in mapping.files if not (samples_src / f).is_file()]
     if missing:
         raise ValueError(f"{len(missing)} sliced samples are missing in {samples_src}; slice again.")
-    sync_files({f: samples_src / f for f in mapping.files}, bundle / preset.SAMPLES_DIR)
+    # The level goes into the samples themselves, with each sample's evening-out correction, so their clicks
+    # can be limited; the preset then plays them as they are.
+    gains = {e.file: mapping.gain_db for e in mapping.release + mapping.keys}
+    gains.update({e.file: mapping.gain_db + e.volume_db for e in mapping.notes})
+    limited = sync_raised({f: samples_src / f for f in mapping.files}, gains, bundle / preset.SAMPLES_DIR,
+                          bundle.parent / "levels.json")
+    if abs(mapping.gain_db) >= 0.1:
+        mapping.info.append(
+            f"Level {'raised' if mapping.gain_db > 0 else 'lowered'} by {abs(mapping.gain_db):.1f} dB"
+            + (f"; the peaks of {len(limited)} samples were held under {level.CEILING_DB:.0f} dBFS, by up to "
+               f"{max(limited):.1f} dB." if limited else "."))
+    for e in mapping.notes:
+        e.volume_db = 0.0
+    mapping.gain_db = 0.0
 
     background = None
     if inst.preset.background:

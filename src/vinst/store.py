@@ -102,6 +102,10 @@ def duplicate(slug: str, new_name: str) -> Instrument:
     return create(copy)
 
 
+def exists(slug: str) -> bool:
+    return (instrument_dir(slug) / SPEC_FILE).exists()
+
+
 def manifest_path(slug: str) -> Path:
     from vinst.review import MANIFEST_FILE
 

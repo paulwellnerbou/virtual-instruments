@@ -1,5 +1,7 @@
 import zipfile
+from pathlib import Path
 
+import numpy as np
 import pytest
 from conftest import piezo_and_mic
 from lxml import etree
@@ -277,3 +279,51 @@ def test_velocity_layers_start_where_chosen(built):
     result = bundle.build(inst)
     vels = {(s["loVel"], s["hiVel"]) for s in samples(result, "Piezo") if s["rootNote"] == "64"}
     assert vels == {("1", "19"), ("20", "109"), ("110", "127")}
+
+
+def test_quiet_recordings_play_louder_by_how_loud_their_notes_are(built):
+    inst, manifest = built
+    before = preset.map_samples(inst, manifest).gain_db
+    for t in manifest.takes:  # as if recorded 12 dB lower
+        for h in t.hits:
+            h.rms_db -= 12
+    mapping = preset.map_samples(inst, manifest)
+    assert mapping.gain_db == pytest.approx(before + 12, abs=0.11)
+    xml = etree.fromstring(preset.render(inst, mapping))
+    assert xml.find("groups").get("volume") == f"{mapping.gain_db:.1f}dB"
+
+
+def test_the_limiter_holds_a_click_under_the_ceiling_and_leaves_the_note():
+    from vinst.level import CEILING_DB, limit
+
+    sr = 48000
+    t = np.arange(sr) / sr
+    note = (0.05 * np.sin(2 * np.pi * 440 * t) * np.exp(-3 * t))[:, None]
+    note[100:110] = 0.5  # a 0.2 ms click, 20 dB above the note
+    out, reduced = limit(note, sr, 12.0)
+    assert np.max(np.abs(out)) <= 10 ** (CEILING_DB / 20) + 1e-9 and reduced == pytest.approx(7, abs=0.1)
+    later = slice(int(0.1 * sr), sr)  # the note away from the click: just 12 dB louder
+    assert np.allclose(out[later], note[later] * 10 ** (12 / 20))
+
+
+def test_the_bundle_plays_quiet_samples_raised(built, monkeypatch):
+    import soundfile as sf
+
+    inst, manifest = built
+    monkeypatch.setattr(preset, "TARGET_LOUDNESS_DB", 0.0)  # far louder than the test takes
+    result = bundle.build(inst)
+    assert any(i.startswith("Level raised") and "held under -1 dBFS" in i for i in result.info)
+    xml = etree.parse(str(result.preset_file))
+    assert xml.find("groups").get("volume") is None  # it's in the samples now
+    s = next(iter(xml.iter("sample")))
+    path = s.get("path").split("/")[-1]
+    src, _ = sf.read(str(Path(manifest.samples_dir) / path))
+    out, _ = sf.read(str(result.bundle / preset.SAMPLES_DIR / path))
+    assert np.max(np.abs(out)) > np.max(np.abs(src)) and np.max(np.abs(out)) <= 10 ** (-1 / 20) + 1e-4
+
+
+def test_a_borrowed_hit_counts_once_for_the_level(built):
+    inst, manifest = built
+    alone = preset.map_samples(inst, manifest).gain_db
+    inst.preset.neighbour_round_robins = 2  # every hit now plays on several keys
+    assert preset.map_samples(inst, manifest).gain_db == alone

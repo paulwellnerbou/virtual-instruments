@@ -147,6 +147,8 @@ LANES_OUT_OF_ORDER = "playing harder wouldn't sound louder"
 class Manifest(BaseModel):
     samples_dir: str
     setup: str = ""  # plan.slicing_setup() at slicing time
+    finder: int = 0  # slicing.HIT_FINDER of the slicing that found all its hits; 0: before it was kept
+    cleanup: str = ""  # slicing.cleanup_setup() of the slicing that wrote all its samples
     source: Literal["takes", "samples"] = "takes"  # sliced recorded takes, or imported samples
     noise_floor_db: float | None = None
     denoised: bool = False

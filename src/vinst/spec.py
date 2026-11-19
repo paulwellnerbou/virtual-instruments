@@ -168,6 +168,10 @@ class Processing(BaseModel):
     # Sustain loops: from loop markers in the takes (e.g. set in WaveLab), else found automatically.
     loops: bool = False
     loop_crossfade_ms: float = Field(default=30.0, ge=0, le=500)
+    # Lowers what lies below each note's pitch, e.g. a pluck's thump (see vinst.lowcut).
+    low_cut: bool = False
+    low_cut_below: float = Field(default=0.75, ge=0.3, le=1.0, description="share of the note's pitch")
+    low_cut_db: float = Field(default=12.0, ge=1, le=40)
 
 
 CONTROLS = {
@@ -199,9 +203,9 @@ class Preset(BaseModel):
     # The lowest velocity of each layer after the first, e.g. [80] for "f from 80". Empty, or not
     # fitting the layers (e.g. after adding one), means an even split.
     velocity_splits: list[int] = []
-    # Even out loudness between notes via each sample's volume; the audio files stay unchanged.
+    # Bring every sample of a velocity to its median loudness (see preset.balance_corrections).
     balance: bool = False
-    balance_max_db: float = Field(default=6.0, ge=0.5, le=24)
+    balance_max_db: float = Field(default=18.0, ge=0.5, le=30)
     controls: list[str] = ["mix", "tone", "release", "reverb", "noise"]
     tone: float = Field(default=1.0, ge=0, le=1)
     reverb: float = Field(default=0.15, ge=0, le=1)

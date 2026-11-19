@@ -189,3 +189,71 @@ def test_denoise_is_opt_in_and_needs_the_noise_floor(sliced, tmp_path):
     (tmp_path / "empty").mkdir()
     with pytest.raises(ValueError, match="noisefloor_piezo.wav is missing"):
         process(on)
+
+
+def test_low_cut_lowers_only_what_lies_below_the_notes_pitch():
+    from vinst.lowcut import reduce
+
+    sr, midi = 48000, 69  # A, 440 Hz
+    t = np.arange(sr) / sr
+    note, thump = np.sin(2 * np.pi * 440 * t), np.sin(2 * np.pi * 150 * t)
+
+    def level(x):  # away from the edges
+        return 20 * np.log10(np.sqrt(np.mean(x[sr // 4: -sr // 4] ** 2)))
+
+    assert level(reduce(note, sr, midi, 0.75, 12)) - level(note) > -0.3  # the pitch stays
+    assert level(reduce(thump, sr, midi, 0.75, 12)) - level(thump) == pytest.approx(-12, abs=0.2)
+    assert level(reduce(thump, sr, midi, 0.75, 6)) - level(thump) == pytest.approx(-6, abs=0.2)
+    assert np.array_equal(reduce(thump, sr, midi, 0.75, 0), thump)
+
+
+def test_low_cut_is_part_of_the_clean_up_and_measured_after(sliced, monkeypatch):
+    from vinst.slicing import cleanup_setup
+
+    inst, m = sliced
+    assert m.cleanup == cleanup_setup(inst) == ""  # all off: as before it was kept
+    monkeypatch.setattr(inst.processing, "low_cut", True)
+    assert cleanup_setup(inst) == "low cut 0.75 12"
+    cut = process(inst)
+    assert cut.cleanup == "low cut 0.75 12"
+    before = {h.id: h.rms_db for t in m.takes for h in t.hits}
+    after = {h.id: h.rms_db for t in cut.takes for h in t.hits}
+    assert all(after[k] <= before[k] + 0.05 for k in after if k in before)  # never louder for it
+
+
+def test_low_cut_leaves_unpitched_sounds_alone(tmp_path, monkeypatch):
+    from vinst import defaults, store
+    from vinst.plan import plan_takes
+    from vinst.spec import InstrumentType
+
+    monkeypatch.setenv("VINST_HOME", str(tmp_path / "home"))
+    inst = defaults.new_instrument("Kit", InstrumentType.UNPITCHED)
+    inst.recording.takes_dir = str(tmp_path / "takes")
+    inst.recording.noise_floor_seconds = 0
+    inst.extras = []
+    inst = store.create(inst)
+    take = next(t for t in plan_takes(inst) if t.kind == "note")
+    sr = 48000
+    rng = np.random.default_rng(1)
+    audio = rng.normal(0, 1e-4, 4 * sr)
+    t = np.arange(int(0.5 * sr)) / sr
+    audio[sr // 2: sr // 2 + len(t)] += 0.5 * np.sin(2 * np.pi * 40 * t) * np.exp(-6 * t)  # a kick's body
+    (tmp_path / "takes").mkdir()
+    sf.write(tmp_path / "takes" / take.files[0], audio, sr, subtype="PCM_24")
+    loud = {}
+    for on in (False, True):
+        inst.processing.low_cut = on
+        m = process(inst)
+        loud[on] = [h.rms_db for r in m.takes if r.key == take.key for h in r.hits]
+    assert loud[True] and loud[True] == loud[False]
+
+
+def test_results_denoised_before_the_clean_up_was_kept_dont_ask_again(sliced, monkeypatch):
+    from vinst.slicing import cleanup_setup, sliced_cleanup
+
+    inst, m = sliced
+    monkeypatch.setattr(inst.processing, "denoise", True)
+    m = m.model_copy(update={"cleanup": "", "denoised": True})  # as written before the clean-up was kept
+    assert sliced_cleanup(inst, m) == cleanup_setup(inst) == "denoise 12"
+    monkeypatch.setattr(inst.processing, "low_cut", True)
+    assert sliced_cleanup(inst, m) != cleanup_setup(inst)
