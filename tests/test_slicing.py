@@ -207,6 +207,21 @@ def test_low_cut_lowers_only_what_lies_below_the_notes_pitch():
     assert np.array_equal(reduce(thump, sr, midi, 0.75, 0), thump)
 
 
+def test_what_the_low_cut_takes_out_brings_it_back_by_the_knobs_amount():
+    from vinst.lowcut import removed, restore_table
+
+    sr = 48000
+    t = np.arange(sr) / sr
+    x = np.sin(2 * np.pi * 440 * t) + np.sin(2 * np.pi * 150 * t)
+    cut, out = removed(x, sr, 69, 0.75, 12)
+    assert np.allclose(cut + out, x)
+    table = [tuple(map(float, row.split(","))) for row in restore_table(12).split(";")]
+    assert table[0] == (0, 1) and table[-2][1] == 0 and table[-1][1] == 0
+    r = 10 ** (-12 / 20)
+    for v, g in table[:-1]:  # what's left below the pitch at that volume: exactly the knob's cut
+        assert 1 - (1 - g) * (1 - r) == pytest.approx(10 ** (-v / 20), abs=1e-4)
+
+
 def test_low_cut_needs_no_slicing_but_samples_cut_before_are_known(sliced, monkeypatch):
     from vinst.slicing import cleanup_setup, cut_in_samples
 

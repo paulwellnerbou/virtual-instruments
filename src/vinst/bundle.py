@@ -73,11 +73,13 @@ def sync_files(sources: dict[str, Path], dest: Path) -> None:
 
 
 def sync_raised(sources: dict[str, Path], gains: dict[str, float], dest: Path, record: Path,
-                low_cuts: dict[str, tuple[float, float, float]] | None = None) -> list[float]:
+                low_cuts: dict[str, tuple[float, float, float]] | None = None,
+                removed: dict[str, str] | None = None) -> list[float]:
     """Like sync_files, but each sample written raised by its gain and limited (see level), after its
-    low cut if any; `record` keeps what each was written from, so unchanged ones aren't written again.
-    Returns, per sample the limiter touched, how much it took off."""
-    low_cuts = low_cuts or {}
+    low cut if any, and what the cut took out to its file in `removed`, if it has one there; `record`
+    keeps what each was written from, so unchanged ones aren't written again. Returns, per sample the
+    limiter touched, how much it took off."""
+    low_cuts, removed = low_cuts or {}, removed or {}
     dest.mkdir(parents=True, exist_ok=True)
     try:
         done = json.loads(record.read_text(encoding="utf-8"))
@@ -88,25 +90,38 @@ def sync_raised(sources: dict[str, Path], gains: dict[str, float], dest: Path, r
         st = src.stat()
         cut = low_cuts.get(name)
         wanted = {"source": f"{st.st_size}:{st.st_mtime_ns}", "gain": round(gains.get(name, 0.0), 2),
-                  "limiter": f"{level.CEILING_DB:g} dB, {level.LIMITER_S:g} s",
-                  "low cut": list(cut) if cut else None}
+                  "limiter": f"{level.CEILING_DB:g} dB, {level.LIMITER_S:g} s"
+                             + (", with what was cut" if name in removed else ""),
+                  "low cut": list(cut) if cut else None, "removed": removed.get(name)}
         was = done.get(name)
-        if not ((dest / name).exists() and was and all(was.get(k) == v for k, v in wanted.items())):
-            wanted["reduced"] = round(level.write_raised(src, dest / name, wanted["gain"], cut), 2)
+        written = [dest / name] + ([dest / removed[name]] if name in removed else [])
+        if not (all(f.exists() for f in written) and was and all(was.get(k) == v for k, v in wanted.items())):
+            wanted["reduced"] = round(level.write_raised(
+                src, dest / name, wanted["gain"], cut, dest / removed[name] if name in removed else None), 2)
         else:
             wanted["reduced"] = was.get("reduced", 0.0)
         out[name] = wanted
+    keep = set(sources) | {removed[n] for n in sources if n in removed}
     for existing in dest.iterdir():
-        if existing.name not in sources and existing.is_file():
+        if existing.name not in keep and existing.is_file():
             existing.unlink()
     record.write_text(json.dumps(out, indent=1), encoding="utf-8")
     return [v["reduced"] for v in out.values() if v["reduced"] > 0.05]
 
 
-def low_cut_now(inst: Instrument, manifest: Manifest) -> bool:
+REMOVED_SUFFIX = "-low-part"
+
+
+def removed_name(file: str) -> str:
+    """The file for what the low cut took out of the sample `file`."""
+    stem, dot, ext = file.rpartition(".")
+    return f"{stem}{REMOVED_SUFFIX}{dot}{ext}" if dot else file + REMOVED_SUFFIX
+
+
+def low_cut_now(inst: Instrument, manifest: Manifest | None) -> bool:
     """Whether to apply the low cut in this build: when it's on, for notes with a pitch to cut below,
     and not into samples sliced with it already."""
-    return inst.processing.low_cut and lowcut.applies(inst) and not cut_in_samples(manifest)
+    return inst.processing.low_cut and lowcut.applies(inst) and not (manifest and cut_in_samples(manifest))
 
 
 def after_low_cut(inst: Instrument, manifest: Manifest) -> Manifest:
@@ -162,8 +177,12 @@ def build(inst: Instrument) -> BuildResult:
     gains.update({e.file: mapping.gain_db + e.volume_db for e in mapping.notes})
     p = inst.processing
     low_cuts = {e.file: (float(e.root), p.low_cut_below, p.low_cut_db) for e in mapping.notes} if cutting else {}
+    if cutting and "lowcut" in inst.preset.controls:
+        for e in mapping.notes:
+            e.removed = removed_name(e.file)
     limited = sync_raised({f: samples_src / f for f in mapping.files}, gains, bundle / preset.SAMPLES_DIR,
-                          bundle.parent / "levels.json", low_cuts)
+                          bundle.parent / "levels.json", low_cuts,
+                          {e.file: e.removed for e in mapping.notes if e.removed})
     if abs(mapping.gain_db) >= 0.1:
         mapping.info.append(
             f"Level {'raised' if mapping.gain_db > 0 else 'lowered'} by {abs(mapping.gain_db):.1f} dB"

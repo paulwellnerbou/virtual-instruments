@@ -107,7 +107,8 @@ class Range(BaseModel):
 
 # Group tags the generated preset uses itself; a signal id must not shadow them.
 NOTES_TAG, FX_TAG, RELEASE_TAG = "notes", "fx", "release-noise"
-RESERVED_SIGNAL_IDS = {NOTES_TAG, FX_TAG, RELEASE_TAG}
+LOW_TAG = "low-cut-part"  # what the low cut took out, played along as much as the Low cut knob gives back
+RESERVED_SIGNAL_IDS = {NOTES_TAG, FX_TAG, RELEASE_TAG, LOW_TAG}
 
 
 class Dynamics(BaseModel):
@@ -188,6 +189,7 @@ class Processing(BaseModel):
 CONTROLS = {
     "mix": "Signal mix",
     "tone": "Tone",
+    "lowcut": "Low cut",
     "attack": "Attack",
     "release": "Release",
     "reverb": "Reverb",
@@ -217,7 +219,7 @@ class Preset(BaseModel):
     # Bring every sample of a velocity to its median loudness (see preset.balance_corrections).
     balance: bool = False
     balance_max_db: float = Field(default=18.0, ge=0.5, le=30)
-    controls: list[str] = ["mix", "tone", "release", "reverb", "noise"]
+    controls: list[str] = ["mix", "tone", "lowcut", "release", "reverb", "noise"]
     tone: float = Field(default=1.0, ge=0, le=1)
     reverb: float = Field(default=0.15, ge=0, le=1)
     chorus: float = Field(default=0.0, ge=0, le=1)

@@ -38,12 +38,27 @@ def reduce(audio: np.ndarray, sr: int, midi: float, below: float, reduction_db: 
     subtracted in part, so above the cut the sample is unchanged and below it lowered by exactly the
     amount, not removed.
     """
+    return removed(audio, sr, midi, below, reduction_db)[0]
+
+
+def removed(audio: np.ndarray, sr: int, midi: float, below: float, reduction_db: float) -> tuple[np.ndarray, np.ndarray]:
+    """(`audio` after the cut, what the cut took out): the two add up to `audio` exactly, so playing
+    the second along with the first, turned down by a factor, gives the cut by a smaller amount."""
     cut = frequency(midi, below)
     if reduction_db <= 0 or cut >= sr / 2 * 0.9 or len(audio) < 64:
-        return audio
+        return audio, np.zeros_like(audio)
     sos = butter(ORDER, cut, btype="lowpass", fs=sr, output="sos")
-    low = sosfiltfilt(sos, audio, axis=0)
-    return audio - (1 - 10 ** (-reduction_db / 20)) * low
+    out = (1 - 10 ** (-reduction_db / 20)) * sosfiltfilt(sos, audio, axis=0)
+    return audio - out, out
+
+
+def restore_table(reduction_db: float, steps: int = 16) -> str:
+    """A knob's translation table from how many dB to cut (0 to `reduction_db`) to the volume of what
+    the cut took out (1 to 0), so the knob's value is the cut in dB."""
+    r = 10 ** (-reduction_db / 20)
+    points = [reduction_db * i / steps for i in range(steps + 1)]
+    rows = [f"{v:g},{max(0.0, (10 ** (-v / 20) - r) / (1 - r)):.4f}" for v in points]
+    return ";".join(rows + [f"{reduction_db + 0.001:g},0"])  # past the end, so the knob's maximum is fully cut
 
 
 def loudness_change(path: Path, midi: float, below: float, reduction_db: float) -> tuple[float, float]:

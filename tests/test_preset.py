@@ -318,13 +318,15 @@ def test_quiet_recordings_play_louder_by_how_loud_their_notes_are(built):
 
 
 def test_the_limiter_holds_a_click_under_the_ceiling_and_leaves_the_note():
-    from vinst.level import CEILING_DB, limit
+    from vinst.level import CEILING_DB, limiter_gain
 
     sr = 48000
     t = np.arange(sr) / sr
     note = (0.05 * np.sin(2 * np.pi * 440 * t) * np.exp(-3 * t))[:, None]
     note[100:110] = 0.5  # a 0.2 ms click, 20 dB above the note
-    out, reduced = limit(note, sr, 12.0)
+    raised = note * 10 ** (12 / 20)
+    gain = limiter_gain(raised, sr)
+    out, reduced = raised * gain[:, None], -20 * np.log10(gain.min())
     assert np.max(np.abs(out)) <= 10 ** (CEILING_DB / 20) + 1e-9 and reduced == pytest.approx(7, abs=0.1)
     later = slice(int(0.1 * sr), sr)  # the note away from the click: just 12 dB louder
     assert np.allclose(out[later], note[later] * 10 ** (12 / 20))
@@ -375,6 +377,87 @@ def test_the_low_cut_is_applied_when_building(built, monkeypatch):
 
     root = int(s.get("rootNote"))
     assert below(out, root) < below(src, root)  # the sliced sample stays, the bundle's copy is cut
+
+
+def test_the_low_cut_knob_plays_back_what_the_cut_took_out(built, monkeypatch):
+    import soundfile as sf
+
+    from vinst import lowcut
+    from vinst.spec import LOW_TAG
+
+    inst, manifest = built
+    inst.processing.low_cut = True
+    monkeypatch.setattr(inst.processing, "low_cut_db", 20.0)
+    inst.preset.controls = [*inst.preset.controls, "lowcut"]
+    result = bundle.build(inst)
+    assert not result.report.errors
+    xml = etree.parse(str(result.preset_file))
+    knob = next(k for k in xml.iter("labeled-knob") if k.get("label") == preset.LOW_CUT_LABEL)
+    assert float(knob.get("value")) == float(knob.get("maxValue")) == 20.0
+    assert float(next(t for t in xml.iter("tag") if t.get("name") == LOW_TAG).get("volume")) == 0
+    notes = next(g for g in xml.iter("group") if "notes" in g.get("tags").split(","))
+    low = next(g for g in xml.iter("group") if LOW_TAG in g.get("tags").split(","))
+    pairs = list(zip(notes.iter("sample"), low.iter("sample")))
+    assert pairs and len(pairs) == len(list(notes.iter("sample")))
+    keys = ("rootNote", "loNote", "hiNote", "loVel", "hiVel", "seqPosition", "seqLength", "tuning")
+    for a, b in pairs:  # each note's low part plays along with it, and only with it
+        assert all(a.get(k) == b.get(k) for k in keys)
+    a, b = pairs[0]
+    folder = result.bundle
+    cut, sr = sf.read(str(folder / a.get("path")))
+    part, _ = sf.read(str(folder / b.get("path")))
+    src, _ = sf.read(str(Path(manifest.samples_dir) / a.get("path").split("/")[-1]))
+
+    def below(x):  # share of energy under the cut
+        spec = np.abs(np.fft.rfft(x)) ** 2
+        f = np.fft.rfftfreq(len(x), 1 / sr)
+        return spec[f < lowcut.frequency(int(a.get("rootNote")), 0.6)].sum() / spec.sum()
+
+    assert below(cut) < below(src)
+    assert below(cut + part) == pytest.approx(below(src), rel=0.02)  # knob at 0 dB: the recording
+
+
+def test_no_low_cut_knob_without_the_low_cut(built):
+    inst, _ = built
+    inst.preset.controls = [*inst.preset.controls, "lowcut"]
+    result = bundle.build(inst)
+    xml = etree.parse(str(result.preset_file))
+    assert all(k.get("label") != preset.LOW_CUT_LABEL for k in xml.iter("labeled-knob"))
+    assert not list(result.bundle.rglob("*-low-part*"))
+
+
+def test_turning_the_knob_on_and_off_rewrites_the_built_samples(built):
+    import soundfile as sf
+
+    from vinst.level import CEILING_DB
+
+    inst, _ = built
+    inst.processing.low_cut = True
+    inst.preset.controls = [c for c in inst.preset.controls if c != "lowcut"]
+    result = bundle.build(inst)
+    assert not list(result.bundle.rglob("*-low-part*"))
+    inst.preset.controls = [*inst.preset.controls, "lowcut"]
+    result = bundle.build(inst)
+    parts = list(result.bundle.rglob("*-low-part*"))
+    assert parts
+    for part in parts:  # the knob at 0 dB stays under the ceiling too
+        low, _ = sf.read(str(part))
+        cut, _ = sf.read(str(part).replace(bundle.REMOVED_SUFFIX, ""))
+        assert np.max(np.abs(cut + low)) <= 10 ** (CEILING_DB / 20) + 1e-4
+    inst.preset.controls = [c for c in inst.preset.controls if c != "lowcut"]
+    result = bundle.build(inst)
+    assert not list(result.bundle.rglob("*-low-part*"))
+
+
+def test_the_mod_wheel_leaves_the_low_cut_alone(built):
+    inst, _ = built
+    inst.processing.low_cut = True
+    inst.preset.controls = ["lowcut", "release"]
+    xml = etree.parse(str(bundle.build(inst).preset_file))
+    tab = xml.find("ui/tab")
+    labels = [el.get("label") for el in tab]
+    position = int(xml.find("midi/cc/binding").get("position"))
+    assert labels[position] == "Release"
 
 
 def _riff(data: bytes, at: int, end: int) -> dict[bytes, list[bytes]]:

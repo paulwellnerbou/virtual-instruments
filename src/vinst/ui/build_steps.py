@@ -8,9 +8,10 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from nicegui import app, run, ui
 
-from vinst import bundle, lowcut, sf2, store
+from vinst import bundle, lowcut, review, sf2, store
 from vinst.plan import layer_bounds, recording_passes
-from vinst.preset import KNOB_Y, UI_H, UI_W, VISIBLE_H, knob_layout, mixable_signals, switched_passes
+from vinst.preset import (KNOB_Y, LOW_CUT_LABEL, UI_H, UI_W, VISIBLE_H, knob_layout, mixable_signals,
+                          switched_passes)
 from vinst.spec import CONTROLS, Extra
 from vinst.ui.anim import Collapse
 from vinst.ui.finder import reveal
@@ -32,6 +33,21 @@ def background_image(slug: str) -> FileResponse:
     if not path.is_file():
         raise HTTPException(404)
     return FileResponse(path)
+
+
+# slug -> (modification time of its hits.json, what it holds), so the preview needn't read it on every change.
+_manifests: dict[str, tuple[int, "review.Manifest | None"]] = {}
+
+
+def _sliced(slug: str) -> "review.Manifest | None":
+    path = store.manifest_path(slug)
+    try:
+        stamp = path.stat().st_mtime_ns
+    except OSError:
+        return None
+    if slug not in _manifests or _manifests[slug][0] != stamp:
+        _manifests[slug] = (stamp, review.load(path))
+    return _manifests[slug][1]
 
 
 def _argb_to_css(argb: str) -> str:
@@ -56,7 +72,9 @@ def preview_html(ed: "Editor") -> str:
             labels += [s.name for s in mixable]
         elif c == "noise" and has_release:
             labels.append("Noise")
-        elif c not in ("mix", "noise"):
+        elif c == "lowcut" and bundle.low_cut_now(inst, _sliced(inst.meta.slug)):
+            labels.append(LOW_CUT_LABEL)
+        elif c not in ("mix", "noise", "lowcut"):
             labels.append(CONTROLS[c])
     s = PREVIEW_SCALE
     text = _argb_to_css(p.text_color)
@@ -218,7 +236,10 @@ def step_sound(ed: "Editor") -> None:
         ui.label("Lowers what lies below each note's own pitch, e.g. the thump of a pluck on a ukulele's body; "
                  "the note itself, from its pitch up, stays as it is. Some of that low end is the "
                  "instrument's body, so start gently and listen. Applied when building: change it, build, "
-                 "listen; no slicing needed.").classes("text-xs opacity-70 max-w-3xl")
+                 "listen; no slicing needed. With the Low cut knob (below), you can lessen the cut while "
+                 "playing, down to none; the instrument then also carries what was cut out. Loudness is "
+                 "evened out for the full cut, so notes with much thump play louder with the knob turned "
+                 "down.").classes("text-xs opacity-70 max-w-3xl")
 
     ui.separator()
     ui.label("Extras").classes("text-base font-medium")
@@ -241,6 +262,9 @@ def step_sound(ed: "Editor") -> None:
     with ui.row().classes("items-center gap-2"):
         ui.label("Knobs:")
         for key, label in CONTROLS.items():
+            if key == "lowcut" and not lowcut.applies(inst):
+                continue
+
             def toggle(e: Any, key: str = key) -> None:
                 chosen = [c for c in CONTROLS if (c == key and e.value) or (c != key and c in p.controls)]
                 ed.set(p, "controls", chosen)

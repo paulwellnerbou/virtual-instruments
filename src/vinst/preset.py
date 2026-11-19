@@ -3,14 +3,16 @@
 import math
 import re
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from lxml import etree
 
+from vinst import lowcut
 from vinst.plan import Pass, Take, lane_bounds, note_lanes, plan_takes, recording_passes
 from vinst.review import Hit, Manifest, lane_of
-from vinst.spec import CONTROLS, SUSTAINED_TYPES, FX_TAG, NOTES_TAG, RELEASE_TAG, Instrument, Signal, file_token
+from vinst.spec import (CONTROLS, FX_TAG, LOW_TAG, NOTES_TAG, RELEASE_TAG, SUSTAINED_TYPES, Instrument, Signal,
+                        file_token)
 
 MIN_VERSION = "1.13.0"
 UI_W, UI_H = 812, 375
@@ -21,6 +23,7 @@ KNOB_W, KNOB_H, KNOB_GAP = 90, 90, 6
 KNOB_Y = 100
 SAMPLES_DIR = "Samples"
 # Tone knob: 0..1 -> lowpass cutoff in Hz, as in the official Decent Sampler presets.
+LOW_CUT_LABEL = "Low cut dB"  # a knob shows a bare number
 TONE_TABLE = "0,33;0.3,150;0.4,450;0.5,1100;0.7,4100;0.9,11000;1.0001,22000"
 
 
@@ -43,6 +46,7 @@ class Entry:
     sample_rate: int | None = None
     extra: str = ""  # an extra on its own key: its id, for a group of its own
     mutes: bool = False  # that extra stops the notes still ringing
+    removed: str = ""  # the file with what the low cut took out of this one, for the Low cut knob
 
 
 @dataclass
@@ -369,6 +373,8 @@ def active_controls(inst: Instrument, mapping: Mapping) -> list[str]:
             continue
         if c == "noise" and not mapping.release:
             continue
+        if c == "lowcut" and not any(e.removed for e in mapping.notes):
+            continue
         out.append(c)
     return out
 
@@ -397,6 +403,13 @@ def knobs_for(inst: Instrument, controls: list[str], effects: list[str]) -> list
             knobs.append(Knob("tone", CONTROLS[c], 0, 1, p.tone, [
                 dict(type="effect", level="instrument", position=effects.index("lowpass"),
                      parameter="FX_FILTER_FREQUENCY", translation="table", translationTable=TONE_TABLE)]))
+        elif c == "lowcut":
+            amount = inst.processing.low_cut_db
+            knobs.append(Knob("lowcut", LOW_CUT_LABEL, 0, amount, amount, [
+                dict(type="amp", level="tag", identifier=LOW_TAG, parameter="AMP_VOLUME", translation="table",
+                     translationTable=lowcut.restore_table(amount))],
+                tooltip=f"How much the thump below each note's pitch is lowered: {amount:g} dB as set when "
+                        "building, 0 for no low cut"))
         elif c == "attack":
             knobs.append(Knob("attack", CONTROLS[c], 0, 2, p.attack, [
                 dict(type="amp", level="instrument", position=0, parameter="ENV_ATTACK")]))
@@ -510,6 +523,12 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
     for sig in inst.signals:
         add_group(sig.name, tags(sig, NOTES_TAG), [e for e in mapping.notes if e.signal == sig.id],
                   enabled=enabled(sig), seqMode="round_robin", **muting)
+    # What the low cut took out, a layer of its own that the Low cut knob turns up: in step with the
+    # notes, as their groups are, so the two add up to the recording.
+    for sig in inst.signals:
+        add_group(f"{sig.name} low part", tags(sig, LOW_TAG),
+                  [replace(e, file=e.removed) for e in mapping.notes if e.signal == sig.id and e.removed],
+                  enabled=enabled(sig), seqMode="round_robin", **muting)
     for sig in inst.signals:
         add_group(f"{sig.name} release noise", tags(sig, RELEASE_TAG),
                   [e for e in mapping.release if e.signal == sig.id], enabled=enabled(sig),
@@ -534,7 +553,8 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
         elif name == "reverb":
             _el(fx, "effect", type="reverb", wetLevel=float(p.reverb))
 
-    cc_target = "tone" if "tone" in knob_index else next(iter(knob_index), None)
+    # Not the low cut: at rest, the wheel would bring all the thump back.
+    cc_target = "tone" if "tone" in knob_index else next((k for k in knob_index if k != "lowcut"), None)
     if cc_target is not None:
         target = next(k for k in knobs if k.key == cc_target)
         midi = _el(root, "midi")
@@ -545,6 +565,8 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
     tags_el = _el(root, "tags")
     for tag, vol in initial_tag_volumes(inst, knobs).items():
         _el(tags_el, "tag", name=tag, volume=float(vol))
+    if "lowcut" in knob_index:
+        _el(tags_el, "tag", name=LOW_TAG, volume=0.0)  # the knob starts at the full cut
     if mapping.release:
         _el(tags_el, "tag", name=RELEASE_TAG, volume=0.5 if "noise" in knob_index else 1.0)
 
