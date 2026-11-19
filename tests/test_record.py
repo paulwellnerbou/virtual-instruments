@@ -108,9 +108,19 @@ def test_take_guide_puts_each_hit_on_beat_one(tmp_path, monkeypatch):
     count, *hits = g.steps
     assert (count.kind, count.beats, count.length) == ("count", 3, 3.0)  # 2 s ring + 1 s gap: 3-beat bars
     assert [h.at for h in hits] == [3.0, 6.0] and g.total == 9.0
-    assert [h.detail for h in hits] == ["f (loud) · variation 1 of 2", "f (loud) · variation 2 of 2"]
+    # The count-in is about the first hit; each hit says how to play it, not what comes next.
+    assert count.detail == "Hit 1 of 2 · f (loud)"
+    assert [(h.title, h.detail) for h in hits] == [("Hit 1 of 2", "f (loud)"), ("Hit 2 of 2", "f (loud)")]
     noise = guide.take_guide(inst, plan_takes(inst)[0])
     assert noise.steps[-1].kind == "silence" and noise.steps[-1].length == 30
+
+
+def test_take_guide_records_as_many_hits_as_asked(tmp_path, monkeypatch):
+    inst = uke(monkeypatch, tmp_path)
+    take = next(t for t in plan_takes(inst) if t.kind == "note")
+    g = guide.take_guide(inst, take, 4)
+    assert [s.title for s in g.steps if s.kind == "hit"] == [f"Hit {i} of 4" for i in (1, 2, 3, 4)]
+    assert len(g.hits_at()) == 4
 
 
 def test_more_guide_records_extra_variations_of_one_lane(tmp_path, monkeypatch):

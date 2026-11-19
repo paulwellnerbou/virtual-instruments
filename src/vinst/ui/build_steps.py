@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from nicegui import app, run, ui
 
-from vinst import bundle, preset, store
+from vinst import bundle, store
 from vinst.plan import layer_bounds, recording_passes
 from vinst.preset import KNOB_Y, UI_H, UI_W, VISIBLE_H, knob_layout, mixable_signals, switched_passes
 from vinst.spec import CONTROLS, Extra

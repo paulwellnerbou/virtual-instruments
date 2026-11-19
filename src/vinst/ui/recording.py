@@ -22,15 +22,16 @@ from vinst import recorder, store, takes_meta
 from vinst.plan import more_base, more_file, plan_takes, recording_passes
 from vinst.plan import take_key as take_key_of
 from vinst.spec import Signal
+from vinst.ui import form
 
 if TYPE_CHECKING:
     from vinst.ui.app import Editor
 
 SILENCE_WARNING_S = 2.0
+MAX_HITS = 12
 
 CSS = """
 .vi-rec { display: flex; flex-direction: column; align-items: center; gap: 6px; min-height: 330px; }
-.vi-rec-what { font-size: 1.05rem; opacity: .75; min-height: 1.5em; }
 .vi-rec-stage { position: relative; width: 150px; height: 150px; display: grid; place-items: center; }
 .vi-rec-pulse { position: absolute; inset: 0; border-radius: 50%; border: 6px solid #9e9e9e;
                 transition: background-color .08s, border-color .08s; }
@@ -49,7 +50,7 @@ CSS = """
 .vi-rec-bar, .vi-rec-total { width: 100%; height: 8px; background: #eeeeee; border-radius: 4px; overflow: hidden; }
 .vi-rec-bar > div { height: 100%; background: #1976d2; }
 .vi-rec-total { height: 4px; } .vi-rec-total > div { height: 100%; background: #9e9e9e; }
-.vi-rec-next, .vi-rec-time { opacity: .7; font-size: .9rem; min-height: 1.3em; }
+.vi-rec-time { opacity: .7; font-size: .9rem; min-height: 1.3em; }
 .vi-meter { display: grid; grid-template-columns: 7rem 1fr 4.5rem; align-items: center; gap: 8px; width: 100%; }
 .vi-meter-bar { height: 10px; background: #eeeeee; border-radius: 5px; overflow: hidden; }
 .vi-meter-bar > div { height: 100%; width: 0; background: #43a047; transition: width .08s linear; }
@@ -81,9 +82,10 @@ window.viRec = (() => {
     if (i >= 0 && s.beats && key !== last) { last = key; blip(s.kind === 'hit' && beat === 0); }
     const play = s.kind === 'hit' && beat === 0;
     const stage = root.querySelector('.vi-rec'); stage.dataset.kind = s.kind; stage.dataset.play = play;
-    part(root, 'what').textContent = s.what;
     part(root, 'title').textContent = i >= 0 ? s.title : 'Done';
-    part(root, 'detail').textContent = i >= 0 ? (s.kind === 'hit' && beat > 0 ? 'let it ring' : s.detail) : '';
+    // Always what the current step asks for; "let it ring" only adds to it.
+    part(root, 'detail').textContent = i < 0 ? '' : s.kind === 'hit' && beat > 0
+      ? [s.detail, 'let it ring'].filter(Boolean).join(' · ') : s.detail;
     const left = s.length - local;
     part(root, 'big').textContent = i < 0 ? '✓' : s.kind === 'count' ? String(s.beats - beat)
       : play ? 'Play' : s.kind === 'silence' ? clock(left) : s.kind === 'hit' ? String(Math.ceil(left)) : '·';
@@ -96,9 +98,6 @@ window.viRec = (() => {
     }
     [...dots.children].forEach((d, b) => d.classList.toggle('on', b === beat && i >= 0));
     part(root, 'bar').firstElementChild.style.width = (100 * local / s.length) + '%';
-    const n = i >= 0 ? g.steps[i + 1] : null;
-    part(root, 'next').textContent = n ? 'Next: ' + n.title + (n.kind === 'hit' && n.detail ? ' · ' + n.detail : '')
-      + (n.what && n.what !== s.what ? ' · ' + n.what : '') : '';
     part(root, 'total').firstElementChild.style.width = Math.min(100, 100 * t / g.total) + '%';
     part(root, 'time').textContent = clock(t) + ' / ' + clock(g.total);
     return i >= 0;
@@ -158,14 +157,20 @@ Saved = Callable[[str], None]  # called with the key of the recording that was j
 
 
 def record_take(ed: "Editor", number: int, on_saved: Saved | None = None) -> None:
-    """Record a planned take; "Next" goes on to the following one."""
+    """Record a planned take; "Next" goes on to the following one. A velocity that's recorded
+    already gets more hits beside its own instead: its hits and the decisions about them stay."""
     take = guides.take_by_number(ed.inst, number)
     if take is None:
         return
     folder = takes_folder(ed)
     paths = {sid: folder / name for sid, name in zip(take.signals, take.files)}
+    if take.kind == "note" and all(p.exists() for p in paths.values()):
+        record_more(ed, take.key, ed.inst.dynamics.round_robins, on_saved)
+        return
     following = next((t for t in plan_takes(ed.inst) if t.number == number + 1), None)
-    open_dialog(ed, take.title, signals_of(ed, take.signals), paths, guides.take_guide(ed.inst, take),
+    count = take.hits if take.kind == "note" else None  # extras and the noise floor are as planned
+    open_dialog(ed, take.title, signals_of(ed, take.signals), paths,
+                lambda n: guides.take_guide(ed.inst, take, n), count,
                 (lambda: record_take(ed, following.number, on_saved)) if following else None,
                 f"Next: {following.title}" if following else "",
                 (lambda: on_saved(take.key)) if on_saved else None)
@@ -182,9 +187,9 @@ def record_more(ed: "Editor", take_key: str, count: int, on_saved: Saved | None 
     number = 1 + max(more_numbers(take, folder), default=0)
     paths = {sid: folder / more_file(take, number, sid) for sid in take.signals}
     key = take_key_of(more_base(take, number), take.pass_id)
-    what = "1 more hit" if count == 1 else f"{count} more hits"
-    open_dialog(ed, f"{take.title} · {what}", signals_of(ed, take.signals), paths,
-                guides.more_guide(ed.inst, take, count), None, "", (lambda: on_saved(key)) if on_saved else None)
+    open_dialog(ed, f"{take.title} · more hits", signals_of(ed, take.signals), paths,
+                lambda n: guides.more_guide(ed.inst, take, n or count), count, None, "",
+                (lambda: on_saved(key)) if on_saved else None)
 
 
 def current_device(rescan: bool = False) -> tuple[recorder.Device | None, list[recorder.Device], str]:
@@ -194,15 +199,18 @@ def current_device(rescan: bool = False) -> tuple[recorder.Device | None, list[r
     return recorder.find_device(name, devices), devices, name
 
 
-def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str, Path], guide: guides.Guide,
+def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str, Path],
+                guide_for: Callable[[int | None], guides.Guide], count: int | None,
                 on_next: Callable[[], None] | None, next_label: str,
                 on_saved: Callable[[], None] | None = None) -> None:
+    """`count`: how many hits to ask for, which the player can change before recording; None for
+    takes recorded as planned."""
     inst = ed.inst
     # Re-read the devices: the interface's sample rate may have changed since the app started.
     device, _, name = current_device(rescan=True)
     why = recorder.problem(inst, device, [s.id for s in signals])
     if device is None and name:
-        why = f"{name} isn't connected. Connect it, or choose another input in step 5."
+        why = f"{name} isn't connected. Connect it, or choose another interface under Recording."
     if why:
         ui.notify(why, type="warning", multi_line=True, timeout=8000)
         return
@@ -214,21 +222,25 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
         ui.notify(f"Couldn't open {device.name}: {e}", type="negative", multi_line=True)
         return
     opened = time.monotonic()
-    state: dict = {"timer": None}
+    state: dict = {"timer": None, "guide": guide_for(count)}
     client = ui.context.client
 
     # At page level: the take table redraws after each saved take and would take the dialog with it.
     with client.layout, ui.dialog().props("persistent") as dialog, ui.card().classes("w-[36rem] max-w-full"):
         with ui.row().classes("w-full items-center justify-between no-wrap"):
             ui.label(title).classes("text-lg font-medium")
-            ui.label(f"{device.name} · {device.sample_rate / 1000:g} kHz").classes("text-sm opacity-60")
+            with ui.row().classes("items-center gap-2 no-wrap"):
+                ui.label(f"{device.name} · {device.sample_rate / 1000:g} kHz").classes("text-sm opacity-60")
+                # Always here: while recording it cancels the take, like Cancel.
+                with ui.button(icon="close", on_click=lambda: dialog.close()).props("flat dense round"):
+                    close_tip = ui.tooltip("Close")
         root_id = f"vi-rec-{dialog.id}"
         with ui.element("div").classes("w-full").props(f"id={root_id}"):
             ui.html(
-                '<div class="vi-rec"><div class="vi-rec-what"></div>'
+                '<div class="vi-rec">'
                 '<div class="vi-rec-stage"><div class="vi-rec-pulse"></div><div class="vi-rec-big"></div></div>'
                 '<div class="vi-rec-title"></div><div class="vi-rec-detail"></div><div class="vi-rec-beats"></div>'
-                '<div class="vi-rec-bar"><div></div></div><div class="vi-rec-next"></div>'
+                '<div class="vi-rec-bar"><div></div></div>'
                 '<div class="vi-rec-total"><div></div></div><div class="vi-rec-time"></div></div>'
             ).classes("w-full")
             with ui.column().classes("w-full gap-1 mt-2"):
@@ -246,25 +258,39 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
                 .classes("text-sm opacity-70")
         outcome = ui.column().classes("w-full gap-0 text-sm")
         click = ui.checkbox("Click sound (use headphones, so the click isn't recorded)", value=False)
-        with ui.row().classes("w-full justify-end"):
-            close_btn = ui.button("Close", on_click=lambda: dialog.close()).props("flat")
+        with ui.row().classes("w-full items-center justify-end"):
+            hits_input = None
+            if count is not None:
+                hits_input = ui.number("Hits", value=count, min=1, max=MAX_HITS, step=1, precision=0,
+                                       on_change=lambda e: set_count(e.value)) \
+                    .props("dense outlined").classes("w-24")
+                ui.space()
             cancel_btn = ui.button("Cancel", on_click=lambda: finish(False)).props("flat")
             keep_btn = ui.button("Stop and keep", on_click=lambda: finish(True)).props("outline")
             next_btn = ui.button(next_label or "Next", icon="skip_next", on_click=lambda: go_next()) \
                 .props("outline")
             start_btn = ui.button("Record", icon="fiber_manual_record", on_click=lambda: start()).props("color=red")
 
+    def set_count(value: float | None) -> None:
+        if value is None or rec.recording:
+            return
+        state["guide"] = guide_for(max(1, min(MAX_HITS, int(value))))
+        preview()
+
     def buttons(recording: bool, done: bool = False) -> None:
         start_btn.set_text("Record again" if done else "Record")
         start_btn.set_visibility(not recording)
-        close_btn.set_visibility(not recording)
+        close_tip.set_text("Cancel the take and close" if recording else "Close")
         next_btn.set_visibility(done and on_next is not None)
         cancel_btn.set_visibility(recording)
         keep_btn.set_visibility(recording)
         click.set_enabled(not recording)
+        if hits_input is not None:
+            hits_input.set_enabled(not recording)
 
     def start() -> None:
         outcome.clear()
+        guide = state["guide"]
         try:
             rec.start(paths, inst.recording.bit_depth, skip_seconds=guide.skip)
         except recorder.RecorderError as e:
@@ -281,6 +307,7 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
         if state["timer"]:
             state["timer"].cancel()
             state["timer"] = None
+        guide = state["guide"]
         # A take that ran its full time must have about that much audio; less means the interface stopped.
         result = rec.stop(keep, min_seconds=guide.total - guide.skip - 1 if complete else 0)
         for f in result.files:
@@ -312,10 +339,12 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
         ui.run_javascript(f"viRec.meters({json.dumps(root_id)}, {json.dumps(data)})")
         silent.set_visibility(not rec.heard and time.monotonic() - opened > SILENCE_WARNING_S)
 
+    def preview() -> None:
+        ui.run_javascript(f"viRec.preview({json.dumps(root_id)}, {json.dumps(state['guide'].to_dict())})")
+
     with dialog:
         meter = ui.timer(0.1, levels)
-        ui.timer(0.2, lambda: ui.run_javascript(
-            f"viRec.preview({json.dumps(root_id)}, {json.dumps(guide.to_dict())})"), once=True)
+        ui.timer(0.2, preview, once=True)
 
     def release() -> None:
         """Stop everything and free the interface; also when the page goes away mid-take."""
@@ -352,8 +381,8 @@ def input_settings(ed: "Editor") -> None:
     def body() -> None:
         device, devices, name = current_device(rescan=state["rescan"])
         state["rescan"] = False
-        with ui.row().classes("items-center gap-2"):
-            ui.label("Record in the app from").classes("text-sm")
+        with form.setting("Interface", "The audio interface the app records from. ⟳ looks again, e.g. after "
+                                       "plugging one in or changing its sample rate in Audio MIDI Setup."):
             if devices:
                 options = [d.name for d in devices] + ([name] if name and device is None else [])
 
@@ -364,39 +393,37 @@ def input_settings(ed: "Editor") -> None:
                     body.refresh()
 
                 ui.select(options, value=device.name if device else name or None, on_change=choose) \
-                    .props("dense").classes("min-w-[12rem]")
+                    .props("dense outlined").classes("grow min-w-0")
                 if device:
                     same = device.sample_rate == rec.sample_rate
-                    with ui.row().classes("items-center gap-1 no-wrap"):
-                        ui.icon("check_circle" if same else "warning", color="positive" if same else "warning")
-                        ui.label(f"runs at {device.sample_rate / 1000:g} kHz").classes("text-sm") \
-                            .tooltip("The interface's current sample rate, as set in Audio MIDI Setup"
-                                     + ("" if same else f"; this instrument records at "
-                                                        f"{rec.sample_rate / 1000:g} kHz"))
+                    with ui.row().classes("items-center gap-1 no-wrap shrink-0"):
+                        ui.icon("check_circle" if same else "warning", color="positive" if same else "warning",
+                                size="18px")
+                        ui.label(f"{device.sample_rate / 1000:g} kHz").classes("text-sm whitespace-nowrap")
+                        ui.tooltip("The interface's current sample rate"
+                                   + ("" if same else f"; this instrument records at {rec.sample_rate / 1000:g} kHz"))
             else:
                 ui.label("no audio input found").classes("text-sm text-negative")
-            ui.button(icon="refresh", on_click=rescan).props("flat dense round") \
-                .tooltip("Look for interfaces again, e.g. after plugging one in or changing its sample rate")
+            ui.button(icon="refresh", on_click=rescan).props("flat dense round").tooltip("Look for interfaces again")
         if device is None:
             if name and devices:
-                ui.label(f"{name} isn't connected.").classes("text-sm text-warning")
+                form.note(f"{name} isn't connected.")
             return
         channels = recorder.channels_for(inst)
         for p in recording_passes(inst):
             for s in p.signals:
-                with ui.row().classes("items-center gap-2"):
-                    ui.label(f"{s.name} is plugged into").classes("text-sm")
+                with form.setting(s.name, f"Which input of {device.name} the {s.name} is plugged into. "
+                                          "Detect: play the instrument, and the input where it arrives is chosen."):
                     ui.select({n: f"Input {n}" for n in range(1, device.channels + 1)},
                               value=channels[s.id] if channels[s.id] <= device.channels else None,
                               on_change=lambda e, sid=s.id: e.value and ed.set(
                                   rec, "input_channels", {**rec.input_channels, sid: e.value})) \
-                        .props("dense").classes("w-28")
+                        .props("dense outlined").classes("grow min-w-0")
                     ui.button("Detect", icon="hearing", on_click=lambda _, sig=s: detect(device, sig)) \
-                        .props("flat dense").tooltip("Play the instrument: the input where the signal arrives "
-                                                     "is chosen")
+                        .props("flat dense no-caps")
         why = recorder.problem(inst, device, [s.id for s in inst.signals])
         if why:
-            ui.label(why).classes("text-sm text-warning")
+            form.note(why)
 
     def rescan() -> None:
         recorder.input_devices(rescan=True)

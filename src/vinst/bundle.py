@@ -13,11 +13,12 @@ from vinst.slicing import changed_takes
 from vinst.spec import Instrument
 from vinst.validate import Report, validate_bundle
 
-STALE_MESSAGE = ("Signals, recording passes or the loop setting changed since the takes were sliced. "
-                 "Slice again (step 5); your decisions are kept.")
+# Also shown in the worksheet, next to its slice button: so no pointer to a step here.
+STALE_MESSAGE = ("Signals, recording passes or the loop setting changed since the takes were sliced; "
+                 "slicing again keeps your decisions.")
 def changed_message(changed: list[str]) -> str:
     names = ", ".join(changed[:3]) + (f" and {len(changed) - 3} more" if len(changed) > 3 else "")
-    return f"Recorded again since slicing: {names}. Slice again (step 6) to use the new recordings."
+    return f"Recorded or changed since slicing: {names}."
 
 
 # Marks bundles this tool wrote, so installing never replaces someone else's library.
@@ -71,10 +72,10 @@ def build(inst: Instrument) -> BuildResult:
     if problems:
         raise ValueError("Fix these first: " + " ".join(problems))
     if manifest.setup != slicing_setup(inst):
-        raise ValueError(STALE_MESSAGE)
+        raise ValueError(STALE_MESSAGE + " Slice again in the worksheet (step 5).")
     changed = changed_takes(inst, manifest)
     if changed:
-        raise ValueError(changed_message(changed))
+        raise ValueError(changed_message(changed) + " Slice them in the worksheet (step 5) to use them.")
     mapping = preset.map_samples(inst, manifest)
     if not mapping.notes:
         raise ValueError("No usable hits: record and slice some notes first.")

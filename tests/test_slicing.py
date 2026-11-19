@@ -45,6 +45,7 @@ def test_takes_are_cut_into_expected_hits(sliced):
     assert [h.layer for h in by_base["060_C-0_f"].hits] == ["f", "f"]
     assert by_base["x_release"].status == "ok" and len(by_base["x_release"].hits) == 12
     assert m.noise_floor_db == pytest.approx(-70, abs=1)
+    assert by_base["noisefloor"].level_db == pytest.approx(m.noise_floor_db)  # each pass keeps its own
 
 
 def test_mistakes_are_flagged(sliced):

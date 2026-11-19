@@ -11,7 +11,6 @@ from functools import lru_cache
 from pathlib import Path
 
 from vinst import notes
-from vinst.spec import SAFE_NAME as SAFE_LANE
 from vinst.spec import Instrument, InstrumentString, Signal, file_token
 
 # Seconds per take for tuning, arming and naming, on top of the hits themselves.

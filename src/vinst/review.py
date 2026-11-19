@@ -81,6 +81,12 @@ class TakeResult(BaseModel):
     sample_rate: int | None = None
     length: int | None = None
     envelope: list[float] = []  # normalised peak per bucket, for the waveform thumbnail
+    level_db: float | None = None  # a noise floor's RMS level; each pass has its own
+    cut_by_hand: bool = False  # its hits are where they were set by hand, not where they were found
+
+    @property
+    def files(self) -> list[str]:
+        return [f"{self.base}_{s}.wav" for s in self.signals]
     hits: list[Hit] = []
 
     @property
@@ -116,7 +122,8 @@ def check_lanes(results: list["TakeResult"], lanes: list[str]) -> None:
         for h in t.hits:
             if "layer_mismatch" in h.flags:
                 h.flags.remove("layer_mismatch")
-        t.message = "; ".join(m for m in t.message.split("; ") if m and m != LANES_OUT_OF_ORDER)
+        t.message = "; ".join(m for m in t.message.split("; ") if m and not m.endswith(LANES_OUT_OF_ORDER)
+                              and m != "this note's velocities don't get louder in order")  # in older manifests
     medians = {lane: float(np.median([h.rms_db for h in hits if h.layer == lane]))
                for lane in lanes if any(h.layer == lane for h in hits)}
     if len(medians) < 2:
@@ -124,13 +131,17 @@ def check_lanes(results: list["TakeResult"], lanes: list[str]) -> None:
     for h in hits:
         if min(medians, key=lambda lane: abs(medians[lane] - h.rms_db)) != h.layer:
             h.flags.append("layer_mismatch")
-    ordered = [medians[lane] for lane in lanes if lane in medians]
-    if any(b <= a for a, b in zip(ordered, ordered[1:])):
+    ordered = [lane for lane in lanes if lane in medians]
+    softer = next(((a, b) for a, b in zip(ordered, ordered[1:]) if medians[b] <= medians[a]), None)
+    if softer:
+        a, b = softer
         first = next(t for t in results if t.hits)
-        first.message = "; ".join(filter(None, [first.message, LANES_OUT_OF_ORDER]))
+        text = (f"{b} ({medians[b]:.0f} dBFS) is no louder than {a} ({medians[a]:.0f} dBFS), so "
+                f"{LANES_OUT_OF_ORDER}")
+        first.message = "; ".join(filter(None, [first.message, text]))
 
 
-LANES_OUT_OF_ORDER = "this note's velocities don't get louder in order"
+LANES_OUT_OF_ORDER = "playing harder wouldn't sound louder"
 
 
 class Manifest(BaseModel):

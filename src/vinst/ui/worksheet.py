@@ -5,12 +5,13 @@ are picked up with "Slice all". Hits can be dragged between a note's lanes, and 
 own lanes and velocity ranges instead of the defaults from Dynamics.
 """
 
+import asyncio
 import io
+import itertools
 import json
+import math
 import re
-from html import escape
 from pathlib import Path
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
@@ -20,10 +21,9 @@ from fastapi import HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from nicegui import app, run, ui
 
-from vinst import loops, review, slicing, store
+from vinst import loops, relocate, review, slicing, store, takes_meta
 from vinst.bundle import STALE_MESSAGE, changed_message
 from vinst.plan import (
-    SAFE_LANE,
     Take,
     lane_bounds,
     more_base,
@@ -36,8 +36,8 @@ from vinst.plan import (
 )
 from vinst.slicing import SUBTYPES
 from vinst.review import FLAGS, Hit, Manifest, TakeResult, check_lanes, lane_of, settle
-from vinst.spec import NoteLanes
-from vinst.ui import recording
+from vinst.spec import SAFE_NAME as SAFE_LANE, NoteLanes
+from vinst.ui import form, recording
 from vinst.ui.anim import Collapse
 from vinst.ui.finder import can_choose_folder, choose_folder, ensure_folder, reveal
 
@@ -133,6 +133,10 @@ async def drop_file(slug: str, key: str, request: Request, name: str = "") -> di
     It becomes the take, or if the take is already recorded, more variations of it; nothing
     recorded is overwritten. Several signals of a take are told apart by their ids in the file name.
     """
+    # Only the worksheet sends this header. Setting it makes the browser ask first (CORS preflight),
+    # which this server never allows, so other web pages can't write into the takes folder.
+    if request.headers.get(DROP_HEADER) != "1":
+        raise HTTPException(403)
     inst = store.load(slug)
     takes_dir = Path(inst.recording.takes_dir).expanduser()
     take = next((t for t in plan_takes(inst) if t.key == key), None)
@@ -161,7 +165,10 @@ async def drop_file(slug: str, key: str, request: Request, name: str = "") -> di
         number = open_[0] if open_ else max(numbers, default=0) + 1
         target = takes_dir / more_file(take, number, signal)
         result_key = take_key(more_base(take, number), take.pass_id)
-    takes_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        ensure_folder(takes_dir)
+    except OSError as e:
+        return {"ok": False, "message": str(e)}
     part = target.with_name(target.name + ".part")
     sf.write(part, audio, sr, subtype=SUBTYPES.get(inst.recording.bit_depth, "PCM_24"), format="WAV")
     part.replace(target)
@@ -178,57 +185,129 @@ PLAY_JS = """(url) => {
 }"""
 
 
+def plain_title(take: TakeResult) -> str:
+    """Note and velocity; which of its recordings a hit is from is in the hit's file name."""
+    return re.sub(r" · more \(\d+\)", "", take.title)
+
+
 def hit_color(h: Hit) -> str:
     return COLORS["rejected"] if h.rejected else COLORS[h.severity()]
 
 
-def waveform(take: TakeResult, highlight: str | None = None) -> str:
+_svg_ids = itertools.count()
+
+
+def waveform(take: TakeResult, highlight: str | set[str] | None = None, height: int = 60) -> str:
+    """The take's waveform, dimmed; the highlighted hits (all if None) that aren't rejected are drawn
+    bright, so what isn't used here recedes. A take without hits is drawn bright, to find one in."""
     env = take.envelope
     if not env:
         return ""
-    w, h = 800, 60
+    w, h = 800, height
     n = len(env)
     top = " ".join(f"{i * w / (n - 1):.1f},{h / 2 - v * h / 2:.1f}" for i, v in enumerate(env))
     bottom = " ".join(f"{i * w / (n - 1):.1f},{h / 2 + v * h / 2:.1f}" for i, v in reversed(list(enumerate(env))))
-    marks = []
+    clip_id = f"vi-wave-{next(_svg_ids)}"
+    marks, bright = [], []
     if take.length:
         for hit in take.hits:
+            if not (highlight is None or hit.id == highlight or (isinstance(highlight, set) and hit.id in highlight)):
+                continue
             x0, x1 = hit.start / take.length * w, hit.end / take.length * w
-            c = hit_color(hit) if highlight in (None, hit.id) else COLORS["rejected"]
+            c = hit_color(hit)
             marks.append(f"<rect x='{x0:.1f}' y='0' width='{max(1, x1 - x0):.1f}' height='{h}' fill='{c}' "
-                         f"fill-opacity='0.12'><title>{escape(hit.id)}</title></rect>"
+                         f"fill-opacity='0.12'/>"
                          f"<line x1='{x0:.1f}' x2='{x0:.1f}' y1='0' y2='{h}' stroke='{c}' stroke-width='1.5'/>")
+            if not hit.rejected:
+                bright.append(f"<rect x='{x0:.1f}' y='0' width='{max(1, x1 - x0):.1f}' height='{h}'/>")
+    polygon = f"<polygon points='{top} {bottom}' fill='currentColor'"
     return (f"<svg viewBox='0 0 {w} {h}' width='100%' height='{h}' preserveAspectRatio='none' "
-            f"xmlns='http://www.w3.org/2000/svg'>{''.join(marks)}"
-            f"<polygon points='{top} {bottom}' fill='currentColor' fill-opacity='0.55'/></svg>")
+            f"xmlns='http://www.w3.org/2000/svg'><defs><clipPath id='{clip_id}'>{''.join(bright)}</clipPath></defs>"
+            f"{''.join(marks)}{polygon} fill-opacity='{0.15 if take.hits else 0.6}'/>"
+            f"{polygon} fill-opacity='0.6' clip-path='url(#{clip_id})'/></svg>")
+
+
+def hit_peak_db(hit: Hit) -> float:
+    return max(hit.peak_db.values(), default=-120.0)
+
+
+def hit_wave(take: TakeResult, hit: Hit, height: int, loudest_db: float) -> str:
+    """Just this hit's stretch of its take's waveform. Takes are normalised each on their own, so the
+    hit is scaled to its peak against `loudest_db`: across takes, a hit 6 dB softer is half as tall."""
+    env, length = take.envelope, take.length or 0
+    if not env or not length:
+        return ""
+    n = len(env)
+    part = env[int(hit.start / length * (n - 1)):int(math.ceil(hit.end / length * (n - 1))) + 1] or [0.0, 0.0]
+    if len(part) == 1:
+        part = part * 2
+    top_of = max(part)
+    if top_of > 0:
+        target = min(1.0, 10 ** ((hit_peak_db(hit) - loudest_db) / 20))
+        part = [v / top_of * target for v in part]
+    w, h = 400, height
+    top = " ".join(f"{i * w / (len(part) - 1):.1f},{h / 2 - v * h / 2:.1f}" for i, v in enumerate(part))
+    bottom = " ".join(f"{i * w / (len(part) - 1):.1f},{h / 2 + v * h / 2:.1f}"
+                      for i, v in reversed(list(enumerate(part))))
+    c = hit_color(hit)
+    return (f"<svg viewBox='0 0 {w} {h}' width='100%' height='{h}' preserveAspectRatio='none' "
+            f"xmlns='http://www.w3.org/2000/svg'><rect width='{w}' height='{h}' fill='{c}' fill-opacity='0.12'/>"
+            f"<line x1='0' x2='0' y1='0' y2='{h}' stroke='{c}' stroke-width='3'/>"
+            f"<polygon points='{top} {bottom}' fill='currentColor' "
+            f"fill-opacity='{0.2 if hit.rejected else 0.6}'/></svg>")
 
 
 CSS = """
 .vi-vel { position: relative; width: 14px; margin: 4px 30px 4px 4px; border-radius: 7px; background: #eee; }
+/* Clips the segments to the track's rounded ends; the dots sit outside it, so they aren't cut. */
+.vi-vel-segs { position: absolute; inset: 0; border-radius: 7px; overflow: hidden; }
 .vi-vel-seg { position: absolute; left: 0; right: 0; transition: top .15s, height .15s; }
-.vi-vel-seg:first-child { border-radius: 7px 7px 0 0; } .vi-vel-seg:last-of-type { border-radius: 0 0 7px 7px; }
 .vi-vel-dot { position: absolute; left: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%;
               background: white; border: 2px solid #1565c0; cursor: ns-resize; touch-action: none;
               box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .1s; }
 .vi-vel-dot.active { transform: scale(1.2); }
 .vi-vel-dot span { position: absolute; left: 22px; top: -1px; font-size: 11px; opacity: .75; pointer-events: none; }
 .vi-lane { border-radius: 6px; padding: 2px 4px; transition: background-color .15s; }
+.vi-hits { display: flex; flex-wrap: nowrap; gap: 6px; width: 100%; }
+/* As wide as the hit is long; when a row runs out of room, all shrink alike and stay to scale. */
+.vi-hit { display: flex; flex-direction: column; align-items: center; min-width: 14px; cursor: grab;
+          border-radius: 4px; overflow: hidden; transition: background-color .12s; }
+.vi-hit:hover { background: rgba(25, 118, 210, .14); }
+.vi-hit > div:first-child { width: 100%; }
+.vi-hit-label { font-size: 11px; font-weight: 600; line-height: 15px; white-space: nowrap; }
+.vi-hit-level { font-size: 10px; line-height: 13px; white-space: nowrap; opacity: .6; }
+.vi-hit-empty { height: 36px; padding: 0 8px; display: flex; align-items: center; font-size: 11px; opacity: .7;
+                border: 1px dashed currentColor; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+.vi-hit-empty:hover { background: rgba(25, 118, 210, .14); }
+.q-dialog__inner--right .vi-settings { height: 100vh; max-height: 100vh !important; overflow-y: auto;
+                                        border-radius: 16px 0 0 16px !important; }
 .vi-lane.vi-drop { background: rgba(25, 118, 210, .12); outline: 2px dashed #1976d2; }
 .vi-chip-drag { cursor: grab; }
+.vi-cut { position: relative; width: 100%; user-select: none; }
+/* As tall as the dialog's waveform (60 px), not the times below it. */
+.vi-cut-range { position: absolute; top: 0; height: 60px; background: rgba(25, 118, 210, .10);
+                box-shadow: inset 0 0 0 1px rgba(25, 118, 210, .5); pointer-events: none; }
+.vi-cut-handle { position: absolute; top: -4px; height: 68px; width: 14px; margin-left: -7px; cursor: ew-resize;
+                 touch-action: none; display: flex; justify-content: center; }
+.vi-cut-handle::before { content: ""; width: 3px; border-radius: 2px; background: #1565c0; }
+.vi-cut-handle:hover::before, .vi-cut-handle.active::before { width: 5px; }
 """
 DRAG_JS = "(e) => e.dataTransfer.setData('text/plain', {ref})"
 DRAG_OVER_JS = "(e) => { e.preventDefault(); e.currentTarget.classList.add('vi-drop'); }"
 DRAG_LEAVE_JS = "(e) => e.currentTarget.classList.remove('vi-drop')"
+DROP_HEADER = "X-Vinst-Drop"
 # A hit chip carries its reference as text; files dropped from the Finder are uploaded first, then
 # the server's answers are sent on. URL is replaced per row.
 DROP_JS = ("(e) => { e.preventDefault(); e.currentTarget.classList.remove('vi-drop'); "
            "const files = [...(e.dataTransfer.files || [])]; "
            "if (!files.length) { emit(e.dataTransfer.getData('text/plain')); return; } "
-           "Promise.all(files.map(f => fetch(URL + '?name=' + encodeURIComponent(f.name), {method: 'POST', body: f})"
+           "Promise.all(files.map(f => fetch(URL + '?name=' + encodeURIComponent(f.name), "
+           "{method: 'POST', body: f, headers: {'X-Vinst-Drop': '1'}})"
            ".then(r => r.json()).catch(err => ({ok: false, message: String(err)})))).then(rs => emit(rs)); }")
 SUGGESTED_LANES = ["pp", "p", "mp", "mf", "f", "ff"]
 VELOCITY_COLOURS = ["#90caf9", "#42a5f5", "#1e88e5", "#1565c0", "#0d47a1"]
-ROW_H = 48  # px per velocity row; the velocity slider spans the rows
+WAVE_H = 36  # px; a row's buttons sit in a strip this tall, so they line up with the middle of its wave
+ROW_H = 80  # px per velocity row (a wave lane and its labels); the velocity slider spans the rows
 
 # Dragging a velocity dot: values follow the pointer between the neighbouring dots; on release the
 # bar sends all starts to the server ("vel-change").
@@ -246,7 +325,7 @@ window.viVel || (() => {
   document.addEventListener('pointerdown', e => {
     const dot = e.target.closest('.vi-vel-dot'); if (!dot) return;
     const track = dot.closest('.vi-vel'), dots = [...track.querySelectorAll('.vi-vel-dot')];
-    drag = {dot, track, dots, i: dots.indexOf(dot)};
+    drag = {dot, track, dots, i: dots.indexOf(dot), before: dots.map(d => d.dataset.value).join()};
     dot.classList.add('active'); try { dot.setPointerCapture(e.pointerId); } catch (_) {} e.preventDefault();
   });
   document.addEventListener('pointermove', e => {
@@ -260,12 +339,167 @@ window.viVel || (() => {
   });
   document.addEventListener('pointerup', () => {
     if (!drag) return;
-    const {dot, track, dots} = drag; drag = null; dot.classList.remove('active');
+    const {dot, track, dots, before} = drag; drag = null; dot.classList.remove('active');
+    if (dots.map(d => d.dataset.value).join() === before) return;  // a click, not a move
     track.dispatchEvent(new CustomEvent('vel-change', {detail: dots.map(d => +d.dataset.value)}));
   });
   window.viVel = true;
 })();
+
+// Dragging a cut's start or end in the hit dialog: it stays between its neighbours and on its side
+// of the other edge; on release the box sends both as fractions of the recording ("cut-change").
+window.viCut || (() => {
+  let drag = null;
+  const show = (box, start, end) => {
+    box.querySelector('[data-edge=start]').style.left = start * 100 + '%';
+    box.querySelector('[data-edge=end]').style.left = end * 100 + '%';
+    const range = box.querySelector('.vi-cut-range');
+    range.style.left = start * 100 + '%'; range.style.width = (end - start) * 100 + '%';
+    const len = +box.dataset.seconds;
+    box.querySelector('.vi-cut-times').textContent =
+      (start * len).toFixed(2) + ' – ' + (end * len).toFixed(2) + ' s (' + ((end - start) * len).toFixed(2) + ' s)';
+  };
+  document.addEventListener('pointerdown', e => {
+    const handle = e.target.closest('.vi-cut-handle'); if (!handle) return;
+    const box = handle.closest('.vi-cut');
+    drag = {handle, box, edge: handle.dataset.edge, start: +box.dataset.start, end: +box.dataset.end};
+    drag.before = drag.start + ':' + drag.end;
+    handle.classList.add('active'); try { handle.setPointerCapture(e.pointerId); } catch (_) {} e.preventDefault();
+  });
+  document.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const {box, edge} = drag, r = box.getBoundingClientRect(), gap = 0.05 / +box.dataset.seconds;
+    const x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    if (edge === 'start') drag.start = Math.min(drag.end - gap, Math.max(+box.dataset.lo, x));
+    else drag.end = Math.max(drag.start + gap, Math.min(+box.dataset.hi, x));
+    show(box, drag.start, drag.end);
+  });
+  document.addEventListener('pointerup', () => {
+    if (!drag) return;
+    const {handle, box, start, end, before} = drag; drag = null; handle.classList.remove('active');
+    if (start + ':' + end === before) return;
+    box.dataset.start = start; box.dataset.end = end;
+    box.dispatchEvent(new CustomEvent('cut-change', {detail: {start, end}}));
+  });
+  window.viCut = true;
+})();
 """
+
+
+def settings_cards(ed: "Editor") -> None:
+    """The worksheet's settings for the right column: what comes in (recording, or the folder to
+    import) and what goes out (the samples), each in its own card, apart from the notes."""
+    inst, rec, proc = ed.inst, ed.inst.recording, ed.inst.processing
+    importing = rec.source == "samples"
+
+    def folder_controls(current: Path | None, choose_prompt: str, on_pick: Any, finder: bool = True) -> None:
+        """A folder's name (the full path on hover; click it to type or paste one), with Choose and
+        Show in Finder."""
+        name = ui.label(current.name if current else "–") \
+            .classes("text-sm font-mono truncate grow min-w-0 cursor-text") \
+            .tooltip(f"{current or 'No folder yet'} · click to type or paste a path")
+        with name, ui.menu().props("anchor='bottom left' self='top left'") as menu, \
+                ui.column().classes("p-2 w-[28rem] max-w-[90vw]"):
+            def typed(value: str) -> None:
+                folder = Path(value.strip()).expanduser()
+                if not value.strip():
+                    return
+                if not folder.is_absolute():  # it would depend on where the builder was started
+                    ui.notify("Enter the folder's full path, e.g. ~/Music/Takes.", type="warning")
+                    return
+                menu.close()
+                if folder != current:
+                    on_pick(str(folder))
+
+            field = ui.input("Folder", value=str(current or "")).props("dense outlined autofocus") \
+                .classes("w-full font-mono")
+            field.on("keydown.enter", lambda: typed(field.value))
+            with ui.row().classes("w-full justify-end gap-1"):
+                ui.button("Cancel", on_click=menu.close).props("flat dense no-caps")
+                ui.button("Use", on_click=lambda: typed(field.value)).props("flat dense no-caps color=primary")
+        if can_choose_folder():
+            async def pick() -> None:
+                picked = await run.io_bound(choose_folder, choose_prompt, str(current or ""))
+                if picked:
+                    on_pick(picked)
+
+            ui.button(icon="folder", on_click=pick).props("flat dense round").tooltip("Choose another folder")
+        if finder and current is not None:
+            ui.button(icon="folder_open", on_click=lambda: show(current)).props("flat dense round") \
+                .tooltip("Show in Finder")
+
+    def show(folder: Path) -> None:
+        try:
+            ensure_folder(folder)
+        except OSError as e:
+            ui.notify(str(e), type="warning")
+            return
+        reveal(folder)
+
+    with ui.card().classes("w-full gap-1"):
+        ui.label("Import from" if importing else "Recording").classes("text-base font-medium mb-1")
+
+        @ui.refreshable
+        def source() -> None:
+            if importing:
+                with form.setting("Folder", "The folder of already-cut samples; it is only read."):
+                    ed.text("", rec, "import_dir", placeholder="/path/to/samples").props("dense outlined") \
+                        .classes("grow min-w-0")
+                with form.setting("Note names", "Only used when a sample's pitch can't be measured; otherwise "
+                                                "the pitch decides which octave a name means."):
+                    ui.select({"c3": "Middle C is C3", "c4": "Middle C is C4"}, value=rec.import_note_names,
+                              on_change=lambda e: ed.set(rec, "import_note_names", e.value)) \
+                        .props("dense outlined").classes("grow min-w-0")
+                return
+            folder = Path(rec.takes_dir or store.default_takes_dir(inst.meta.name)).expanduser()
+            with form.setting("Takes", "Where the recorded takes are stored, one file per note and velocity."):
+                folder_controls(folder, "Folder for the takes", lambda v: (ed.set(rec, "takes_dir", v),
+                                                                           source.refresh()))
+            with form.setting("Format", "Sample rate and bit depth of the takes and samples. The interface "
+                                        "must run at the same rate."):
+                ui.select({r: f"{r / 1000:g} kHz" for r in (44100, 48000, 88200, 96000)}, value=rec.sample_rate,
+                          on_change=lambda e: ed.set(rec, "sample_rate", e.value)).props("dense outlined") \
+                    .classes("grow min-w-0")
+                ui.select({b: f"{b}-bit" for b in (16, 24, 32)}, value=rec.bit_depth,
+                          on_change=lambda e: ed.set(rec, "bit_depth", e.value)).props("dense outlined") \
+                    .classes("w-24 shrink-0")
+
+        source()
+        if not importing:
+            recording.input_settings(ed)
+
+    with ui.card().classes("w-full gap-1"):
+        ui.label("Imported samples" if importing else "Sliced samples").classes("text-base font-medium mb-1")
+
+        @ui.refreshable
+        def target() -> None:
+            folder = review.samples_dir(inst)
+            with form.setting("Saved to", "Imported copies, under uniform names" if importing else
+                              "Every hit as its own sample file; your takes are never changed."):
+                folder_controls(folder, "Folder for the sliced samples",
+                                lambda v: (ed.set(rec, "samples_dir", v), target.refresh()))
+                if rec.samples_dir:
+                    ui.button(icon="restart_alt", on_click=lambda: (ed.set(rec, "samples_dir", ""), target.refresh())) \
+                        .props("flat dense round").tooltip("Back to the default folder")
+
+        target()
+        if not importing:  # imports have no noise-floor recording to learn from
+            with form.setting("Denoise", "Uses the noise-floor recording as the noise profile and only changes the "
+                                         "sliced samples. Leave it off if you already cleaned the takes, e.g. in "
+                                         "WaveLab or Cubase."):
+                ui.switch(value=proc.denoise,
+                          on_change=lambda e: (ed.set(proc, "denoise", e.value), reduction.set_open(e.value)))
+                with Collapse(proc.denoise, axis="x") as reduction:
+                    ed.number("", proc, "denoise_reduction_db", cast=float, min=1, max=40, step=1,
+                              suffix="dB max.").props("dense outlined").classes("w-32")
+        with form.setting("Loops", "For sustained sounds: notes keep playing while the key is held. Loop markers "
+                                   "in the takes (e.g. set in WaveLab) are used where they exist; otherwise a loop "
+                                   "is searched in the steady part of each note."):
+            ui.switch(value=proc.loops,
+                      on_change=lambda e: (ed.set(proc, "loops", e.value), crossfade.set_open(e.value)))
+            with Collapse(proc.loops, axis="x") as crossfade:
+                ed.number("", proc, "loop_crossfade_ms", cast=float, min=0, max=500, step=5,
+                          suffix="ms crossfade").props("dense outlined").classes("w-40")
 
 
 def step_worksheet(ed: "Editor") -> None:
@@ -284,99 +518,7 @@ def step_worksheet(ed: "Editor") -> None:
 
     importing = inst.recording.source == "samples"
     rec = inst.recording
-    if importing:
-        ui.markdown("Reads a folder of already-cut samples, one note per file (subfolders included). The "
-                    "note comes from the file name (“C3”, “F#4”, “055”) and is checked against the measured "
-                    "pitch; without a name, the pitch decides. Files are copied under uniform names; the "
-                    "folder itself isn't changed.").classes("max-w-3xl")
-        with ui.row().classes("w-full items-start"):
-            ed.text("Folder with the samples", rec, "import_dir", placeholder="/path/to/samples").classes("grow")
-            ui.select({"c3": "Middle C is C3 (Decent Sampler, Cubase)", "c4": "Middle C is C4 (scientific, Logic)"},
-                      label="Note names in file names", value=rec.import_note_names,
-                      on_change=lambda e: ed.set(rec, "import_note_names", e.value)).classes("w-80") \
-                .tooltip("Only used when a sample's pitch can't be measured; otherwise the pitch decides "
-                         "which octave a name means.")
-    else:
-        ui.markdown("Every note is recorded once per **velocity** (e.g. p and f). Record one with ●, or drop an "
-                    "audio file exported from your DAW onto its row, and its hits appear right away. Listen to "
-                    "them, reject the ones you don't want, drag hits to another velocity, and give single notes "
-                    "their own velocities or ranges.").classes("max-w-3xl")
-        with ui.row().classes("w-full items-center no-wrap gap-1"):
-            takes = ed.folder("Folder for the takes", rec, "takes_dir", "Folder for the takes",
-                              placeholder=store.default_takes_dir(inst.meta.name))
 
-            def show_takes() -> None:
-                folder = Path(rec.takes_dir or store.default_takes_dir(inst.meta.name)).expanduser()
-                try:
-                    ensure_folder(folder)
-                except OSError as e:
-                    ui.notify(str(e), type="warning")
-                    return
-                if not rec.takes_dir:
-                    takes.set_value(str(folder))
-                reveal(folder)
-
-            ui.button("Show in Finder", icon="folder_open", on_click=show_takes).props("flat dense")
-        with ui.row().classes("items-center"):
-            ui.select([44100, 48000, 88200, 96000], label="Sample rate", value=rec.sample_rate,
-                      on_change=lambda e: ed.set(rec, "sample_rate", e.value)).classes("w-32")
-            ui.select([16, 24, 32], label="Bit depth", value=rec.bit_depth,
-                      on_change=lambda e: ed.set(rec, "bit_depth", e.value)).classes("w-28")
-        recording.input_settings(ed)
-
-    @ui.refreshable
-    def samples_line() -> None:
-        folder = review.samples_dir(inst)
-        with ui.row().classes("items-center gap-2 text-sm"):
-            ui.label("Imported copies go to" if importing else "Sliced samples go to").classes("opacity-70")
-            ui.label(str(folder) if folder else "–").classes("font-mono text-xs")
-            if can_choose_folder():
-                ui.button("Change…", on_click=change_samples_dir).props("flat dense no-caps")
-            if rec.samples_dir:
-                ui.button("Use default", on_click=lambda: set_samples_dir("")).props("flat dense no-caps")
-
-    def set_samples_dir(value: str) -> None:
-        ed.set(rec, "samples_dir", value)
-        samples_line.refresh()
-
-    async def change_samples_dir() -> None:
-        current = review.samples_dir(inst)
-        picked = await run.io_bound(choose_folder, "Folder for the sliced samples", str(current or ""))
-        if picked:
-            set_samples_dir(picked)
-
-    samples_line()
-
-    proc = inst.processing
-    if not importing:  # imports have no noise-floor recording to learn from
-        with ui.row().classes("items-center w-full gap-4"):
-            ui.switch("Denoise the samples", value=proc.denoise,
-                      on_change=lambda e: (ed.set(proc, "denoise", e.value), reduction.set_open(e.value)))
-            with Collapse(proc.denoise, axis="x") as reduction:
-                ed.number("Max. reduction", proc, "denoise_reduction_db", cast=float, min=1, max=40,
-                          step=1, suffix="dB").classes("w-36")
-            ui.label("Uses the noise-floor recording as the noise profile and only changes the sliced "
-                     "samples, never your takes. Leave it off if you already cleaned the takes, e.g. in "
-                     "WaveLab or Cubase.").classes("text-xs opacity-70 max-w-xl")
-    with ui.row().classes("items-center w-full gap-4"):
-        ui.switch("Find loops", value=proc.loops,
-                  on_change=lambda e: (ed.set(proc, "loops", e.value), crossfade.set_open(e.value)))
-        with Collapse(proc.loops, axis="x") as crossfade:
-            ed.number("Loop crossfade", proc, "loop_crossfade_ms", cast=float, min=0, max=500,
-                      step=5, suffix="ms").classes("w-36")
-        ui.label("For sustained sounds: notes keep playing while the key is held. Loop markers in the "
-                 "takes (e.g. set in WaveLab) are used where they exist; otherwise a loop is searched "
-                 "in the steady part of each note.").classes("text-xs opacity-70 max-w-xl")
-
-    with ui.row().classes("items-center w-full"):
-        button = ui.button("Import & analyse" if importing else "Slice all",
-                           icon="file_download" if importing else "content_cut")
-        if not importing:
-            ui.label("Only needed for takes exported from a DAW; takes recorded here are sliced right away.") \
-                .classes("text-xs opacity-70")
-        with Collapse(False, axis="x", inner_classes="flex items-center gap-4") as progress_box:
-            progress = ui.linear_progress(value=0, show_value=False).classes("w-64")
-            progress_label = ui.label().classes("text-sm opacity-70 whitespace-nowrap")
 
     def tick() -> None:
         progress.value = state["progress"]
@@ -385,9 +527,10 @@ def step_worksheet(ed: "Editor") -> None:
     ui.timer(0.25, tick)
 
     async def slice_all(only: str | None = None) -> None:
-        """Slice everything, or with `only` just that recording (right after recording it)."""
-        if state["busy"]:
-            return
+        """Slice everything, or with `only` just that recording (right after recording it). While a slice
+        runs, this one waits for it: a change made meanwhile (a recording moved, a cut set) is sliced too."""
+        while state["busy"]:
+            await asyncio.sleep(0.1)
         ed.autosave()
         state["busy"] = True
         button.disable()
@@ -423,7 +566,6 @@ def step_worksheet(ed: "Editor") -> None:
             progress_box.set_open(False)
             state["label"] = ""
 
-    button.on_click(lambda: slice_all())
 
     # Dialogs live outside the refreshable results, so that redrawing them doesn't delete one that's open.
     with ui.dialog() as dialog, ui.card().classes("min-w-[28rem]") as dialog_card:
@@ -499,7 +641,7 @@ def step_worksheet(ed: "Editor") -> None:
     def open_hit(take: TakeResult, hit: Hit, autoplay: bool = True) -> None:
         dialog_card.clear()
         with dialog_card:
-            ui.label(f"{take.title}").classes("text-lg font-medium")
+            ui.label(plain_title(take)).classes("text-lg font-medium")
             ui.label(hit.id).classes("text-xs font-mono opacity-70")
             lanes = note_lanes(inst, take.note) if take.note else []
             lane = lane_of(hit, take, lanes) if take.note and not importing else hit.layer
@@ -514,8 +656,13 @@ def step_worksheet(ed: "Editor") -> None:
                     ui.label(k).classes("opacity-70")
                     ui.label(v)
             if take.envelope:
-                ui.label(f"Where it was cut in {take.title}").classes("text-xs opacity-60")
-                ui.html(waveform(take, hit.id), sanitize=False).classes("w-full")
+                with ui.row().classes("w-full items-center justify-between no-wrap"):
+                    ui.label("Where it was cut in its recording").classes("text-xs opacity-60")
+                    recording_actions(take)
+                if importing or not take.length:
+                    ui.html(waveform(take, hit.id), sanitize=False).classes("w-full")
+                else:
+                    cut_editor(take, hit)
             if take.kind == "note" and not importing and len(lanes) > 1:
                 ui.select({la: la for la in lanes}, value=lane, label="Move to velocity",
                           on_change=lambda e: choose_lane(take, hit, e.value)).props("dense").classes("w-40")
@@ -607,15 +754,149 @@ def step_worksheet(ed: "Editor") -> None:
                 ui.button("Add velocity", on_click=add)
         lane_dialog.open()
 
-    def chip(take: TakeResult, h: Hit, number: int) -> None:
-        text = f"{number}"
-        if h.cents is not None:
-            text += f" {h.cents:+.0f}¢"
+    def recording_actions(take: TakeResult) -> None:
+        """What can be done with the whole recording a hit is from."""
+        if importing:
+            return
+        with ui.row().classes("gap-1 no-wrap"):
+            if take.cut_by_hand:
+                ui.button("Find hits automatically", on_click=lambda: reslice(take, by_hand=False)) \
+                    .props("flat dense no-caps size=sm") \
+                    .tooltip("Forget the cuts set by hand and find this recording's hits again")
+            else:
+                ui.button("Re-slice", on_click=lambda: reslice(take)).props("flat dense no-caps size=sm") \
+                    .tooltip("Find its hits again, e.g. after a fix in finding them; decisions about hits "
+                             "that are cut where they were are kept")
+            if take.kind == "note":
+                ui.button("Move this recording…", on_click=lambda: move_take(take)) \
+                    .props("flat dense no-caps size=sm") \
+                    .tooltip("E.g. when it was played on the wrong note: all its hits go along")
+
+    def open_recording(take: TakeResult) -> None:
+        """A recording in which no hit was found: mark the one that was played by hand, or move it."""
+        dialog_card.clear()
+        with dialog_card:
+            ui.label(plain_title(take)).classes("text-lg font-medium")
+            ui.label("No hit was found in this recording. Drag the blue lines over the one you played to cut "
+                     "it by hand.").classes("text-sm opacity-80")
+            with ui.row().classes("w-full items-center justify-between no-wrap"):
+                ui.label("The recording").classes("text-xs opacity-60")
+                recording_actions(take)
+            if take.length:
+                cut_editor(take, None)
+            with ui.row().classes("w-full justify-end mt-2"):
+                ui.button("Close", on_click=dialog.close).props("flat")
+        dialog.open()
+
+    def first_file(take: TakeResult) -> Path:
+        return Path(rec.takes_dir).expanduser() / take.files[0]
+
+    async def reslice(take: TakeResult, by_hand: bool = True) -> None:
+        """`by_hand=False` forgets the cuts set by hand first."""
+        dialog.close()
+        if not by_hand:
+            takes_meta.save_cuts(slug, first_file(take), None)
+        await slice_all(only=take.key)
+        found = next((t for t in state["manifest"].takes if t.key == take.key), None) if state["manifest"] else None
+        if found is not None:
+            ui.notify(f"{plain_title(found)}: {len(found.hits)} hit{'' if len(found.hits) == 1 else 's'}.",
+                      type="positive")
+
+    def cut_editor(take: TakeResult, hit: Hit | None) -> None:
+        """The recording's waveform with this hit's cut: drag its start or end to set it by hand.
+        Without a hit, a new one: at the first beat it was asked for, as long as notes ring."""
+        length, sr = take.length or 1, take.sample_rate or 1
+        if hit is None:
+            beat = (takes_meta.hits_at(slug, first_file(take)) or [0.0])[0]
+            first, last = int(beat * sr), int(beat * sr + inst.recording.ring_seconds * sr)
+            first, last = min(first, length - sr // 10), min(last, length)
+        else:
+            first, last = hit.start, hit.end
+        others = sorted((h for h in take.hits if hit is None or h.id != hit.id), key=lambda h: h.start)
+        lo = max((h.end for h in others if h.end <= first), default=0) / length
+        hi = min((h.start for h in others if h.start >= last), default=length) / length
+        start, end = first / length, last / length
+        with ui.element("div").classes("vi-cut").props(
+                f"data-start={start:.6f} data-end={end:.6f} data-lo={lo:.6f} data-hi={hi:.6f} "
+                f"data-seconds={length / sr:.4f}") as box:
+            ui.html(waveform(take, hit.id if hit else set()), sanitize=False).classes("w-full")
+            ui.html(f"<div class='vi-cut-range' style='left:{start * 100:.3f}%;width:{(end - start) * 100:.3f}%'>"
+                    f"</div><div class='vi-cut-handle' data-edge='start' style='left:{start * 100:.3f}%'></div>"
+                    f"<div class='vi-cut-handle' data-edge='end' style='left:{end * 100:.3f}%'></div>"
+                    f"<div class='flex justify-between text-xs opacity-60 mt-1'><span class='vi-cut-times'>"
+                    f"{first / sr:.2f} – {last / sr:.2f} s ({(last - first) / sr:.2f} s)</span>"
+                    f"<span>drag the blue lines to change</span></div>", sanitize=False).classes("w-full")
+        box.on("cut-change", lambda e: set_cut(take, hit, e.args["detail"]), args=["detail"])
+
+    async def set_cut(take: TakeResult, hit: Hit | None, detail: Any) -> None:
+        """Sets the recording's cuts by hand: this hit (or a new one) where it was dragged, the others
+        as they are."""
+        try:
+            a, b = (int(round(float(detail[k]) * (take.length or 0))) for k in ("start", "end"))
+        except (KeyError, TypeError, ValueError):
+            return
+        if b - a < int(0.05 * (take.sample_rate or 48000)):
+            return
+        cuts = [(h.start, h.end) for h in take.hits if hit is None or h.id != hit.id] + [(a, b)]
+        takes_meta.save_cuts(slug, first_file(take), cuts)
+        if hit is not None:
+            hit.start, hit.end = a, b  # so its decisions stay with it when sliced again
+        dialog.close()
+        await slice_all(only=take.key)
+        found = next((t for t in state["manifest"].takes if t.key == take.key), None) if state["manifest"] else None
+        again = next((h for h in found.hits if h.start == a), None) if found else None
+        if found and again:
+            open_hit(found, again)
+
+    def move_take(take: TakeResult) -> None:
+        """The whole recording to another note or velocity; there it's sliced afresh."""
+        dialog.close()
+        notes: dict[str, str] = {}
+        for t in plan_takes(inst):
+            if t.kind == "note" and t.pass_id == take.pass_id:
+                notes.setdefault(t.note_base, t.title.replace(f" · {t.lane}", ""))
+        lane_card.clear()
+        with lane_card:
+            ui.label(f"Move this recording of {plain_title(take)}").classes("text-lg font-medium")
+            note_select = ui.select(notes, value=take.note, label="To note").props("dense outlined") \
+                .classes("w-full")
+            lane_select = ui.select([], label="Velocity").props("dense outlined").classes("w-full")
+
+            def lanes_for(note: str) -> None:
+                lanes = note_lanes(inst, note)
+                lane_select.set_options(lanes, value=take.lane if take.lane in lanes else lanes[0])
+
+            note_select.on_value_change(lambda e: lanes_for(e.value))
+            lanes_for(take.note)
+            ui.label("If that velocity is recorded already, this becomes more hits of it; nothing is replaced. "
+                     "Rejections and moves of its hits start over there.").classes("text-xs opacity-70")
+
+            async def go() -> None:
+                try:
+                    key = relocate.move_recording(inst, Path(rec.takes_dir).expanduser(), take.key,
+                                                  note_select.value, lane_select.value)
+                except (ValueError, OSError) as e:
+                    ui.notify(str(e), type="warning", multi_line=True)
+                    return
+                lane_dialog.close()
+                manifest = state["manifest"]
+                planned = any(t.key == take.key for t in plan_takes(inst))
+                if manifest and not planned:  # its old name is gone, not just unrecorded
+                    manifest.takes = [t for t in manifest.takes if t.key != take.key]
+                if planned:
+                    await slice_all(only=take.key)
+                await slice_all(only=key)
+                ui.notify(f"Moved to {notes[note_select.value]} · {lane_select.value}.", type="positive")
+
+            with ui.row().classes("w-full justify-end"):
+                ui.button("Cancel", on_click=lane_dialog.close).props("flat")
+                ui.button("Move", on_click=go)
+        lane_dialog.open()
+
+    def hit_text(h: Hit) -> tuple[str, list[str]]:
+        """A hit's short label (its tuning, its loop) and what's worth knowing about it."""
+        text = f"{h.cents:+.0f}¢" if h.cents is not None else "●"
         tips = [f.replace("_", " ") for f in h.flags]
-        if take.origin == "more":
-            tips.append("recorded later")
-        elif take.origin == "combined":
-            tips.append("from the take with all velocities")
         if h.layer_set:
             tips.append("moved here")
         if h.loop_start is not None:
@@ -623,54 +904,112 @@ def step_worksheet(ed: "Editor") -> None:
             text += " ⟳̸" if h.loop_off else (" ⟳M" if h.loop_source == "marker" else " ⟳")
             tips.append("loop turned off" if h.loop_off else "loop from a marker" if h.loop_source == "marker"
                         else f"automatic loop, match {h.loop_score:.2f}")
-        c = ui.chip(text, color=None, on_click=lambda t=take, hit=h: open_hit(t, hit)) \
-            .props("dense square clickable draggable").classes("vi-chip-drag").style(
+        if h.rejected:
+            tips.append("rejected")
+        return text, tips
+
+    def draggable_hit(element: Any, take: TakeResult, h: Hit) -> None:
+        element.props("draggable").on("click", lambda t=take, hit=h: open_hit(t, hit))
+        element.on("dragstart", js_handler=DRAG_JS.format(ref=json.dumps(f"{take.key}|{h.id}")))
+
+    def chip(take: TakeResult, h: Hit, number: int | None = None) -> None:
+        """A hit without a waveform to show it in: imported samples, hits of a removed velocity."""
+        text, tips = hit_text(h)
+        text += f" · {h.rms_db:.0f} dB"
+        c = ui.chip(text if number is None else f"{number} {text}", color=None) \
+            .props("dense square clickable").classes("vi-chip-drag").style(
                 f"background:{hit_color(h)};color:white" + (";text-decoration:line-through" if h.rejected else ""))
-        c.on("dragstart", js_handler=DRAG_JS.format(ref=json.dumps(f"{take.key}|{h.id}")))
+        draggable_hit(c, take, h)
         if tips:
             c.tooltip(", ".join(tips))
 
     def compare_button(hits: list[tuple[TakeResult, Hit]]) -> None:
         kept = [h for _, h in hits if not h.rejected]  # rejected ones are decided; compare the rest
-        if len(kept) < 2:
+        button = ui.button(icon="play_arrow").props("flat dense round size=sm")
+        if not kept:  # still there, disabled, so the waves of all rows start at the same x
+            button.disable()
             return
         names = "&".join(f"names={quote(next(iter(h.files.values())))}" for h in kept)
         url = f"/compare/{slug}?{names}"
-        ui.button(icon="play_arrow").props("flat dense round size=sm") \
-            .on("click", js_handler=f"() => ({PLAY_JS})({json.dumps(url)})") \
-            .tooltip(f"Play the {len(kept)} kept ones with their attacks {COMPARE_EVERY_S:g} s apart "
-                     "(click again to stop)")
+        button.on("click", js_handler=f"() => ({PLAY_JS})({json.dumps(url)})")
+        button.tooltip("Play it (click again to stop)" if len(kept) == 1 else
+                       f"Play the {len(kept)} kept ones with their attacks {COMPARE_EVERY_S:g} s apart "
+                       "(click again to stop)")
 
     def is_problem(recs: list[TakeResult]) -> bool:
         return any(t.status == "error" or t.message or any(h.severity() in ("error", "warning") and not h.rejected
                                                              for h in t.hits) for t in recs)
 
-    def take_row(take: Take, result: TakeResult | None) -> None:
-        """The noise floor or an extra: one take, recorded as a whole."""
-        recorded = result is not None and result.status not in ("missing",)
-        with ui.row().classes("vi-lane items-center gap-2 w-full").style(f"min-height:{ROW_H}px") as row:
-            ui.label(take.title).classes("font-medium w-56")
-            record_button(take, recorded)
-            if result and result.status == "noise_floor":
-                ui.label(f"recorded · {result.message}").classes("text-sm opacity-70")
-            elif result:
-                for i, h in enumerate(result.hits, 1):
-                    chip(result, h, i)
-                compare_button([(result, h) for h in result.hits])
-            if not recorded:
-                ui.label("not recorded: ● records it, or drop an audio file here").classes("text-xs opacity-50") \
-                    .tooltip(f"E.g. a file exported from Cubase or WaveLab; it is stored as {', '.join(take.files)}")
-            if result and (result.message or result.info) and result.status not in ("noise_floor", "missing"):
-                ui.label("; ".join(filter(None, [result.message, result.info]))).classes("text-xs opacity-70")
-        drop_target(row, take, "", take.pass_id)
-        if result and result.envelope and result.status != "noise_floor":
-            ui.html(waveform(result), sanitize=False).classes("w-full")
+    def take_card(take: Take, result: TakeResult | None) -> None:
+        """An extra: one take, recorded as a whole, in a card like a note's."""
+        recorded = result is not None and result.status != "missing"
+        if state["problems_only"] and not is_problem([result] if recorded else []):
+            return
+        with ui.card().classes("w-full").props("flat bordered"):
+            ui.label(take.title).classes("font-medium")
+            if result and result.message and recorded:
+                ui.label(result.message).classes("text-xs text-orange-600")
+            with ui.row().classes("vi-lane items-start gap-1 w-full no-wrap").style(f"min-height:{ROW_H}px") as row:
+                with controls_strip():
+                    record_button(take, recorded)
+                    if recorded:
+                        compare_button([(result, h) for h in result.hits])
+                with ui.column().classes("grow gap-1 min-w-0"):
+                    if recorded:
+                        hits = [(result, h) for h in result.hits]
+                        hit_strip(hits, sum(hit_seconds(r, h) for r, h in hits),
+                                  max((hit_peak_db(h) for _, h in hits), default=0.0))
+                    else:
+                        with controls_strip():
+                            drop_hint(take)
+            drop_target(row, take, "", take.pass_id)
+            if result and result.info and recorded:
+                ui.label(result.info).classes("text-xs opacity-60")
+
+    def noise_card(take: Take, result: TakeResult | None) -> None:
+        """The noise floor: nothing to judge but whether it's there and how loud, so one line."""
+        recorded = result is not None and result.status != "missing"
+        with ui.card().classes("w-full py-1").props("flat bordered"):
+            with ui.row().classes("vi-lane items-center gap-2 w-full no-wrap") as row:
+                record_button(take, recorded)
+                ui.label(take.title).classes("font-medium whitespace-nowrap")
+                if result and result.status == "noise_floor":
+                    level = result.level_db
+                    if level is None and state["manifest"] and take.pass_id == recording_passes(inst)[0].id:
+                        level = state["manifest"].noise_floor_db  # sliced before levels were kept per pass
+                    text = f"{result.message} of silence" + (f" · {level:.1f} dBFS" if level is not None else "")
+                    if state["manifest"] and state["manifest"].denoised:
+                        text += " · used to denoise the samples"
+                    ui.label(text).classes("text-sm opacity-70 truncate")
+                elif recorded and result.message:
+                    ui.label(result.message).classes("text-xs text-orange-600 truncate")
+                elif not recorded:
+                    drop_hint(take)
+            drop_target(row, take, "", take.pass_id)
+
+    def controls_strip() -> ui.row:
+        return ui.row().classes("items-center gap-1 no-wrap shrink-0").style(f"height:{WAVE_H}px")
+
+    def drop_hint(take: Take) -> None:
+        ui.label("or drop an audio file here").classes("text-xs opacity-50") \
+            .tooltip(f"E.g. a file exported from Cubase or WaveLab; it is stored as {', '.join(take.files)}")
 
     def record_button(take: Take, recorded: bool) -> None:
-        ui.button(icon="check_circle" if recorded else "fiber_manual_record", color=None,
+        """Whether it's recorded shows in the row itself: its waveform, or the drop hint. A recorded
+        velocity gets more hits beside its own, never replaced: the bad ones are rejected instead. The
+        noise floor and extras are single takes, so they're recorded again."""
+        # As record_take decides: by the files, which may not be sliced yet (e.g. just dropped).
+        folder = Path(rec.takes_dir).expanduser() if rec.takes_dir else None
+        recorded = recorded or (folder is not None and all((folder / f).exists() for f in take.files))
+        if not recorded:
+            tip = "Record"
+        elif take.kind == "note":
+            tip = "Record more hits; the ones you have stay until you reject them"
+        else:
+            tip = "Record again (replaces this recording)"
+        ui.button(icon="fiber_manual_record", color=None,
                   on_click=lambda t=take: recording.record_take(ed, t.number, resliced)) \
-            .props(f"flat dense round size=sm text-color={'positive' if recorded else 'red'}") \
-            .tooltip("Recorded; click to record it again (replaces it)" if recorded else "Record it")
+            .props("flat dense round size=sm text-color=red").tooltip(tip)
 
     def velocity_slider(note: str, bounds: list[tuple[str, int, int]]) -> None:
         """A vertical bar from velocity 1 (top) to 127, one draggable dot per boundary between velocities."""
@@ -681,9 +1020,10 @@ def step_worksheet(ed: "Editor") -> None:
         dots = "".join(
             f"<div class='vi-vel-dot' data-value='{lo}' style='top:{(lo - 1) / 127 * 100:.2f}%'>"
             f"<span>{lo}</span></div>" for _, lo, _ in bounds[1:])
-        track = ui.element("div").classes("vi-vel shrink-0").style(f"height:{len(bounds) * ROW_H - 8}px")
+        # As tall as the rows beside it, which grow with their wave lanes.
+        track = ui.element("div").classes("vi-vel shrink-0 self-stretch").style(f"min-height:{len(bounds) * ROW_H - 8}px")
         with track:
-            ui.html(segs + dots, sanitize=False)
+            ui.html(f"<div class='vi-vel-segs'>{segs}</div>{dots}", sanitize=False)
         track.tooltip("Velocity 1 at the top, 127 at the bottom: drag a dot to move where the next velocity "
                       "starts for this note")
         track.on("vel-change", lambda e, n=note: set_starts(n, e.args["detail"]), args=["detail"])
@@ -709,14 +1049,33 @@ def step_worksheet(ed: "Editor") -> None:
         elif isinstance(args, str) and lane:
             move(args, lane, note, pass_id)
 
-    def recordings_waveforms(recs: list[TakeResult]) -> None:
-        for r in recs:
-            if not r.envelope:
-                continue
-            what = "all velocities in one take" if r.origin == "combined" else \
-                f"{r.lane} · recorded later" if r.origin == "more" else f"{r.lane}"
-            ui.label(what).classes("text-xs opacity-60 mt-1")
-            ui.html(waveform(r), sanitize=False).classes("w-full")
+    def hit_seconds(r: TakeResult, h: Hit) -> float:
+        return (h.end - h.start) / (h.sample_rate or r.sample_rate or 1)
+
+    def hit_strip(hits: list[tuple[TakeResult, Hit]], span_s: float, loudest_db: float,
+                  empty: list[TakeResult] = ()) -> None:
+        """A row's hits side by side, whichever recording they come from, each as wide as it is long
+        and as tall as it is loud: `span_s` seconds fill the row and `loudest_db` its height, the same
+        for all rows of a note. Click a hit to review it, drag it to another velocity. Recordings of
+        the row in which no hit was found get a tile of their own, to open them."""
+        with ui.element("div").classes("vi-hits"):
+            for r in empty:
+                ui.label("no hit found").classes("vi-hit-empty").on("click", lambda t=r: open_recording(t))
+            for r, h in hits:
+                if not r.envelope:  # e.g. imported files: nothing to draw
+                    chip(r, h)
+                    continue
+                text, tips = hit_text(h)
+                basis = hit_seconds(r, h) / span_s * 100 if span_s else 100 / len(hits)
+                with ui.element("div").classes("vi-hit").style(f"flex:0 1 {basis:.2f}%") as tile:
+                    ui.html(hit_wave(r, h, WAVE_H, loudest_db), sanitize=False)
+                    ui.label(text).classes("vi-hit-label").style(
+                        f"color:{hit_color(h)}" + (";text-decoration:line-through" if h.rejected else ""))
+                    # The attack's loudness: what decides which velocity a hit fits.
+                    ui.label(f"{h.rms_db:.0f} dB").classes("vi-hit-level")
+                draggable_hit(tile, r, h)
+                if tips:
+                    tile.tooltip(", ".join(tips))
 
     def note_card(lane_takes: list[Take], results_by_key: dict[str, TakeResult]) -> None:
         first = lane_takes[0]
@@ -731,11 +1090,14 @@ def step_worksheet(ed: "Editor") -> None:
         for r in recs:
             for h in r.hits:
                 by_lane.setdefault(lane_of(h, r, lanes), []).append((r, h))
+        # The row with the most to play fills the width; the others are drawn to the same scale.
+        span_s = max((sum(hit_seconds(r, h) for r, h in row) for row in by_lane.values()), default=0.0)
+        loudest_db = max((hit_peak_db(h) for row in by_lane.values() for _, h in row), default=0.0)
         with ui.card().classes("w-full").props("flat bordered"):
             with ui.row().classes("items-center gap-2 w-full"):
                 ui.label(title).classes("font-medium")
                 if own:
-                    ui.badge("own velocities", color="primary").props("outline")
+                    ui.badge("custom velocities", color="primary").props("outline")
                 ui.space()
                 ui.button("+ velocity", on_click=lambda n=note, t=title: add_lane(n, t)).props("flat dense no-caps")
                 if own:
@@ -749,7 +1111,11 @@ def step_worksheet(ed: "Editor") -> None:
                 if text:
                     ui.label(text).classes(f"text-xs {style}")
             bounds = lane_bounds(inst, note)
-            with ui.row().classes("w-full no-wrap items-start gap-3"):
+            # As wide as the longest velocity name of the instrument, so short names leave no gap but
+            # the buttons still line up across notes.
+            name_w = max(len(n) for n in [*inst.dynamics.layers, *(nl for v in inst.note_lanes.values()
+                                                                    for nl in v.layers)] or ["p"])
+            with ui.row().classes("w-full no-wrap items-start gap-1"):
                 if len(bounds) > 1:
                     velocity_slider(note, bounds)
                 with ui.column().classes("grow gap-0 min-w-0"):
@@ -757,38 +1123,36 @@ def step_worksheet(ed: "Editor") -> None:
                         result = results_by_key.get(take.key)
                         recorded = result is not None and result.status != "missing"
                         hits = by_lane.get(lane, [])
-                        with ui.row().classes("vi-lane items-center gap-1 w-full no-wrap").style(f"min-height:{ROW_H}px") \
+                        with ui.row().classes("vi-lane items-start gap-1 w-full no-wrap").style(f"min-height:{ROW_H}px") \
                                 as row:
-                            ui.label(lane).classes("w-10 font-medium")
-                            ui.label(f"velocity {lo}–{hi}").classes("w-32 text-xs opacity-70 whitespace-nowrap")
-                            record_button(take, recorded)
-                            ui.button(icon="add", color=None,
-                                      on_click=lambda t=take: recording.record_more(ed, t.key, inst.dynamics.round_robins,
-                                                                                     resliced)) \
-                                .props("flat dense round size=sm text-color=primary") \
-                                .tooltip(f"Record {inst.dynamics.round_robins} more {lane} hits to compare with these")
-                            compare_button(hits)
-                            with ui.row().classes("gap-1 items-center"):
-                                for n, (r, h) in enumerate(hits, 1):
-                                    chip(r, h, n)
-                            if not recorded and not hits:
-                                ui.label("not recorded: ● records it, or drop an audio file here").classes(
-                                    "text-xs opacity-50").tooltip(
-                                    f"E.g. a file exported from Cubase or WaveLab; it is stored as {', '.join(take.files)}")
-                            ui.space()
+                            with controls_strip():
+                                # Fixed widths, so the buttons line up across rows and notes; the
+                                # range fits "100–127".
+                                ui.label(lane).classes("shrink-0 font-medium whitespace-nowrap") \
+                                    .style(f"width:{name_w + 1}ch")
+                                ui.label(f"{lo}–{hi}").classes("shrink-0 text-xs opacity-70 whitespace-nowrap") \
+                                    .style("width:7.5ch").tooltip(f"Velocity {lo}–{hi}")
+                                record_button(take, recorded)
+                                compare_button(hits)
+                            with ui.column().classes("grow gap-1 min-w-0"):
+                                if not recorded and not hits:
+                                    with controls_strip():
+                                        drop_hint(take)
+                                hit_strip(hits, span_s, loudest_db,
+                                          [r for r in recs if r.lane == lane and not r.hits and r.envelope])
                             if len(bounds) > 1 and not hits:
-                                ui.button(icon="close", on_click=lambda n=note, la=lane: remove_lane(n, la)) \
-                                    .props("flat dense round size=xs").tooltip(f"Remove the {lane} velocity from this note")
+                                with controls_strip():
+                                    ui.button(icon="close", on_click=lambda n=note, la=lane: remove_lane(n, la)) \
+                                        .props("flat dense round size=xs") \
+                                        .tooltip(f"Remove the {lane} velocity from this note")
                         drop_target(row, take, note, first.pass_id)
             orphans = by_lane.get(None, [])
             if orphans:
                 with ui.row().classes("items-center gap-1 w-full"):
-                    ui.label("No velocity:").classes("text-xs opacity-70")
+                    ui.label("No velocity:").classes("text-xs opacity-70") \
+                        .tooltip("Their velocity was removed from this note; drag them into one, or they're left out")
                     for n, (r, h) in enumerate(orphans, 1):
                         chip(r, h, n)
-                    ui.label("their velocity was removed from this note; drag them into one, or they're left out") \
-                        .classes("text-xs opacity-60")
-            recordings_waveforms(recs)
 
     def import_card(take: TakeResult) -> None:
         label, color = STATUS[take.status]
@@ -812,20 +1176,11 @@ def step_worksheet(ed: "Editor") -> None:
 
     @ui.refreshable
     def results() -> None:
+        """The list: every note, then the extras."""
         manifest: Manifest | None = state["manifest"]
-        if manifest is not None:
-            if state["stale"] is None:  # computing it scans the takes or import folder, so only after changes
-                changed = slicing.changed_takes(inst, manifest)
-                state["stale"] = STALE_MESSAGE if manifest.setup != slicing_setup(inst) else \
-                    changed_message(changed) if changed else ""
-            if state["stale"]:
-                ui.label("⚠ " + state["stale"]).classes("text-sm text-orange-600")
-            c = manifest.counts()
-            ui.label(f"{c['hits']} hits · {c['errors']} errors · {c['warnings']} warnings · "
-                     f"{c['rejected']} rejected").classes("text-sm")
-            if manifest.noise_floor_db is not None:
-                denoised = " · samples denoised" if manifest.denoised else ""
-                ui.label(f"Noise floor: {manifest.noise_floor_db:.1f} dBFS{denoised}").classes("text-xs opacity-60")
+        overview.refresh()
+        noise.refresh()
+        counts.refresh()
         if importing:
             if manifest is None:
                 ui.label("Nothing imported yet.").classes("opacity-70")
@@ -839,21 +1194,40 @@ def step_worksheet(ed: "Editor") -> None:
         for p in passes:
             if len(passes) > 1:
                 ui.label(f"Pass: {p.name}").classes("text-base font-medium mt-2")
-            pass_takes = [t for t in takes if t.pass_id == p.id]
-            for t in pass_takes:
-                if t.kind == "noise_floor":
-                    take_row(t, results_by_key.get(t.key))
             notes: dict[str, list[Take]] = {}
-            for t in pass_takes:
-                if t.kind == "note":
+            for t in takes:
+                if t.pass_id == p.id and t.kind == "note":
                     notes.setdefault(t.note_base, []).append(t)
             for lane_takes in notes.values():
                 note_card(lane_takes, results_by_key)
-            extras = [t for t in pass_takes if t.kind == "extra"]
-            if extras:
-                ui.label("Extras").classes("text-sm font-medium mt-2")
-                for t in extras:
-                    take_row(t, results_by_key.get(t.key))
+        extras = [t for t in takes if t.kind == "extra"]
+        if extras:
+            ui.label("Extras").classes("text-sm font-medium mt-2")
+            for t in extras:
+                take_card(t, results_by_key.get(t.key))
+
+    @ui.refreshable
+    def noise() -> None:
+        """The noise-floor recordings, before the notes: they're recorded first."""
+        if importing:
+            return
+        results_by_key = {t.key: t for t in state["manifest"].takes} if state["manifest"] else {}
+        for t in plan_takes(inst):
+            if t.kind == "noise_floor":
+                noise_card(t, results_by_key.get(t.key))
+
+    @ui.refreshable
+    def counts() -> None:
+        manifest: Manifest | None = state["manifest"]
+        if manifest is None:
+            return
+        c = manifest.counts()
+
+        def n(count: int, word: str) -> str:
+            return f"{count} {word}" + ("" if count == 1 else "s")
+
+        ui.label(f"{n(c['hits'], 'hit')} · {n(c['errors'], 'error')} · {n(c['warnings'], 'warning')} · "
+                 f"{c['rejected']} rejected").classes("text-sm opacity-70")
 
     def problems_only(value: bool) -> None:
         state["problems_only"] = value
@@ -861,7 +1235,49 @@ def step_worksheet(ed: "Editor") -> None:
         with anchor:
             ui.timer(0.25, results.refresh, once=True)
 
-    ui.switch("Only problems", value=False, on_change=lambda e: problems_only(e.value))
+    def pending(manifest: Manifest | None) -> str:
+        """Why slicing is needed, or "" if everything on disk is sliced."""
+        if importing:
+            return ""
+        if manifest is None:
+            takes_dir = Path(rec.takes_dir).expanduser() if rec.takes_dir else None
+            found = takes_dir is not None and takes_dir.is_dir() and any(
+                all((takes_dir / f).exists() for f in t.files) for t in slicing.recordings(inst, takes_dir))
+            return "Takes in the folder aren't sliced yet." if found else ""
+        if manifest.setup != slicing_setup(inst):
+            return STALE_MESSAGE
+        changed = slicing.changed_takes(inst, manifest)
+        return changed_message(changed) if changed else ""
+
+    @ui.refreshable
+    def overview() -> None:
+        """What needs slicing again, and the counts; redrawn with the results."""
+        manifest: Manifest | None = state["manifest"]
+        if state["stale"] is None:  # computing it scans the takes or import folder, so only after changes
+            state["stale"] = pending(manifest)
+        # Only offered when something needs it: takes recorded here are sliced right away.
+        button.set_visibility(importing or bool(state["stale"]))
+        if state["stale"]:
+            ui.label("⚠ " + state["stale"]).classes("text-sm text-orange-600")
+
+    # Buttons and the switch stay out of the redrawn parts: the switch keeps its animation.
+    with ui.row().classes("items-center gap-4 w-full"):
+        overview_box = ui.column().classes("gap-0")
+        button = ui.button("Import & analyse" if importing else "Slice them",
+                           icon="file_download" if importing else "content_cut", on_click=lambda: slice_all())
+        with Collapse(False, axis="x", inner_classes="flex items-center gap-4") as progress_box:
+            progress = ui.linear_progress(value=0, show_value=False).classes("w-64")
+            progress_label = ui.label().classes("text-sm opacity-70 whitespace-nowrap")
+    with overview_box:
+        overview()
+    # The list's own controls, right above it; the noise floor is the list's first recording.
+    with ui.row().classes("items-center gap-4 w-full mt-2"):
+        ui.label("Recordings").classes("text-base font-medium")
+        counts()
+        ui.space()
+        ui.switch("Show only notes with problems", value=False, on_change=lambda e: problems_only(e.value))
+    with ui.column().classes("w-full gap-2"):
+        noise()
 
     def shown() -> str:
         """What the worksheet depends on in the spec; other edits (a name, a colour) don't redraw it."""

@@ -35,6 +35,14 @@ MIN_RISE_DB = 6.0  # an onset must be this much louder than just before it
 MIN_ABOVE_NOISE_DB = 15.0
 TAIL_ABOVE_NOISE_DB = 6.0
 MIN_GAP_S = 0.15
+# How long after an onset its loudness is judged. Onsets are placed where the rise begins, which can
+# be a finger touching the string well before the pluck peaks.
+ATTACK_S = 0.15
+# An onset whose loudness only comes this many frames later (a touch, then the pluck) moves forward to
+# where it comes within MAIN_RISE_DB of its peak: a sample must start with its attack.
+LATE_RISE_FRAMES = 3
+MAIN_RISE_DB = 20.0
+SAME_CUT_S = 0.05  # a hit cut this close to where it was is the same hit
 LOUDNESS_WINDOW_S = 0.3
 ENVELOPE_POINTS = 400
 MIN_NOISE_FLOOR_DB = -90.0
@@ -76,11 +84,14 @@ def detect_onsets(ref: np.ndarray, sr: int, noise_rel_db: float) -> list[int]:
     out: list[int] = []
     for f in frames:
         before = level[max(0, f - 6): max(1, f - 1)]
-        after = level[f: f + 10]
+        after = level[f: f + max(10, int(ATTACK_S * sr / HOP))]
         if after.size == 0:
             continue
         rise = after.max() - (before.min() if before.size else -120)
         if rise >= MIN_RISE_DB and after.max() >= ref_noise + MIN_ABOVE_NOISE_DB:
+            main = int(np.argmax(after >= after.max() - MAIN_RISE_DB))
+            if main > LATE_RISE_FRAMES:
+                f += main - 1  # the frame before: the attack begins within it
             sample = int(f * HOP)
             if not out or sample - out[-1] >= MIN_GAP_S * sr:
                 out.append(sample)
@@ -227,12 +238,16 @@ def on_grid(onsets: list[int], ref: np.ndarray, sr: int, hits_at: list[float]) -
             until = t + (t - hits_at[k - 1]) if k else float("inf")
         near = [o for o in onsets if (t - GRID_EARLY_S) * sr <= o < (until - GRID_EARLY_S) * sr]
         if near:
-            out.append(max(near, key=lambda o: float(np.max(np.abs(ref[o: o + int(0.1 * sr)])))))
+            out.append(max(near, key=lambda o: float(np.max(np.abs(ref[o: o + int(ATTACK_S * sr)])))))
     return out
 
 
 def find_cuts(inst: Instrument, path: Path, ref: np.ndarray, sr: int, rel_floor: float) -> list[tuple[int, int, bool]]:
-    """Hits in a recording; for one recorded in the app, only those on its click grid."""
+    """Hits in a recording: as cut by hand, if they were; for one recorded in the app, only those on
+    its click grid."""
+    by_hand = takes_meta.cuts(inst.meta.slug, path)
+    if by_hand is not None:
+        return [(max(0, a), min(len(ref), b), False) for a, b in by_hand if min(len(ref), b) > max(0, a)]
     onsets = detect_onsets(ref, sr, rel_floor)
     grid = takes_meta.hits_at(inst.meta.slug, path)
     if grid is None:
@@ -336,6 +351,7 @@ def process_take(inst: Instrument, take: Take, takes_dir: Path, out_dir: Path,
         # No waveform: normalised noise would look like a solid block.
         result.status = "noise_floor"
         result.message = f"{len(ref) / sr:.0f} s"
+        result.level_db = noise_db  # measured from this take: its pass's noise floor
         return result
     result.envelope = envelope(ref)
 
@@ -347,6 +363,7 @@ def process_take(inst: Instrument, take: Take, takes_dir: Path, out_dir: Path,
     # detect_onsets works on the normalised mix; express the floor relative to the primary's peak.
     rel_floor = floor - primary_level
     cuts = find_cuts(inst, paths[0], ref, sr, rel_floor)
+    result.cut_by_hand = takes_meta.cuts(inst.meta.slug, paths[0]) is not None
     markers = next((m for m in (loops.read_wav_loops(p) for p in paths) if m), []) \
         if inst.processing.loops and take.kind == "note" else []
     analyse_cuts(inst, take, result, take_signals, signals, sr, cuts, out_dir, profiles, markers)
@@ -434,12 +451,14 @@ def by_take(manifest: Manifest | None) -> dict[str, TakeResult]:
 
 
 def carry_over(inst: Instrument, result: TakeResult, earlier: TakeResult | None) -> None:
-    """Keep the review's decisions (rejections, loops, moved lanes) while the recording is unchanged."""
+    """Keep the review's decisions (rejections, loops, moved lanes) while the recording is unchanged,
+    for hits that are still cut where they were: slicing differently may number other hits alike."""
     if earlier and earlier.source == result.source:
         old = {h.id: h for h in earlier.hits}
         for h in result.hits:
-            if h.id in old:
-                h.rejected, h.loop_off, h.layer_set = old[h.id].rejected, old[h.id].loop_off, old[h.id].layer_set
+            was = old.get(h.id)
+            if was and abs(was.start - h.start) <= SAME_CUT_S * (result.sample_rate or 48000):
+                h.rejected, h.loop_off, h.layer_set = was.rejected, was.loop_off, was.layer_set
     settle(result, note_lanes(inst, result.note))
 
 

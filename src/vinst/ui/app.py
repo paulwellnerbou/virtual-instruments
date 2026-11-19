@@ -1,11 +1,10 @@
 """The instrument builder wizard (NiceGUI)."""
 
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
-from fastapi.responses import HTMLResponse
-from nicegui import app, run, ui
+import nicegui
+from nicegui import ui
 from pydantic import ValidationError
 
 from vinst import defaults, notes, review, store
@@ -13,7 +12,6 @@ from vinst.plan import (
     SampledNote,
     Summary,
     playable_range,
-    plan_takes,
     recording_passes,
     sampled_notes,
     summarize,
@@ -31,8 +29,8 @@ from vinst.spec import (
 )
 from vinst.ui import anim, keyboard, recording, theme
 from vinst.ui.build_steps import step_build, step_sound, velocity_layers
-from vinst.ui.finder import can_choose_folder, choose_folder, ensure_folder, reveal
-from vinst.ui.worksheet import step_worksheet
+from vinst.ui.finder import can_choose_folder, choose_folder
+from vinst.ui.worksheet import settings_cards, step_worksheet
 
 APP_TITLE = "DecentSampler Instrument Builder"
 DECENTSAMPLER_URL = "https://www.decentsamples.com/product/decent-sampler-plugin/"
@@ -77,9 +75,17 @@ def not_needed(text: str) -> None:
 theme.apply()
 
 
+WORKSHEET = "Worksheet"
 STEPS_CSS = """
-.vi-steps .q-stepper__header { flex-wrap: wrap; }
+.vi-side { width: 24rem; transition: width .25s ease; }
+.vi-side.vi-side-wide { width: 30rem; }
+.vi-side.vi-side-sticky { position: sticky; top: 5rem; }
+.vi-side .vi-collapse.vi-open > .vi-collapse-inner { overflow: visible; }
+.vi-steps .q-stepper__header { flex-wrap: wrap; justify-content: flex-start; }
 .vi-steps .q-stepper__tab { flex: 0 0 25%; max-width: 25%; }
+/* Chrome anchors the scroll position to the focused element (a chip being dragged, the button just
+   clicked); a redraw replaces it and the page jumps. The steps redraw in place, so no anchoring. */
+.vi-steps .q-stepper__step-inner { overflow-anchor: none; }
 """  # seven steps: four on the first line, then the worksheet starts the second
 
 
@@ -172,7 +178,8 @@ def folder_field(label: str, value: str, on_set: Callable[[str], None], prompt: 
         inp = ui.input(label, value=value, on_change=lambda e: on_set(e.value), **kw).classes("grow")
         if can_choose_folder():
             async def choose() -> None:
-                picked = await run.io_bound(choose_folder, prompt, inp.value or "")
+                # Not run(): this module's own run() starts the app.
+                picked = await nicegui.run.io_bound(choose_folder, prompt, inp.value or "")
                 if picked:
                     inp.set_value(picked)
 
@@ -302,7 +309,7 @@ def editor_page(slug: str) -> None:
                 with ui.step("Dynamics & extras", icon="graphic_eq"):
                     step_dynamics(ed)
                     nav(stepper)
-                with ui.step("Worksheet", icon="view_list"):
+                with ui.step(WORKSHEET, icon="view_list"):
                     step_worksheet(ed)
                     nav(stepper)
                 with ui.step("Sound & look", icon="tune"):
@@ -312,8 +319,23 @@ def editor_page(slug: str) -> None:
                     step_build(ed)
                     nav(stepper, last=True)
 
-        with ui.card().classes("w-96 shrink-0 sticky top-20"):
-            summary_panel(ed)
+        # The right column: the summary, and on the worksheet its settings, apart from the notes. It
+        # stays in view on the other steps; on the worksheet it's wider for the settings and scrolls
+        # with the page, so its cards are never cut off.
+        with ui.column().classes("vi-side shrink-0 gap-4") as side:
+            with ui.card().classes("w-full"):
+                summary_panel(ed)
+            with anim.Collapse(stepper.value == WORKSHEET, inner_classes="flex flex-col gap-4") as worksheet_side:
+                settings_cards(ed)
+            worksheet_side.outer.classes("w-full")  # as wide as the summary card above
+
+        def side_for(step: str) -> None:
+            worksheet_side.set_open(step == WORKSHEET)
+            side.classes(add="vi-side-wide" if step == WORKSHEET else "vi-side-sticky",
+                         remove="vi-side-sticky" if step == WORKSHEET else "vi-side-wide")
+
+        side_for(stepper.value)
+        stepper.on_value_change(lambda e: side_for(e.value))
 
 
 def nav(stepper: ui.stepper, first: bool = False, last: bool = False) -> None:

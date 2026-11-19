@@ -18,6 +18,7 @@ CSS = f"""
 .q-field--outlined .q-field__control:before {{ border-color: rgba(0, 0, 0, .2); }}
 .q-chip {{ border-radius: 6px !important; }}
 .q-menu, .q-notification, .q-tooltip {{ border-radius: {SMALL_RADIUS}; }}
+.q-tooltip {{ max-width: 22rem; font-size: 12px; line-height: 1.4; }}  /* long hints wrap instead of spanning the page */
 .q-linear-progress {{ border-radius: 4px; }}
 .q-stepper {{ border-radius: {RADIUS}; }}
 .q-header {{ box-shadow: 0 1px 8px rgba(0, 0, 0, .12); }}
