@@ -941,30 +941,30 @@ def step_worksheet(ed: "Editor") -> None:
                                                              for h in t.hits) for t in recs)
 
     def take_card(take: Take, result: TakeResult | None) -> None:
-        """An extra: one take, recorded as a whole, in a card like a note's."""
+        """An extra: one take, recorded as a whole. One line like the noise floor's until it's
+        recorded, then its hits below."""
         recorded = result is not None and result.status != "missing"
         if state["problems_only"] and not is_problem([result] if recorded else []):
             return
-        with ui.card().classes("w-full").props("flat bordered"):
-            ui.label(take.title).classes("font-medium")
-            if result and result.message and recorded:
-                ui.label(result.message).classes("text-xs text-orange-600")
-            with ui.row().classes("vi-lane items-start gap-1 w-full no-wrap").style(f"min-height:{ROW_H}px") as row:
-                with controls_strip():
-                    record_button(take, recorded)
-                    if recorded:
-                        compare_button([(result, h) for h in result.hits])
-                with ui.column().classes("grow gap-1 min-w-0"):
-                    if recorded:
-                        hits = [(result, h) for h in result.hits]
-                        hit_strip(hits, sum(hit_seconds(r, h) for r, h in hits),
-                                  max((hit_peak_db(h) for _, h in hits), default=0.0))
-                    else:
-                        with controls_strip():
-                            drop_hint(take)
-            drop_target(row, take, "", take.pass_id)
-            if result and result.info and recorded:
-                ui.label(result.info).classes("text-xs opacity-60")
+        with ui.card().classes("w-full py-1").props("flat bordered"), \
+                ui.column().classes("vi-lane gap-1 w-full") as lane:
+            with ui.row().classes("items-center gap-2 w-full no-wrap"):
+                record_button(take, recorded)
+                if recorded:
+                    compare_button([(result, h) for h in result.hits])
+                ui.label(take.title).classes("font-medium whitespace-nowrap")
+                if recorded and result.message:
+                    ui.label(result.message).classes("text-xs text-orange-600 truncate")
+                elif recorded and result.info:
+                    ui.label(result.info).classes("text-xs opacity-60 truncate")
+                elif not recorded:
+                    drop_hint(take)
+            if recorded and result.hits:
+                hits = [(result, h) for h in result.hits]
+                with ui.element("div").classes("w-full"):
+                    hit_strip(hits, sum(hit_seconds(r, h) for r, h in hits),
+                              max((hit_peak_db(h) for _, h in hits), default=0.0))
+            drop_target(lane, take, "", take.pass_id)
 
     def noise_card(take: Take, result: TakeResult | None) -> None:
         """The noise floor: nothing to judge but whether it's there and how loud, so one line."""
