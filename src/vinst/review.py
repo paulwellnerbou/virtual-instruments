@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 from pydantic import BaseModel, field_validator
 
 from vinst.plan import MAIN_PASS, take_key
@@ -15,7 +16,7 @@ FLAGS: dict[str, tuple[str, str]] = {
     "wrong_note": ("error", "pitch is more than 50 cents away from the expected note"),
     "clipped": ("error", "the signal reached full scale"),
     "no_pitch": ("warning", "no stable pitch found"),
-    "layer_mismatch": ("warning", "loudness fits a different velocity layer"),
+    "layer_mismatch": ("warning", "loudness fits a different velocity lane of this note"),
     "cut_off": ("warning", "still ringing when the next hit (or the file) started"),
     "out_of_tune": ("info", "more than 20 cents off; the instrument will correct it"),
     "loop_poor": ("warning", "the automatic loop may click or pulse; listen to it"),
@@ -30,8 +31,9 @@ SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
 
 class Hit(BaseModel):
     id: str
-    index: int
-    layer: str | None = None
+    index: int  # among the hits found in its recording
+    layer_set: str | None = None  # velocity lane it was moved to in the worksheet; wins over its take's lane
+    layer: str | None = None  # velocity lane it plays in
     rr: int | None = None
     start: int
     end: int
@@ -61,6 +63,9 @@ class TakeResult(BaseModel):
     pass_id: str = MAIN_PASS
     midi: int | None = None  # the note's key; None for extras and the noise floor
     signals: list[str] = []  # signal ids, as in each hit's files
+    note: str = ""  # a note recording's note, e.g. "060_C-0"; its lanes' recordings share it
+    lane: str | None = None  # the velocity lane its hits start in
+    origin: str = "plan"  # "plan" | "more" (variations recorded later) | "combined" (lanes in one take)
     title: str
     kind: str
     status: Literal["ok", "missing", "count_mismatch", "error", "noise_floor"]
@@ -69,7 +74,8 @@ class TakeResult(BaseModel):
     @classmethod
     def _renamed(cls, v: str) -> str:
         return "noise_floor" if v == "room_tone" else v
-    message: str = ""
+    message: str = ""  # what needs attention
+    info: str = ""  # good to know, e.g. "3 hits added"; not a problem
     expected_hits: int
     source: str = ""  # name, size and mtime of the take files; rejections only carry over if unchanged
     sample_rate: int | None = None
@@ -80,6 +86,43 @@ class TakeResult(BaseModel):
     @property
     def key(self) -> str:
         return take_key(self.base, self.pass_id)
+
+
+def settle(take: TakeResult, lanes: list[str]) -> None:
+    """A note recording's hits play in its lane, or in the lane they were moved to.
+
+    Hits whose lane the note no longer has get none and are left out of the build. Not for
+    imported samples: the importer sets their lanes.
+    """
+    if take.kind != "note" or take.status not in ("ok", "count_mismatch"):
+        return
+    take.status = "ok"  # a lane take holds variations of one dynamic: any number of hits is fine
+    for h in take.hits:
+        h.layer = h.layer_set if h.layer_set in lanes else take.lane if take.lane in lanes else None
+
+
+def check_lanes(results: list["TakeResult"], lanes: list[str]) -> None:
+    """Loudness across one note's lanes: hits that fit another lane better, lanes out of order."""
+    hits = [h for t in results for h in t.hits if not h.rejected and h.layer in lanes]
+    for t in results:
+        for h in t.hits:
+            if "layer_mismatch" in h.flags:
+                h.flags.remove("layer_mismatch")
+        t.message = "; ".join(m for m in t.message.split("; ") if m and m != LANES_OUT_OF_ORDER)
+    medians = {lane: float(np.median([h.rms_db for h in hits if h.layer == lane]))
+               for lane in lanes if any(h.layer == lane for h in hits)}
+    if len(medians) < 2:
+        return
+    for h in hits:
+        if min(medians, key=lambda lane: abs(medians[lane] - h.rms_db)) != h.layer:
+            h.flags.append("layer_mismatch")
+    ordered = [medians[lane] for lane in lanes if lane in medians]
+    if any(b <= a for a, b in zip(ordered, ordered[1:])):
+        first = next(t for t in results if t.hits)
+        first.message = "; ".join(filter(None, [first.message, LANES_OUT_OF_ORDER]))
+
+
+LANES_OUT_OF_ORDER = "this note's velocity lanes don't get louder in order"
 
 
 class Manifest(BaseModel):

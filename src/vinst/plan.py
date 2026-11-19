@@ -1,4 +1,8 @@
-"""Derive what to record from a spec: sampled notes, takes, expected file names, time estimate."""
+"""Derive what to record from a spec: sampled notes, their velocity lanes, takes and file names.
+
+Every note is recorded once per velocity lane (and pass): a take holds only variations of one
+dynamic, so a hit's lane is known from its take and changing lanes never re-assigns hits.
+"""
 
 import hashlib
 import json
@@ -7,6 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from vinst import notes
+from vinst.spec import SAFE_NAME as SAFE_LANE
 from vinst.spec import Instrument, InstrumentString, Signal, file_token
 
 # Seconds per take for tuning, arming and naming, on top of the hits themselves.
@@ -61,6 +66,9 @@ class Take:
     pass_id: str = MAIN_PASS
     pass_name: str = ""
     signals: list[str] = field(default_factory=list)  # signal ids, in the order of `files`
+    lane: str | None = None  # a note take's velocity lane
+    note_base: str = ""  # a note take's note, e.g. "060_C-0"; its lanes' takes share it
+    origin: str = "plan"  # "plan" | "more" (variations recorded later) | "combined" (lanes in one take)
 
     @property
     def key(self) -> str:
@@ -124,6 +132,30 @@ def note_title(n: SampledNote) -> str:
     return notes.label(n.midi)
 
 
+def layer_bounds(n: int, splits: list[int] | None = None) -> list[tuple[int, int]]:
+    """Velocities 1..127 per lane: from the chosen splits (each lane's lowest velocity after the
+    first), or evenly."""
+    if splits and len(splits) == n - 1 and splits == sorted(set(splits)) and all(2 <= v <= 127 for v in splits):
+        edges = [1, *splits, 128]
+    else:
+        edges = [1 + round(i * 127 / n) for i in range(n)] + [128]
+    return [(edges[i], edges[i + 1] - 1) for i in range(n)]
+
+
+def note_lanes(inst: Instrument, note_base: str) -> list[str]:
+    """A note's velocity lanes: its own, or the defaults."""
+    own = inst.note_lanes.get(note_base)
+    return list(own.layers) if own and own.layers else list(inst.dynamics.layers)
+
+
+def lane_bounds(inst: Instrument, note_base: str) -> list[tuple[str, int, int]]:
+    """(lane, lowest velocity, highest velocity) for a note."""
+    own = inst.note_lanes.get(note_base)
+    lanes = note_lanes(inst, note_base)
+    splits = own.splits if own and own.layers else inst.preset.velocity_splits
+    return [(lane, lo, hi) for lane, (lo, hi) in zip(lanes, layer_bounds(len(lanes), splits))]
+
+
 def plan_takes(inst: Instrument) -> list[Take]:
     rec, dyn = inst.recording, inst.dynamics
     hit_s = rec.ring_seconds + HIT_GAP_S
@@ -135,12 +167,13 @@ def plan_takes(inst: Instrument) -> list[Take]:
         suffix = f" · {p.name}" if len(passes) > 1 else ""
 
         def add(kind: str, base: str, title: str, instructions: list[str], hits: int, seconds: float,
-                note: SampledNote | None = None, p: Pass = p, suffix: str = suffix) -> None:
+                note: SampledNote | None = None, lane: str | None = None, note_base: str = "",
+                p: Pass = p, suffix: str = suffix) -> None:
             takes.append(Take(
                 number=len(takes) + 1, kind=kind, base_name=base, title=title + suffix,
                 instructions=instructions, hits=hits, seconds=seconds + TAKE_OVERHEAD_S, note=note,
                 files=[f"{base}_{s.id}.wav" for s in p.signals],
-                pass_id=p.id, pass_name=p.name, signals=[s.id for s in p.signals],
+                pass_id=p.id, pass_name=p.name, signals=[s.id for s in p.signals], lane=lane, note_base=note_base,
             ))
 
         if rec.noise_floor_seconds:
@@ -148,30 +181,45 @@ def plan_takes(inst: Instrument) -> list[Take]:
                 [f"Record {rec.noise_floor_seconds} s of silence with everything set up as for the takes."],
                 0, rec.noise_floor_seconds)
         for n in sampled_notes(inst):
-            hits = len(dyn.layers) * dyn.round_robins
-            instr = [f"{dyn.round_robins}× {layer}" for layer in dyn.layers]
-            instr.append(f"{verb} ~{rec.ring_seconds:g} s each")
-            add("note", note_base_name(n), note_title(n), instr, hits, hits * hit_s, n)
+            base = note_base_name(n)
+            for lane in note_lanes(inst, base):
+                add("note", f"{base}_{lane}", f"{note_title(n)} · {lane}",
+                    [f"{dyn.round_robins}× {lane}", f"{verb} ~{rec.ring_seconds:g} s each"],
+                    dyn.round_robins, dyn.round_robins * hit_s, n, lane, base)
         for x in inst.extras:
             add("extra", f"x_{file_token(x.id)}", x.name, [f"{x.hits}×", x.instructions] if x.instructions
                 else [f"{x.hits}×"], x.hits, x.hits * (EXTRA_HIT_S + HIT_GAP_S))
     return takes
 
 
-def slicing_setup(inst: Instrument) -> str:
-    """Fingerprint of everything slicing depends on: takes, their files and hit counts, layer names.
+def more_base(take: Take, number: int) -> str:
+    """Variations of a lane recorded later, to compare with the lane's own and keep the best."""
+    return f"{take.base_name}-more{number}"
 
-    Stored in hits.json; when it no longer matches, the hits don't fit the spec any more (e.g. a
-    signal moved to its own pass, a layer was renamed) and the takes must be sliced again.
+
+def more_file(take: Take, number: int, signal_id: str) -> str:
+    return f"{more_base(take, number)}_{signal_id}.wav"
+
+
+def combined_base(take: Take) -> str:
+    """Takes recorded before notes had lanes held all dynamics in one file, named after the note."""
+    return take.note_base
+
+
+def slicing_setup(inst: Instrument) -> str:
+    """Fingerprint of what the meaning of sliced hits depends on: signals, passes, loop finding.
+
+    Stored in hits.json; when it no longer matches, the hits must be sliced again. Lanes and
+    variations aren't part of it: a hit's lane comes from its take, so adding a lane or a
+    variation only adds takes to record.
     """
     if inst.recording.source == "samples":
         from vinst.importer import import_setup
 
         return import_setup(inst)
-    takes = [(t.key, t.kind, t.files, t.hits) for t in plan_takes(inst)]
-    data = json.dumps({"takes": takes, "layers": inst.dynamics.layers, "rr": inst.dynamics.round_robins,
-                       "loops": inst.processing.loops})
-    return hashlib.sha1(data.encode()).hexdigest()[:16]
+    setup = {"passes": [(p.id, [s.id for s in p.signals]) for p in recording_passes(inst)],
+             "loops": inst.processing.loops}
+    return hashlib.sha1(json.dumps(setup).encode()).hexdigest()[:16]
 
 
 @dataclass
@@ -203,12 +251,16 @@ def _listing(folder: str, mtime_ns: int) -> frozenset[str]:
     return frozenset(p.name for p in Path(folder).iterdir())
 
 
+def expected_files(inst: Instrument, takes: list[Take] | None = None) -> list[str]:
+    return [f for t in (takes if takes is not None else plan_takes(inst)) for f in t.files]
+
+
 def recorded_files(inst: Instrument, takes: list[Take] | None = None) -> int:
     folder = Path(inst.recording.takes_dir).expanduser() if inst.recording.takes_dir else None
     if folder is None or not folder.is_dir():
         return 0
     present = _listing(str(folder), folder.stat().st_mtime_ns)
-    return sum(f in present for t in (takes if takes is not None else plan_takes(inst)) for f in t.files)
+    return sum(f in present for f in expected_files(inst, takes))
 
 
 def summarize(inst: Instrument) -> Summary:
@@ -216,10 +268,10 @@ def summarize(inst: Instrument) -> Summary:
     span = playable_range(inst)
     return Summary(
         range_text=f"{notes.label(span[0])} – {notes.label(span[1])}" if span else "–",
-        sampled=len({t.base_name for t in takes if t.kind == "note"}),
+        sampled=len({t.note_base for t in takes if t.kind == "note"}),
         takes=len(takes),
         hits=sum(t.hits for t in takes),
-        files=sum(len(t.files) for t in takes),
+        files=len(expected_files(inst, takes)),
         minutes=sum(t.seconds for t in takes) / 60,
         sample_mb=sample_megabytes(inst, takes),
         recorded_files=recorded_files(inst, takes),

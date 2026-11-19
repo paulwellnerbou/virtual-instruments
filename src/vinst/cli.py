@@ -4,7 +4,7 @@ from typing import Annotated
 
 import typer
 
-from vinst import defaults, launcher, sheet, store
+from vinst import defaults, launcher, store
 from vinst.plan import summarize
 from vinst.spec import InstrumentType
 
@@ -78,14 +78,6 @@ def new(
     """Create an instrument with the defaults for its type."""
     inst = store.create(defaults.new_instrument(name, kind))
     typer.echo(store.instrument_dir(inst.meta.slug) / store.SPEC_FILE)
-
-
-@app.command("sheet")
-def sheet_(slug: str) -> None:
-    """Write the recording sheet (HTML + CSV) next to the instrument spec."""
-    html_path, csv_path = sheet.write(store.load(slug), store.instrument_dir(slug))
-    typer.echo(html_path)
-    typer.echo(csv_path)
 
 
 @app.command("slice")

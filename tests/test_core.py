@@ -3,9 +3,9 @@ from pathlib import Path
 import pytest
 from conftest import piezo_and_mic
 
-from vinst import defaults, notes, sheet, store
-from vinst.plan import natural_string, plan_takes, sampled_notes, summarize
-from vinst.spec import Instrument, InstrumentType
+from vinst import defaults, notes, store
+from vinst.plan import lane_bounds, natural_string, plan_takes, sampled_notes, summarize
+from vinst.spec import Instrument, InstrumentType, NoteLanes
 
 
 @pytest.mark.parametrize("text, midi", [("C3", 60), ("c3", 60), ("G2", 55), ("C#3", 61), ("Db3", 61),
@@ -72,17 +72,28 @@ def test_takes_and_files():
     inst = uke()
     takes = plan_takes(inst)
     assert takes[0].kind == "noise_floor"
-    first_note = takes[1]
-    assert first_note.base_name == "055_G-0"
-    assert first_note.files == ["055_G-0_piezo.wav", "055_G-0_mic.wav"]
-    assert first_note.hits == 3 * 4
+    # One take per note and velocity lane, each with the lane's variations.
+    p, mf, f = takes[1:4]
+    assert [t.lane for t in (p, mf, f)] == ["p", "mf", "f"] and {t.note_base for t in (p, mf, f)} == {"055_G-0"}
+    assert p.base_name == "055_G-0_p" and p.files == ["055_G-0_p_piezo.wav", "055_G-0_p_mic.wav"]
+    assert p.hits == 4 and p.title.endswith("· p")
     s = summarize(inst)
-    assert s.sampled == 27 and s.hits == 27 * 12 + 12 + 10 + 10
+    assert s.sampled == 27 and s.takes == 1 + 27 * 3 + 3 and s.hits == 27 * 12 + 12 + 10 + 10
+
+
+def test_a_note_can_have_its_own_lanes():
+    inst = uke()
+    inst.preset.velocity_splits = [30, 100]
+    assert lane_bounds(inst, "055_G-0") == [("p", 1, 29), ("mf", 30, 99), ("f", 100, 127)]
+    inst.note_lanes["055_G-0"] = NoteLanes(layers=["p", "f", "ff"], splits=[60, 120])
+    assert lane_bounds(inst, "055_G-0") == [("p", 1, 59), ("f", 60, 119), ("ff", 120, 127)]
+    assert [t.lane for t in plan_takes(inst) if t.note_base == "055_G-0"] == ["p", "f", "ff"]
+    assert lane_bounds(inst, "056_G-1")[1] == ("mf", 30, 99)  # other notes keep the defaults
 
 
 def test_unpitched_sounds():
     inst = defaults.new_instrument("Knocks", InstrumentType.UNPITCHED)
-    assert [t.base_name for t in plan_takes(inst) if t.kind == "note"] == ["060_Hit"]
+    assert [t.base_name for t in plan_takes(inst) if t.kind == "note"] == ["060_Hit_soft", "060_Hit_hard"]
 
 
 @pytest.mark.parametrize("kind", list(InstrumentType))
@@ -109,13 +120,6 @@ def test_store_create_duplicate(tmp_path, monkeypatch):
     assert [i.meta.slug for i in store.list_instruments()] == ["bobs-uke", "bobs-uke-2"]
 
 
-def test_sheet_contains_files(tmp_path):
-    html_path, csv_path = sheet.write(uke(), tmp_path)
-    html = html_path.read_text()
-    assert "055_G-0_piezo.wav" in html and "Cubase or WaveLab" in html and "REAPER" not in html
-    assert csv_path.read_text().splitlines()[0].startswith("take,pass,kind,base_name")
-
-
 def test_sample_size_and_recorded_files(tmp_path):
     inst = uke()
     # 324 note hits × 6 s + 32 extra hits × 2 s, 48 kHz, 24-bit, 2 signals
@@ -124,7 +128,7 @@ def test_sample_size_and_recorded_files(tmp_path):
     assert abs(s.sample_mb - expected) < 0.01
     assert s.recorded_files == 0
     inst.recording.takes_dir = str(tmp_path)
-    (tmp_path / "055_G-0_piezo.wav").touch()
+    (tmp_path / "055_G-0_p_piezo.wav").touch()
     (tmp_path / "unrelated.wav").touch()
     assert summarize(inst).recorded_files == 1
 
@@ -143,12 +147,6 @@ def test_old_room_tone_key_still_loads():
     inst = uke()
     text = inst.to_toml().replace("noise_floor_seconds", "room_tone_seconds")
     assert Instrument.from_toml(text).recording.noise_floor_seconds == 30
-
-
-def test_sheet_shows_fractional_khz():
-    inst = uke()
-    inst.recording.sample_rate = 44100
-    assert "44.1 kHz" in sheet.render_html(inst)
 
 
 def test_new_instruments_default_to_the_system_user_as_author():

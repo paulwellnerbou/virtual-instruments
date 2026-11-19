@@ -5,6 +5,7 @@ from conftest import piezo_and_mic
 from lxml import etree
 
 from vinst import bundle, defaults, preset, review, store
+from vinst.plan import layer_bounds
 from vinst.slicing import process
 from vinst.spec import InstrumentType
 from vinst.synth import Mistakes, write_takes
@@ -12,15 +13,15 @@ from vinst.validate import validate_bundle
 
 
 def test_layer_bounds_cover_all_velocities():
-    assert preset.layer_bounds(3) == [(1, 42), (43, 85), (86, 127)]
-    assert preset.layer_bounds(1) == [(1, 127)]
+    assert layer_bounds(3) == [(1, 42), (43, 85), (86, 127)]
+    assert layer_bounds(1) == [(1, 127)]
 
 
 def test_missing_layer_borrows_from_below_then_above():
-    layers = ["p", "mf", "f"]
-    assert preset.velocity_slots(layers, {"p", "f"}) == [("p", 1, 85), ("f", 86, 127)]
-    assert preset.velocity_slots(layers, {"f"}) == [("f", 1, 127)]
-    assert preset.velocity_slots(layers, {"mf", "f"}) == [("mf", 1, 85), ("f", 86, 127)]
+    bounds = [("p", 1, 42), ("mf", 43, 85), ("f", 86, 127)]
+    assert preset.velocity_slots(bounds, {"p", "f"}) == [("p", 1, 85), ("f", 86, 127)]
+    assert preset.velocity_slots(bounds, {"f"}) == [("f", 1, 127)]
+    assert preset.velocity_slots(bounds, {"mf", "f"}) == [("mf", 1, 85), ("f", 86, 127)]
 
 
 def test_zones_prefer_pitching_down_and_stretch_edges():
@@ -41,7 +42,7 @@ def built(tmp_path, monkeypatch):
     inst.recording.ring_seconds = 1.0
     inst.recording.takes_dir = str(tmp_path / "takes")
     store.create(inst)
-    # take 2 (G2): wrong note, take 4 (C3): one hit missing, so unusable
+    # take 2 (G2 p): a wrong note; take 4 (G2 f): one variation missing
     write_takes(inst, tmp_path / "takes", ring=1.0, mistakes=Mistakes(wrong_note_take=2, missing_hit_take=4))
     manifest = process(inst)
     manifest.takes[1].hits[1].rejected = True  # the wrong note: G2 p rr2
@@ -58,12 +59,11 @@ def test_build_is_valid_and_covers_the_range(built):
     inst, _ = built
     result = bundle.build(inst)
     assert result.report.ok, result.report.errors
-    assert any("found 5 hits, expected 6" in w for w in result.warnings)
     piezo = samples(result, "Piezo")
     keys = {k for s in piezo for k in range(int(s["loNote"]), int(s["hiNote"]) + 1)}
-    # Recorded: G2 G#2 C3 C#3 E3 F3 A3 A#3; gaps between strings and the unusable C3 are covered.
+    # Recorded: G2 G#2 C3 C#3 E3 F3 A3 A#3; gaps between strings are covered.
     assert keys == set(range(55, 71))
-    assert {s["rootNote"] for s in piezo} == {"55", "56", "61", "64", "65", "69", "70"}
+    assert {s["rootNote"] for s in piezo} == {"55", "56", "60", "61", "64", "65", "69", "70"}
 
 
 def test_rejected_hit_is_left_out_and_round_robins_renumbered(built):
@@ -173,19 +173,17 @@ def test_separate_pass_doubles_the_takes(two_passes):
     from vinst.plan import plan_takes, summarize
 
     takes = plan_takes(two_passes)
-    assert len({t.key for t in takes}) == len(takes) == 2 * (1 + 4 + 1)
+    assert len({t.key for t in takes}) == len(takes) == 2 * (1 + 4 * 3 + 1)  # noise floor, 4 notes × 3 lanes, extra
     mic = [t for t in takes if t.pass_id == "mic"]
-    assert mic[1].files == ["055_G-0_mic.wav"] and mic[1].title.endswith("· Internal mic")
+    assert mic[1].files == ["055_G-0_p_mic.wav"] and mic[1].title.endswith("· Internal mic")
     assert summarize(two_passes).sampled == 4
-    from vinst import sheet
-    assert "Pass 2 of 2: Internal mic" in sheet.render_html(two_passes)
 
 
 def test_separate_passes_slice_independently(two_passes):
     m = review.load(store.manifest_path(two_passes.meta.slug))
     ids = [h.id for t in m.takes for h in t.hits]
     assert len(ids) == len(set(ids))
-    g = [t for t in m.takes if t.base == "055_G-0"]
+    g = [t for t in m.takes if t.base == "055_G-0_p"]
     assert {t.pass_id for t in g} == {"main", "mic"} and all(t.status == "ok" for t in g)
     assert set(g[1].hits[0].files) == {"mic"}
 
@@ -219,9 +217,9 @@ def test_build_refuses_hits_sliced_under_another_setup(built):
     with pytest.raises(ValueError, match="Slice again"):
         bundle.build(moved)
     renamed = inst.model_copy(deep=True)
-    renamed.dynamics.layers = ["soft", "mf", "f"]
-    with pytest.raises(ValueError, match="Slice again"):
-        bundle.build(renamed)
+    renamed.dynamics.layers = ["soft", "mf", "f"]  # a lane renamed: only its takes are new to record
+    result = bundle.build(renamed)
+    assert result.report.ok and any("not in the current plan" in w for w in result.warnings)
     styled = inst.model_copy(deep=True)
     styled.preset.reverb = 0.5  # sound settings don't affect slicing
     assert bundle.build(styled).report.ok
@@ -268,3 +266,14 @@ def test_dashes_in_name_and_rename_cleanup(built):
     assert [p.name for p in second_build.bundle.parent.glob("*.dsbundle")] == ["Test -- Uke.dsbundle"]
     second = bundle.install(second_build.bundle)
     assert second.exists() and not first.exists()
+
+
+def test_velocity_layers_start_where_chosen(built):
+    inst, _ = built
+    assert layer_bounds(3) == [(1, 42), (43, 85), (86, 127)]
+    assert layer_bounds(3, [30, 100]) == [(1, 29), (30, 99), (100, 127)]
+    assert layer_bounds(3, [100]) == layer_bounds(3)  # doesn't fit three layers: even split
+    inst.preset.velocity_splits = [20, 110]
+    result = bundle.build(inst)
+    vels = {(s["loVel"], s["hiVel"]) for s in samples(result, "Piezo") if s["rootNote"] == "64"}
+    assert vels == {("1", "19"), ("20", "109"), ("110", "127")}

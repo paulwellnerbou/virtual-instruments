@@ -9,11 +9,17 @@ from pathlib import Path
 
 from vinst import preset, review, store
 from vinst.plan import slicing_setup
+from vinst.slicing import changed_takes
 from vinst.spec import Instrument
 from vinst.validate import Report, validate_bundle
 
 STALE_MESSAGE = ("Signals, recording passes, range, extras, layers, round robins or the loop setting changed "
                  "since the takes were sliced. Slice again (step 6); your rejections are kept.")
+def changed_message(changed: list[str]) -> str:
+    names = ", ".join(changed[:3]) + (f" and {len(changed) - 3} more" if len(changed) > 3 else "")
+    return f"Recorded again since slicing: {names}. Slice again (step 6) to use the new recordings."
+
+
 # Marks bundles this tool wrote, so installing never replaces someone else's library.
 MARKER = ".vinst-generated"
 
@@ -66,6 +72,9 @@ def build(inst: Instrument) -> BuildResult:
         raise ValueError("Fix these first: " + " ".join(problems))
     if manifest.setup != slicing_setup(inst):
         raise ValueError(STALE_MESSAGE)
+    changed = changed_takes(inst, manifest)
+    if changed:
+        raise ValueError(changed_message(changed))
     mapping = preset.map_samples(inst, manifest)
     if not mapping.notes:
         raise ValueError("No usable hits: record and slice some notes first.")

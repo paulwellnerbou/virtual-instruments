@@ -30,10 +30,9 @@ Other commands:
 - `uv run vinst open`: what the launcher runs: starts the server if needed and opens the browser
 - `uv run vinst list`
 - `uv run vinst new "Name" --type plucked`
-- `uv run vinst sheet <slug>`: writes the recording sheet as HTML and CSV next to the spec
 - `uv run vinst slice <slug>`: cuts the recorded takes into hits (or, for an instrument that imports existing samples, imports its folder), analyses them and writes `hits.json`
 - `uv run vinst build <slug> [--install] [--package]`: generates and validates the `.dsbundle`; optionally installs it into `~/DecentSampler` and writes a `.dslibrary`
-- `uv run vinst synth-takes <slug> <folder>`: writes fake takes, with a few deliberate mistakes, for trying out slicing and review before recording
+- `uv run vinst synth-takes <slug> <folder>`: writes fake lane takes, with a few deliberate mistakes, for trying out slicing and review before recording
 - `uv run pytest`
 
 Each instrument lives in `instruments/<slug>/`:
@@ -43,9 +42,11 @@ Each instrument lives in `instruments/<slug>/`:
 
 Denoising is optional and off by default. Turn it on in step 6 to use the noise-floor recording as the noise profile; it only changes the sliced samples, never the takes. Leave it off if you clean the takes in WaveLab or Cubase.
 
+Record in the app (a Record button per note and velocity lane, with a visual metronome), or export one file per lane from any DAW. The worksheet (step 5) records, slices and reviews in one place; see [docs/builder-ui.md](docs/builder-ui.md).
+
 Audio is kept outside the repo. Takes go in the takes folder set in step 5; sliced samples go in `<takes folder>/sliced` unless you set another folder.
 
-Status: milestones 1–3 are done. The whole wizard works, from the spec and recording sheet through slicing and review to building, validating, installing and packaging. Milestone 4 adds strumming and the other instrument types.
+Status: milestones 1–3 are done. The whole wizard works, from the spec through recording, slicing and review in the worksheet to building, validating, installing and packaging. Milestone 4 adds strumming and the other instrument types.
 
 Environment variables:
 
@@ -71,17 +72,17 @@ Installing only ever replaces bundles this tool created.
 ```
 src/vinst/
   notes.py      MIDI ↔ names. DecentSampler names middle C "C3" (= 60); MIDI numbers are used everywhere internally.
-  sheet.py      spec → recording sheet (take order, string/fret, dynamics), plus a CSV
+  plan.py       spec → notes, their velocity lanes, one take per note and lane, file names
   slice.py      takes → hits: onset detection on the mic track, with the same cut points applied to the DI;
                 pre-roll, tail trim at the noise floor, fade-out, DC removal
-  analyze.py    per hit: pitch (pYIN) → check against the sheet, cents → `tuning`;
+  analyze.py    per hit: pitch (pYIN) → check against the plan, cents → `tuning`;
                 loudness → layer sanity check and outliers; writes a review report
   mapping.py    zones (chromatic or spread), velocity layers, round-robin positions, release groups
   model.py      typed preset model (groups/samples/ui/effects/midi/tags) → XML
   ui.py         reusable layouts: knob row, Mic↔DI equal-power crossfade, Tone table, strum page
   validate.py   vendored XSD + engine-vocabulary.json, file existence and case, key/velocity coverage gaps
   package.py    .dsbundle + DSLibraryInfo.xml, .dslibrary zip, symlink into ~/DecentSampler for audition
-  cli.py        vinst sheet | slice | analyze | build | validate | install | package
+  cli.py        vinst ui | open | list | new | slice | build | synth-takes
 instruments/<name>/instrument.toml   declarative spec: range, strings, layers, RR, voices, UI, effects
 instruments/<name>/artwork/
 vendor/decentsampler-schema/          XSD + engine-vocabulary.json (MIT)

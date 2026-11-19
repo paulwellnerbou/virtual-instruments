@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from vinst.plan import Take, plan_takes
-from vinst.spec import Instrument
+from vinst.plan import Take, note_lanes, plan_takes
+from vinst.spec import SUSTAINED_TYPES, Instrument
 
 LAYER_AMPS = [0.12, 0.3, 0.6, 0.85]
 
@@ -61,19 +61,19 @@ def render_take(inst: Instrument, take: Take, ring: float, rng: np.random.Genera
     gap = 1.0
     hits: list[np.ndarray] = []
     if take.kind == "note" and take.note is not None:
-        layers, rr = inst.dynamics.layers, inst.dynamics.round_robins
+        lanes = note_lanes(inst, take.note_base)
+        layer = lanes.index(take.lane) if take.lane in lanes else 0
         for i in range(take.hits):
             if take.number == mistakes.missing_hit_take and i == take.hits - 1:
                 continue
-            layer = i // rr
-            amp = LAYER_AMPS[min(layer, len(LAYER_AMPS) - 1)] if len(layers) > 1 else 0.5
+            amp = LAYER_AMPS[min(layer, len(LAYER_AMPS) - 1)] if len(lanes) > 1 else 0.5
             amp *= rng.uniform(0.9, 1.1)
             if take.number == mistakes.clipped_take and i == take.hits - 1:
                 amp = 1.6
             midi = take.note.midi + rng.uniform(-0.08, 0.08)
             if take.number == mistakes.wrong_note_take and i == 1:
                 midi += 1
-            tone = held if inst.meta.type in ("sustained", "single_sample") else pluck
+            tone = held if inst.meta.type in SUSTAINED_TYPES else pluck
             hits.append(tone(440 * 2 ** ((midi - 69) / 12), amp, ring, sr, rng))
     elif take.kind == "extra":
         hits = [knock(rng.uniform(0.2, 0.6), sr, rng) for _ in range(take.hits)]

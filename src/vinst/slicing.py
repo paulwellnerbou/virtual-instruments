@@ -4,16 +4,28 @@ All signals of a take are cut at the same positions (found on a mix of all signa
 piezo / mic / ... samples of one hit stay phase-aligned.
 """
 
+import glob
+import re
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import librosa
 import numpy as np
 import soundfile as sf
 
-from vinst import denoise, loops
-from vinst.plan import Take, plan_takes, recording_passes, slicing_setup
-from vinst.review import Hit, Manifest, TakeResult, samples_dir
+from vinst import denoise, loops, takes_meta
+from vinst.plan import (
+    Take,
+    combined_base,
+    more_base,
+    more_file,
+    note_lanes,
+    plan_takes,
+    recording_passes,
+    slicing_setup,
+)
+from vinst.review import Hit, Manifest, TakeResult, check_lanes, samples_dir, settle
 from vinst.spec import Instrument
 
 HOP = 256
@@ -75,20 +87,26 @@ def detect_onsets(ref: np.ndarray, sr: int, noise_rel_db: float) -> list[int]:
     return out
 
 
-def cut_points(ref: np.ndarray, sr: int, onsets: list[int],
-               noise_rel_db: float) -> list[tuple[int, int, bool]]:
-    """(start, end, cut_off) per onset; cut_off means the hit was still ringing at the next onset."""
+def cut_points(ref: np.ndarray, sr: int, onsets: list[int], noise_rel_db: float,
+               noises: list[int] | None = None, ring_frames: int = 0) -> list[tuple[int, int, bool]]:
+    """(start, end, cut_off) per onset; cut_off means the hit was still ringing at the next onset.
+
+    noises: onsets that aren't hits (handling noise). They end the hit before them, so the noise
+    isn't in the sample, but a hit that rang for ring_frames by then isn't flagged as cut off.
+    """
     level = frame_rms_db(ref)
     ref_noise = noise_rel_db + float(db(np.max(np.abs(ref))))
     pre = int(PREROLL_S * sr)
     cuts = []
     for i, onset in enumerate(onsets):
         start = max(0, onset - pre)
-        limit = (onsets[i + 1] - pre) if i + 1 < len(onsets) else len(ref)
+        next_hit = (onsets[i + 1] - pre) if i + 1 < len(onsets) else len(ref)
+        noise = next((n - pre for n in (noises or []) if onset < n and n - pre < next_hit), None)
+        limit = noise if noise is not None else next_hit
         f0, f1 = start // HOP, max(start // HOP + 1, limit // HOP)
         loud = np.nonzero(level[f0:f1] > ref_noise + TAIL_ABOVE_NOISE_DB)[0]
         last_loud = (f0 + loud[-1] + 1) * HOP if loud.size else start
-        cut_off = last_loud >= limit - HOP
+        cut_off = last_loud >= limit - HOP and (noise is None or limit - start < ring_frames)
         end = min(last_loud + int(0.1 * sr), limit) if loud.size else limit
         cuts.append((start, int(end), bool(cut_off)))
     return cuts
@@ -190,16 +208,81 @@ def fingerprint(paths: list[Path]) -> str:
     return ";".join(f"{p.name}:{p.stat().st_size}:{p.stat().st_mtime_ns}" for p in paths)
 
 
+GRID_EARLY_S = 0.4  # a hit may come this much before its beat
+MORE_NAME = re.compile(r"-more(\d+)_(.+)\.wav$")
+
+
+def on_grid(onsets: list[int], ref: np.ndarray, sr: int, hits_at: list[float]) -> list[int]:
+    """Per planned hit that was played, the strongest onset in its bar.
+
+    A bar runs from just before its beat to just before the next one, so a late hit still
+    counts. All other onsets are handling noise: they end the hit before them (see cut_points),
+    but never start one.
+    """
+    out = []
+    for k, t in enumerate(hits_at):
+        if k + 1 < len(hits_at):
+            until = hits_at[k + 1]
+        else:  # the last bar is as long as the others; a hit recorded on its own has no limit
+            until = t + (t - hits_at[k - 1]) if k else float("inf")
+        near = [o for o in onsets if (t - GRID_EARLY_S) * sr <= o < (until - GRID_EARLY_S) * sr]
+        if near:
+            out.append(max(near, key=lambda o: float(np.max(np.abs(ref[o: o + int(0.1 * sr)])))))
+    return out
+
+
+def find_cuts(inst: Instrument, path: Path, ref: np.ndarray, sr: int, rel_floor: float) -> list[tuple[int, int, bool]]:
+    """Hits in a recording; for one recorded in the app, only those on its click grid."""
+    onsets = detect_onsets(ref, sr, rel_floor)
+    grid = takes_meta.hits_at(inst.meta.slug, path)
+    if grid is None:
+        return cut_points(ref, sr, onsets, rel_floor)
+    starts = on_grid(onsets, ref, sr, grid)
+    noises = [o for o in onsets if o not in starts]
+    return cut_points(ref, sr, starts, rel_floor, noises, int(inst.recording.ring_seconds * sr))
+
+
+def more_numbers(take: Take, takes_dir: Path) -> list[int]:
+    """Numbers of the recordings with more variations of a lane take that exist on disk."""
+    if not takes_dir.is_dir() or not take.signals:
+        return []
+    found = set()
+    for path in takes_dir.glob(glob.escape(take.base_name) + f"-more*_{take.signals[0]}.wav"):
+        m = MORE_NAME.search(path.name[len(take.base_name):])
+        if m and m.group(2) == take.signals[0]:
+            found.add(int(m.group(1)))
+    return sorted(found)
+
+
+def recordings(inst: Instrument, takes_dir: Path) -> list[Take]:
+    """Everything to slice: the planned takes, variations of a lane recorded later, and takes that
+    hold all lanes of a note in one file (recorded before notes had lanes; their hits start in the
+    note's first lane and can be moved)."""
+    out: list[Take] = []
+    for t in plan_takes(inst):
+        out.append(t)
+        if t.kind != "note":
+            continue
+        for n in more_numbers(t, takes_dir):
+            out.append(replace(t, base_name=more_base(t, n), files=[more_file(t, n, s) for s in t.signals],
+                               origin="more", title=f"{t.title} · more ({n})", hits=0))
+        if t.lane == note_lanes(inst, t.note_base)[0]:
+            files = [f"{combined_base(t)}_{s}.wav" for s in t.signals]
+            if all((takes_dir / f).exists() for f in files):
+                out.append(replace(t, base_name=combined_base(t), files=files, origin="combined",
+                                   title=t.title.replace(f" · {t.lane}", " · all lanes in one take"), hits=0))
+    return out
+
+
 def process_take(inst: Instrument, take: Take, takes_dir: Path, out_dir: Path,
                  noise_db: float | None, profiles: dict[str, np.ndarray] | None = None) -> TakeResult:
-    """Slice and analyse one take. The first signal is the reference for pitch and loudness."""
+    """Slice and analyse one recording. The first signal is the reference for pitch and loudness."""
     result = TakeResult(number=take.number, base=take.base_name, pass_id=take.pass_id, title=take.title,
                         kind=take.kind, status="ok", expected_hits=take.hits,
-                        midi=take.note.midi if take.note else None, signals=take.signals)
+                        midi=take.note.midi if take.note else None, signals=take.signals,
+                        lane=take.lane, note=take.note_base, origin=take.origin)
     by_id = {s.id: s for s in inst.signals}
     take_signals = [by_id[i] for i in take.signals]
-    # Hit ids must differ between passes: the same note is recorded once per pass.
-    id_base = take.key.replace("~", "_")
     paths = [takes_dir / f for f in take.files]
     present = [p.exists() for p in paths]
     if not any(present):
@@ -231,26 +314,28 @@ def process_take(inst: Instrument, take: Take, takes_dir: Path, out_dir: Path,
     floor = max(floor, MIN_NOISE_FLOOR_DB)
     # detect_onsets works on the normalised mix; express the floor relative to the primary's peak.
     rel_floor = floor - primary_level
-    onsets = detect_onsets(ref, sr, rel_floor)
-    cuts = cut_points(ref, sr, onsets, rel_floor)
-
-    assigned = len(cuts) == take.hits and take.kind == "note"
-    if len(cuts) != take.hits:
-        result.status = "count_mismatch"
-        result.message = f"found {len(cuts)} hits, expected {take.hits}"
-    rr = inst.dynamics.round_robins
+    cuts = find_cuts(inst, paths[0], ref, sr, rel_floor)
     markers = next((m for m in (loops.read_wav_loops(p) for p in paths) if m), []) \
         if inst.processing.loops and take.kind == "note" else []
+    analyse_cuts(inst, take, result, take_signals, signals, sr, cuts, out_dir, profiles, markers)
+    return result
+
+
+def analyse_cuts(inst: Instrument, take: Take, result: TakeResult, take_signals: list, signals: list[np.ndarray],
+                 sr: int, cuts: list[tuple[int, int, bool]], out_dir: Path,
+                 profiles: dict[str, np.ndarray] | None, markers: list[tuple[int, int]]) -> None:
+    """Write and analyse the hits of one recording; cut positions are frames in `signals`.
+
+    Every hit of a lane take is a variation of that lane, however many there are; the planned
+    count is only a guide.
+    """
+    id_base = take.key.replace("~", "_")  # hit ids must differ between passes
+    if take.hits and len(cuts) != take.hits:
+        result.info = f"{len(cuts)} hits, {take.hits} planned"
     out_dir.mkdir(parents=True, exist_ok=True)
     subtype = SUBTYPES.get(inst.recording.bit_depth, "PCM_24")
-
     for i, (start, end, cut_off) in enumerate(cuts):
-        if assigned:
-            layer, rr_n = inst.dynamics.layers[i // rr], i % rr + 1
-            hit_id = f"{id_base}_{layer}_rr{rr_n}"
-        else:
-            layer, rr_n = None, None
-            hit_id = f"{id_base}_{i + 1:02d}"
+        hit_id = f"{id_base}_{i + 1:02d}"
         files, peaks = {}, {}
         for sig, audio in zip(take_signals, signals):
             seg = audio[start:end]
@@ -262,8 +347,8 @@ def process_take(inst: Instrument, take: Take, takes_dir: Path, out_dir: Path,
             sf.write(out_dir / name, finish(out, sr), sr, subtype=subtype)
             files[sig.id] = name
         win = signals[0][start: start + int(LOUDNESS_WINDOW_S * sr)]
-        hit = Hit(id=hit_id, index=i, layer=layer, rr=rr_n, start=start, end=end, files=files,
-                  rms_db=round(float(db(np.sqrt(np.mean(win ** 2)))), 2),
+        hit = Hit(id=hit_id, index=i, layer=take.lane if take.kind == "note" else None, start=start, end=end,
+                  files=files, rms_db=round(float(db(np.sqrt(np.mean(win ** 2)))), 2),
                   body_db=body_level(signals[0][start:end], sr), peak_db=peaks)
         if any(p >= -0.02 for p in peaks.values()):
             hit.flags.append("clipped")
@@ -284,15 +369,11 @@ def process_take(inst: Instrument, take: Take, takes_dir: Path, out_dir: Path,
         if inst.processing.loops and take.kind == "note":
             add_loop(inst, hit, signals[0][start:end], sr, markers, take)
         result.hits.append(hit)
-
-    if assigned and len(inst.dynamics.layers) > 1:
-        check_layers(result, inst.dynamics.layers)
     unused = [m for m in markers if not any(h.start <= m[0] and m[1] < h.end for h in result.hits)]
     if unused:
         where = ", ".join(f"{a / sr:.2f}–{b / sr:.2f} s" for a, b in unused)
         note = f"loop marker {where} doesn't lie inside one hit and was ignored"
         result.message = f"{result.message}; {note}" if result.message else note
-    return result
 
 
 def add_loop(inst: Instrument, hit: Hit, seg: np.ndarray, sr: int, markers: list[tuple[int, int]],
@@ -315,17 +396,73 @@ def add_loop(inst: Instrument, hit: Hit, seg: np.ndarray, sr: int, markers: list
         hit.flags.append("loop_in_fade")
 
 
-def check_layers(result: TakeResult, layers: list[str]) -> None:
-    medians = {
-        layer: float(np.median([h.rms_db for h in result.hits if h.layer == layer])) for layer in layers
-    }
-    for h in result.hits:
-        nearest = min(medians, key=lambda layer: abs(medians[layer] - h.rms_db))
-        if nearest != h.layer:
-            h.flags.append("layer_mismatch")
-    ordered = [medians[layer] for layer in layers]
-    if any(b <= a for a, b in zip(ordered, ordered[1:])):
-        result.message = "velocity layers don't get louder in order"
+def by_take(manifest: Manifest | None) -> dict[str, TakeResult]:
+    """Earlier results by take."""
+    return {t.key: t for t in manifest.takes} if manifest else {}
+
+
+def carry_over(inst: Instrument, result: TakeResult, earlier: TakeResult | None) -> None:
+    """Keep the review's decisions (rejections, loops, moved lanes) while the recording is unchanged."""
+    if earlier and earlier.source == result.source:
+        old = {h.id: h for h in earlier.hits}
+        for h in result.hits:
+            if h.id in old:
+                h.rejected, h.loop_off, h.layer_set = old[h.id].rejected, old[h.id].loop_off, old[h.id].layer_set
+    settle(result, note_lanes(inst, result.note))
+
+
+def check_all_lanes(inst: Instrument, manifest: Manifest) -> None:
+    """Loudness checks across each note's lanes (the hits of one note come from several takes)."""
+    groups: dict[tuple[str, str], list[TakeResult]] = {}
+    for t in manifest.takes:
+        if t.kind == "note" and t.note:
+            groups.setdefault((t.pass_id, t.note), []).append(t)
+    for (_, note), results in groups.items():
+        check_lanes(results, note_lanes(inst, note))
+
+
+def process_one(inst: Instrument, previous: Manifest, key: str) -> Manifest:
+    """Slice one recording (again), e.g. right after recording it in the app, keeping all others.
+
+    Falls back to slicing everything for imported samples, or results that no longer match.
+    """
+    takes_dir = Path(inst.recording.takes_dir).expanduser()
+    take = next((t for t in recordings(inst, takes_dir) if t.key == key), None)
+    if take is None or inst.recording.source == "samples" or previous.setup != slicing_setup(inst):
+        return process(inst, previous)
+    old = next((t for t in previous.takes if t.key == key), None)
+    out_dir = Path(previous.samples_dir)
+    p = next(p for p in recording_passes(inst) if p.id == take.pass_id)
+    profiles = noise_profiles(inst, takes_dir) if inst.processing.denoise else None
+    result = process_take(inst, take, takes_dir, out_dir, noise_floor(p.signals[0].id, takes_dir), profiles)
+    carry_over(inst, result, old)
+    manifest = previous.model_copy(deep=True)
+    if old is None:
+        manifest.takes.append(result)
+    else:
+        manifest.takes = [result if t.key == key else t for t in manifest.takes]
+        remove_stale_files(Manifest(samples_dir=previous.samples_dir, takes=[old]), manifest)
+    check_all_lanes(inst, manifest)
+    return manifest
+
+
+def changed_takes(inst: Instrument, manifest: Manifest) -> list[str]:
+    """Recordings made, changed or deleted since slicing; the slices are out of date for them."""
+    if inst.recording.source == "samples" or not inst.recording.takes_dir:
+        return []
+    takes_dir = Path(inst.recording.takes_dir).expanduser()
+    results = by_take(manifest)
+    current = recordings(inst, takes_dir)
+    changed = []
+    for take in current:
+        paths = [takes_dir / f for f in take.files]
+        now = fingerprint(paths) if all(path.exists() for path in paths) else ""
+        r = results.get(take.key)
+        if now != (r.source if r else "") and take.title not in changed:
+            changed.append(take.title)
+    keys = {t.key for t in current}
+    changed += [r.title for r in manifest.takes if r.origin != "plan" and r.key not in keys]
+    return changed
 
 
 def remove_stale_files(previous: Manifest, current: Manifest) -> int:
@@ -364,27 +501,17 @@ def process(inst: Instrument, previous: Manifest | None = None, progress: Progre
     # Each pass has its own setup (e.g. a different pickup blend), so its own noise floor.
     noise = {p.id: noise_floor(p.signals[0].id, takes_dir) for p in recording_passes(inst)}
     profiles = noise_profiles(inst, takes_dir) if inst.processing.denoise else None
-    # A rejection belongs to the recorded audio: drop it if the take was re-recorded.
-    rejected = {
-        (t.key, t.source): {h.id for h in t.hits if h.rejected} for t in previous.takes
-    } if previous else {}
-    loop_off = {
-        (t.key, t.source): {h.id for h in t.hits if h.loop_off} for t in previous.takes
-    } if previous else {}
-
-    takes = plan_takes(inst)
+    earlier = by_take(previous)
+    takes = recordings(inst, takes_dir)
     manifest = Manifest(samples_dir=str(out_dir), setup=slicing_setup(inst),
                         noise_floor_db=next(iter(noise.values()), None), denoised=profiles is not None)
     for i, take in enumerate(takes):
         if progress:
             progress(i, len(takes), take.title)
         result = process_take(inst, take, takes_dir, out_dir, noise[take.pass_id], profiles)
-        keep = rejected.get((result.key, result.source), set())
-        no_loop = loop_off.get((result.key, result.source), set())
-        for h in result.hits:
-            h.rejected = h.id in keep
-            h.loop_off = h.id in no_loop
+        carry_over(inst, result, earlier.get(result.key))
         manifest.takes.append(result)
+    check_all_lanes(inst, manifest)
     if previous:
         remove_stale_files(previous, manifest)
     if progress:

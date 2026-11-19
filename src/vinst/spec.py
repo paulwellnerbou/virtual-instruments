@@ -111,8 +111,18 @@ RESERVED_SIGNAL_IDS = {NOTES_TAG, FX_TAG, RELEASE_TAG}
 
 
 class Dynamics(BaseModel):
-    layers: list[str] = ["p", "mf", "f"]
+    """The default velocity lanes of every note, and how many variations to record per lane."""
+
+    layers: list[str] = ["p", "mf", "f"]  # lane names, quietest first
     round_robins: int = Field(default=4, ge=1, le=32)
+
+
+class NoteLanes(BaseModel):
+    """One note's own velocity lanes, used instead of the defaults."""
+
+    layers: list[str]
+    # The lowest velocity of each lane after the first; empty or not fitting: an even split.
+    splits: list[int] = []
 
 
 class Extra(BaseModel):
@@ -131,7 +141,7 @@ AUDIO_SUFFIXES = (".wav", ".aif", ".aiff", ".flac")
 
 
 class Recording(BaseModel):
-    # "takes": record new takes from the recording sheet; "samples": import already-cut samples.
+    # "takes": record new takes in the worksheet; "samples": import already-cut samples.
     source: Literal["takes", "samples"] = "takes"
     takes_dir: str = ""
     import_dir: str = ""
@@ -141,6 +151,8 @@ class Recording(BaseModel):
     samples_dir: str = Field(default="", description="sliced samples; empty means <takes_dir>/sliced")
     sample_rate: int = 48000
     bit_depth: int = 24
+    # Recording in the app: signal id -> input number (1-based) on the audio interface.
+    input_channels: dict[str, int] = {}
     ring_seconds: float = Field(default=6.0, gt=0, description="how long each hit rings or is held")
     # Silence with everything connected: the slicer's reference level and, if denoising is on,
     # the noise profile.
@@ -184,6 +196,9 @@ class Preset(BaseModel):
     attack: float = Field(default=0.0, ge=0, le=10)
     release: float = Field(default=1.0, ge=0, le=20)
     vel_track: float | None = Field(default=None, ge=0, le=1, description="None: 0.3 with layers, else 0.8")
+    # The lowest velocity of each layer after the first, e.g. [80] for "f from 80". Empty, or not
+    # fitting the layers (e.g. after adding one), means an even split.
+    velocity_splits: list[int] = []
     # Even out loudness between notes via each sample's volume; the audio files stay unchanged.
     balance: bool = False
     balance_max_db: float = Field(default=6.0, ge=0.5, le=24)
@@ -205,6 +220,8 @@ class Instrument(BaseModel):
     recording: Recording = Field(default_factory=Recording)
     processing: Processing = Field(default_factory=Processing)
     preset: Preset = Field(default_factory=Preset)
+    # Notes with their own velocity lanes, by note (its base name, e.g. "060_C-0").
+    note_lanes: dict[str, NoteLanes] = {}
 
     def problems(self) -> list[str]:
         """Soft validation shown in the UI; an instrument with problems can still be saved."""
@@ -225,8 +242,12 @@ class Instrument(BaseModel):
                 out.append("Add at least one sound.")
             _dupes(out, "sound key", [str(s.key) for s in self.range.sounds])
         if not self.dynamics.layers:
-            out.append("Add at least one dynamic layer.")
-        _dupes(out, "layer name", self.dynamics.layers)
+            out.append("Add at least one velocity lane.")
+        _dupes(out, "lane name", self.dynamics.layers)
+        for note, own in self.note_lanes.items():
+            if not own.layers:
+                out.append(f"Note {note} has no velocity lanes; give it one or use the defaults.")
+            _dupes(out, f"lane name for note {note}", own.layers)
         for c in self.preset.controls:
             if c not in CONTROLS:
                 out.append(f"Unknown control “{c}”.")
@@ -237,7 +258,7 @@ class Instrument(BaseModel):
         _dupes(out, "extra key", [str(k) for k in keys])
         if self.recording.source == "samples":
             if not self.recording.import_dir:
-                out.append("Choose the folder with the samples to import (step 6).")
+                out.append("Choose the folder with the samples to import (step 5).")
             if any(sig.recorded == "separate" for sig in self.signals):
                 out.append("Imported samples can't be in separate recording passes; set all signals to "
                            "“Together” (step 2).")
@@ -247,13 +268,14 @@ class Instrument(BaseModel):
             for x in self.extras:
                 if x.use == "key" and lo <= x.key <= hi:
                     out.append(f"Extra “{x.name}” is on key {x.key}, inside the playable range {lo}–{hi}; "
-                               "move it outside (step 7).")
+                               "move it outside (step 6).")
         for sig in self.signals:
             if sig.id in RESERVED_SIGNAL_IDS or sig.id.startswith("pass-"):
                 out.append(f"Signal id “{sig.id}” is reserved; choose another.")
         if self.processing.denoise and not self.recording.noise_floor_seconds:
             out.append("Denoising needs a noise-floor recording (set its length in step 4).")
-        for what, values in (("Signal id", [s.id for s in self.signals]), ("Layer name", self.dynamics.layers)):
+        lanes = self.dynamics.layers + [lane for own in self.note_lanes.values() for lane in own.layers]
+        for what, values in (("Signal id", [s.id for s in self.signals]), ("Lane name", list(dict.fromkeys(lanes)))):
             for v in values:
                 if not SAFE_NAME.fullmatch(v):
                     out.append(f"{what} “{v}” may only use letters, digits and “-”.")

@@ -8,8 +8,8 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from nicegui import app, run, ui
 
-from vinst import bundle, store
-from vinst.plan import recording_passes
+from vinst import bundle, preset, store
+from vinst.plan import layer_bounds, recording_passes
 from vinst.preset import KNOB_Y, UI_H, UI_W, VISIBLE_H, knob_layout, mixable_signals, switched_passes
 from vinst.spec import CONTROLS, Extra
 from vinst.ui.anim import Collapse
@@ -86,6 +86,78 @@ def preview_html(ed: "Editor") -> str:
             f"opacity:.9'></div></div>")
 
 
+LAYER_COLOURS = ["#90caf9", "#42a5f5", "#1e88e5", "#1565c0", "#0d47a1"]
+
+
+def velocity_layers(ed: "Editor") -> None:
+    """Where each recorded dynamic takes over, e.g. when f kicks in, as velocity boundaries.
+
+    Rebuilt when the layers change in step 4, so there is always one slider per boundary.
+    """
+    inst, p = ed.inst, ed.inst.preset
+    shown = {"layers": list(inst.dynamics.layers)}
+
+    @ui.refreshable
+    def section() -> None:
+        layers = list(inst.dynamics.layers)
+        shown["layers"] = layers
+        if len(layers) < 2:
+            return
+
+        def starts() -> list[int]:
+            return [lo for lo, _ in layer_bounds(len(layers), p.velocity_splits)][1:]
+
+        def moved(i: int, value: int) -> None:
+            values = starts()
+            values[i] = int(value)
+            # Keep the layers in order and at least one velocity wide.
+            for k in range(i + 1, len(values)):
+                values[k] = max(values[k], values[k - 1] + 1)
+            for k in range(i - 1, -1, -1):
+                values[k] = min(values[k], values[k + 1] - 1)
+            values = [min(max(v, 2 + k), 127 - (len(values) - 1 - k)) for k, v in enumerate(values)]
+            ed.set(p, "velocity_splits", values)
+            show()
+
+        def even() -> None:
+            ed.set(p, "velocity_splits", [])
+            show()
+
+        def show() -> None:
+            for slider, value in zip(sliders, starts()):
+                slider.set_value(value)
+            bar.refresh()
+
+        ui.label("Where each lane starts").classes("text-sm font-medium mt-2")
+        sliders: list[ui.slider] = []
+        with ui.column().classes("gap-1 w-full max-w-3xl"):
+            for i, layer in enumerate(layers[1:]):
+                with ui.row().classes("items-center gap-3 w-full no-wrap"):
+                    ui.label(f"{layer} starts at velocity").classes("whitespace-nowrap w-44")
+                    slider = ui.slider(min=2, max=127, step=1, value=starts()[i]).props("label").classes("grow")
+                    slider.on("change", lambda e, k=i: moved(k, e.args))
+                    sliders.append(slider)
+                    ui.label().bind_text_from(slider, "value", lambda v: f"{int(v)}").classes("w-8 text-right")
+
+            @ui.refreshable
+            def bar() -> None:
+                bounds = layer_bounds(len(layers), p.velocity_splits)
+                with ui.row().classes("w-full gap-0 no-wrap rounded overflow-hidden text-xs text-white"):
+                    for k, (layer, (lo, hi)) in enumerate(zip(layers, bounds)):
+                        ui.label(f"{layer} {lo}–{hi}").classes("text-center py-1 overflow-hidden whitespace-nowrap") \
+                            .style(f"width:{(hi - lo + 1) / 127 * 100:.2f}%;"
+                                   f"background:{LAYER_COLOURS[k % len(LAYER_COLOURS)]};transition:width .2s ease")
+
+            bar()
+            with ui.row().classes("items-center gap-2"):
+                ui.button("Even split", on_click=even).props("flat dense")
+                ui.label("Play your keyboard softly and firmly in DecentSampler to find where the louder "
+                         "samples should take over. Changes need a new build, never new slicing.").classes("text-xs opacity-70")
+
+    section()
+    ed.on_change_hooks.append(lambda: shown["layers"] != list(inst.dynamics.layers) and section.refresh())
+
+
 def step_sound(ed: "Editor") -> None:
     inst, p = ed.inst, ed.inst.preset
 
@@ -113,18 +185,14 @@ def step_sound(ed: "Editor") -> None:
 
     ui.separator()
     ui.label("Mapping").classes("text-base font-medium")
-    with ui.row().classes("items-start gap-4"):
-        ed.number("Stretch lowest sample down", p, "extend_below", min=0, max=24, precision=0,
-                  suffix="semitones").classes("w-56")
-        ed.number("Stretch highest sample up", p, "extend_above", min=0, max=24, precision=0,
-                  suffix="semitones").classes("w-56")
     with ui.row().classes("items-center gap-4"):
         ui.label("Use neighbours as extra round robins:")
         ui.toggle({0: "Off", 1: "±1 semitone", 2: "±2 semitones"}, value=p.neighbour_round_robins,
                   on_change=lambda e: ed.set(p, "neighbour_round_robins", e.value))
     ui.label("Between recorded notes, each sample is stretched to the midpoint (the upper one is pitched "
              "down). Neighbour round robins add the hits of nearby notes, pitched to fit, to each key's "
-             "rotation: more variation, slightly less faithful timbre.").classes("text-xs opacity-70 max-w-3xl")
+             "rotation: more variation, slightly less faithful timbre. Stretching past the lowest and "
+             "highest notes is set in step 3.").classes("text-xs opacity-70 max-w-3xl")
 
     with ui.row().classes("items-center gap-4"):
         ui.switch("Even out loudness between notes", value=p.balance,

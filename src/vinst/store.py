@@ -65,6 +65,7 @@ class Settings(BaseModel):
     """App-wide preferences, stored next to the instruments."""
 
     recordings_dir: str = DEFAULT_RECORDINGS_DIR  # new instruments record into <this>/<instrument name>
+    input_device: str = ""  # audio interface for recording in the app; empty: the system's default input
 
 
 def load_settings() -> Settings:

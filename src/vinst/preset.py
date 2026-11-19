@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from lxml import etree
 
-from vinst.plan import Pass, Take, plan_takes, recording_passes
+from vinst.plan import Pass, Take, lane_bounds, plan_takes, recording_passes
 from vinst.review import Hit, Manifest
 from vinst.spec import CONTROLS, SUSTAINED_TYPES, FX_TAG, NOTES_TAG, RELEASE_TAG, Instrument, Signal, file_token
 
@@ -58,22 +58,19 @@ class Mapping:
         return {e.file for e in self.notes + self.release + self.keys}
 
 
-def layer_bounds(n: int) -> list[tuple[int, int]]:
-    """Split velocities 1..127 evenly into n layers."""
-    edges = [1 + round(i * 127 / n) for i in range(n + 1)]
-    return [(edges[i], edges[i + 1] - 1 if i < n - 1 else 127) for i in range(n)]
+def velocity_slots(bounds: list[tuple[str, int, int]], available: set[str]) -> list[tuple[str, int, int]]:
+    """(recorded lane to play, lo_vel, hi_vel) per velocity range of a note's lanes.
 
-
-def velocity_slots(layers: list[str], available: set[str]) -> list[tuple[str, int, int]]:
-    """(recorded layer to play, lo_vel, hi_vel) per velocity range.
-
-    A layer without usable hits gives its range to the nearest lower layer that has hits
-    (or the nearest higher one if there is none below).
+    A lane without usable hits gives its range to the nearest lower lane that has hits (or the
+    nearest higher one if there is none below).
     """
+    lanes = [lane for lane, _, _ in bounds]
     out = []
-    for i, (lo, hi) in enumerate(layer_bounds(len(layers))):
-        lower = [layers[j] for j in range(i, -1, -1) if layers[j] in available]
-        higher = [layers[j] for j in range(i, len(layers)) if layers[j] in available]
+    for i, (_, lo, hi) in enumerate(bounds):
+        lower = [lanes[j] for j in range(i, -1, -1) if lanes[j] in available]
+        higher = [lanes[j] for j in range(i, len(lanes)) if lanes[j] in available]
+        if not lower and not higher:
+            continue
         src = (lower or higher)[0]
         if out and out[-1][0] == src:
             out[-1] = (src, out[-1][1], hi)
@@ -155,12 +152,13 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
         lambda: defaultdict(lambda: defaultdict(list)))
     pass_signals: dict[str, list[str]] = {}
     hit_rate: dict[str, int | None] = {}
-    unrecorded = 0
+    note_of: dict[tuple[str, int], str] = {}  # (pass, midi) -> note, for its own lanes
+    recorded: set[tuple[str, str]] = set()
 
     imported = inst.recording.source == "samples"
     for t in manifest.takes:
         take = plan.get(t.key)
-        if take is None and not imported:
+        if take is None and not imported and t.origin == "plan":
             if t.hits:
                 m.warnings.append(f"“{t.title}” is in hits.json but not in the current plan; slice again.")
             continue
@@ -170,7 +168,6 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
         if signals:  # e.g. the import's "not imported" list has none and must not blank the pass
             pass_signals[t.pass_id] = signals
         if t.status == "missing":
-            unrecorded += t.kind == "note"
             continue
         if t.status in ("count_mismatch", "error"):
             m.warnings.append(f"“{t.title}”: {t.message}. Its hits are left out.")
@@ -178,6 +175,9 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
         for h in t.hits:
             hit_rate[h.id] = h.sample_rate or t.sample_rate
         if t.kind == "note" and midi is not None:
+            if t.note:
+                note_of[(t.pass_id, midi)] = t.note
+                recorded.add((t.pass_id, t.note))
             for h in usable(t.hits):
                 if h.layer is not None:
                     notes[t.pass_id][midi][h.layer].append(h)
@@ -197,8 +197,10 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
                     for sig in signals:
                         m.keys.append(Entry(sig, h.files[sig], extra.key, extra.key, extra.key,
                                             seq_pos=pos, seq_len=len(hits)))
+    unrecorded = len({(t.pass_id, t.note_base) for t in plan.values() if t.kind == "note"} - recorded) \
+        if not imported else 0
     if unrecorded:
-        m.warnings.append(f"{unrecorded} planned note takes aren't recorded yet; neighbouring samples cover them.")
+        m.warnings.append(f"{unrecorded} planned notes aren't recorded yet; neighbouring samples cover them.")
     if not notes:
         return m
 
@@ -207,7 +209,8 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
     balanced: list[float] = []
     for pass_id, pass_notes in notes.items():
         roots = sorted(pass_notes)
-        corrections = balance_corrections(pass_notes, inst.dynamics.layers, inst.preset.balance_max_db,
+        all_lanes = list(dict.fromkeys(lane for by_lane in pass_notes.values() for lane in by_lane))
+        corrections = balance_corrections(pass_notes, all_lanes, inst.preset.balance_max_db,
                                           sustained=inst.meta.type in SUSTAINED_TYPES) \
             if inst.preset.balance else {}
         balanced += [c for c in corrections.values() if abs(c) >= 0.5]
@@ -215,7 +218,11 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
         spans.append((zones[roots[0]][0], zones[roots[-1]][1]))
         for root in roots:
             lo, hi = zones[root]
-            slots = velocity_slots(inst.dynamics.layers, set(pass_notes[root]))
+            bounds = lane_bounds(inst, note_of.get((pass_id, root), ""))
+            lanes = {lane for lane, _, _ in bounds}
+            for lane in sorted(set(pass_notes[root]) - lanes):
+                m.warnings.append(f"Note {root}: hits in lane “{lane}”, which this note doesn't have; left out.")
+            slots = velocity_slots(bounds, set(pass_notes[root]) & lanes)
             # Without neighbour borrowing one entry covers the whole zone; with it every key gets
             # its own entries, because each key has a different set of candidates.
             key_ranges = [(lo, hi)] if n == 0 else [(k, k) for k in range(lo, hi + 1)]

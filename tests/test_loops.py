@@ -34,7 +34,7 @@ def sustained(tmp_path, monkeypatch):
     inst = defaults.new_instrument("Pad", InstrumentType.SUSTAINED)
     assert inst.processing.loops
     inst.range.low, inst.range.high, inst.range.density = 60, 62, 1
-    inst.dynamics.layers, inst.dynamics.round_robins = ["mp", "f"], 1
+    inst.dynamics.layers, inst.dynamics.round_robins = ["mp", "f"], 2
     inst.recording.ring_seconds = 2.0
     inst.recording.takes_dir = str(tmp_path / "takes")
     store.create(inst)
@@ -60,12 +60,12 @@ def test_sustained_notes_get_good_loops_in_the_preset(sustained):
 
 
 def test_loop_markers_in_takes_win(sustained):
-    take = sustained.recording.takes_dir + "/061_mic.wav"
+    take = sustained.recording.takes_dir + "/061_mp_mic.wav"
     first_hit_region = (int(0.9 * 48000), int(1.6 * 48000))  # inside the first hit (starts at 0.5 s)
     from pathlib import Path
     loops.write_wav_loops(Path(take), [first_hit_region], 48000)
     manifest = process(sustained)
-    t = next(t for t in manifest.takes if t.base == "061")
+    t = next(t for t in manifest.takes if t.base == "061_mp")
     first = t.hits[0]
     assert first.loop_source == "marker"
     assert (first.loop_start + first.start, first.loop_end + first.start) == first_hit_region
@@ -128,11 +128,11 @@ def test_sustained_notes_are_balanced_by_their_held_level():
 def test_marker_problems_are_reported(sustained):
     from pathlib import Path
 
-    first = process(sustained).takes[1]  # note 060: hits around 0.5–2.5 s and 3.5–5.5 s
+    first = process(sustained).takes[1]  # note 060, lane mp: hits around 0.5–2.5 s and 3.5–5.5 s
     hit = first.hits[0]
     in_fade = (hit.start + 30_000, hit.end - 100)  # ends inside the last 50 ms
     across = (hit.end - 5_000, first.hits[1].start + 5_000)  # spans the cut between two hits
-    loops.write_wav_loops(Path(sustained.recording.takes_dir) / "060_mic.wav", [in_fade, across], 48000)
+    loops.write_wav_loops(Path(sustained.recording.takes_dir) / "060_mp_mic.wav", [in_fade, across], 48000)
     again = process(sustained).takes[1]
     assert "loop_in_fade" in again.hits[0].flags
     assert "doesn't lie inside one hit" in again.message

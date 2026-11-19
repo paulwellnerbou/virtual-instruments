@@ -29,7 +29,7 @@ def sliced(tmp_path_factory):
     inst.extras = inst.extras[:1]
     inst.recording.ring_seconds = 1.0
     inst.recording.takes_dir = str(folder)
-    # take 1 is noise floor, 2..5 the notes, 6 the extra
+    # take 1 is the noise floor, then each note's p, mf, f lanes (2..13), then the extra
     write_takes(inst, folder, ring=1.0, mistakes=Mistakes(wrong_note_take=3, missing_hit_take=4, clipped_take=5))
     return inst, process(inst)
 
@@ -38,9 +38,9 @@ def test_takes_are_cut_into_expected_hits(sliced):
     inst, m = sliced
     by_base = {t.base: t for t in m.takes}
     assert by_base["noisefloor"].status == "noise_floor"
-    assert by_base["055_G-0"].status == "ok"
-    assert [h.id for h in by_base["055_G-0"].hits] == [
-        "055_G-0_p_rr1", "055_G-0_p_rr2", "055_G-0_mf_rr1", "055_G-0_mf_rr2", "055_G-0_f_rr1", "055_G-0_f_rr2"]
+    assert by_base["055_G-0_p"].status == "ok"
+    assert [(h.id, h.layer) for h in by_base["055_G-0_p"].hits] == [("055_G-0_p_01", "p"), ("055_G-0_p_02", "p")]
+    assert [h.layer for h in by_base["060_C-0_f"].hits] == ["f", "f"]
     assert by_base["x_release"].status == "ok" and len(by_base["x_release"].hits) == 12
     assert m.noise_floor_db == pytest.approx(-70, abs=1)
 
@@ -49,18 +49,20 @@ def test_mistakes_are_flagged(sliced):
     _, m = sliced
     by_number = {t.number: t for t in m.takes}
     assert "wrong_note" in by_number[3].hits[1].flags
-    assert by_number[4].status == "count_mismatch" and len(by_number[4].hits) == 5
-    assert by_number[4].hits[0].layer is None
+    # A missing hit: the lane just has one variation fewer.
+    assert by_number[4].status == "ok" and len(by_number[4].hits) == 1 and by_number[4].info == "1 hits, 2 planned"
     assert "clipped" in by_number[5].hits[-1].flags
 
 
 def test_clean_hits_are_in_tune_and_layers_ordered(sliced):
     _, m = sliced
-    take = next(t for t in m.takes if t.base == "055_G-0")
-    assert all(not h.flags for h in take.hits)
-    assert all(abs(h.cents) < 15 for h in take.hits)
-    p, f = take.hits[0].rms_db, take.hits[-1].rms_db
-    assert f - p > 10
+    soft = next(t for t in m.takes if t.base == "055_G-0_p")
+    loud = next(t for t in m.takes if t.base == "056_G-1_f" or t.base == "060_C-0_f")
+    assert all(not h.flags for h in soft.hits)
+    assert all(abs(h.cents) < 15 for h in soft.hits)
+    c3 = [t for t in m.takes if t.note == "060_C-0"]
+    rms = {t.lane: t.hits[0].rms_db for t in c3}
+    assert rms["f"] - rms["p"] > 10 and loud.hits
 
 
 def test_signals_are_cut_identically_and_written(sliced):
@@ -74,9 +76,9 @@ def test_signals_are_cut_identically_and_written(sliced):
 
 def test_rejections_survive_reslicing(sliced):
     inst, m = sliced
-    m.takes[1].hits[2].rejected = True
+    m.takes[1].hits[1].rejected = True
     again = process(inst, previous=m)
-    assert again.takes[1].hits[2].rejected
+    assert again.takes[1].hits[1].rejected
     assert sum(h.rejected for t in again.takes for h in t.hits) == 1
 
 
@@ -107,7 +109,7 @@ def test_invalid_layer_names_refuse_slicing(sliced):
     inst, _ = sliced
     bad = inst.model_copy(deep=True)
     bad.dynamics.layers = ["p", "f", "F"]
-    assert any("Duplicate layer name" in p for p in bad.problems())
+    assert any("Duplicate lane name" in p for p in bad.problems())
     bad.dynamics.layers = ["p", "soft/hard"]
     assert any("letters, digits" in p for p in bad.problems())
     with pytest.raises(ValueError, match="Fix these first"):
@@ -128,7 +130,7 @@ def test_cut_off_only_when_still_ringing(tmp_path):
     # Second hit starts 0.5 s after the first while it still rings loudly.
     audio = np.concatenate([np.zeros(sr // 2), long_note[: sr // 2], long_note, np.zeros(sr)])
     audio += rng.normal(0, 1e-4, audio.size)
-    sf.write(tmp_path / "060_mic.wav", audio, sr, subtype="PCM_24")
+    sf.write(tmp_path / "060_normal_mic.wav", audio, sr, subtype="PCM_24")
     take = process(inst).takes[0]
     assert [("cut_off" in h.flags) for h in take.hits] == [True, False]
 
@@ -136,14 +138,14 @@ def test_cut_off_only_when_still_ringing(tmp_path):
 def test_stale_files_from_previous_run_are_removed(sliced):
     inst, m = sliced
     folder = review.samples_dir(inst)
-    old_file = folder / m.takes[1].hits[0].files["piezo"]
+    mf = next(t for t in m.takes if t.base == "055_G-0_mf")
+    old_file = folder / mf.hits[0].files["piezo"]
     assert old_file.exists()
     changed = inst.model_copy(deep=True)
-    changed.dynamics.round_robins = 3  # plan no longer matches: hits get numbered names instead
+    changed.dynamics.layers = ["p", "f"]  # the mf lane is gone: its samples are no longer produced
     again = process(changed, previous=m)
-    assert again.takes[1].status == "count_mismatch"
     assert not old_file.exists()
-    assert (folder / again.takes[1].hits[0].files["piezo"]).exists()
+    assert (folder / next(t for t in again.takes if t.base == "055_G-0_p").hits[0].files["piezo"]).exists()
     unrelated = folder / "my_own_file.wav"
     unrelated.write_bytes(b"")
     process(inst, previous=again)

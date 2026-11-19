@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse
 from nicegui import app, run, ui
 from pydantic import ValidationError
 
-from vinst import defaults, notes, review, sheet, store
+from vinst import defaults, notes, review, store
 from vinst.plan import (
     SampledNote,
     Summary,
@@ -29,10 +29,10 @@ from vinst.spec import (
     Sound,
     slugify,
 )
-from vinst.ui import anim, keyboard
-from vinst.ui.build_steps import step_build, step_sound
+from vinst.ui import anim, keyboard, recording
+from vinst.ui.build_steps import step_build, step_sound, velocity_layers
 from vinst.ui.finder import can_choose_folder, choose_folder, ensure_folder, reveal
-from vinst.ui.review_step import step_review
+from vinst.ui.worksheet import step_worksheet
 
 APP_TITLE = "DecentSampler Instrument Builder"
 DECENTSAMPLER_URL = "https://www.decentsamples.com/product/decent-sampler-plugin/"
@@ -43,17 +43,12 @@ MODE_LABELS = {"strings": "Strings & frets", "notes": "Note range", "sounds": "I
 TYPE_OPTIONS = {t.value: label for t, label in TYPE_LABELS.items()}
 
 
-@app.get("/sheet/{slug}")
-def sheet_page(slug: str) -> HTMLResponse:
-    return HTMLResponse(sheet.render_html(store.load(slug)))
-
-
 def recording_status(s: Summary) -> str:
     if s.recorded_files == 0:
         return "Not recorded yet"
     if s.recorded_files >= s.files:
-        return "All takes recorded"
-    return f"Recorded {s.recorded_files} of {s.files} take files"
+        return "All files recorded"
+    return f"Recorded {s.recorded_files} of {s.files} files"
 
 
 def imported_notes(inst: Instrument) -> dict[int, int] | None:
@@ -81,6 +76,7 @@ def not_needed(text: str) -> None:
 
 def header() -> None:
     anim.add_css()
+    recording.add_assets()
     with ui.header().classes("items-center justify-between"):
         ui.link(APP_TITLE, "/").classes("text-white text-lg no-underline")
         with ui.row().classes("items-center gap-1 text-sm"):
@@ -288,21 +284,15 @@ def editor_page(slug: str) -> None:
                 importing = inst.recording.source == "samples"
                 with ui.step("Range", icon="piano"):
                     if importing:
-                        not_needed("Not needed when importing: the notes come from the samples (step 6).")
+                        not_needed("Not needed when importing: the notes come from the samples (step 5).")
                     else:
                         step_range(ed)
                     nav(stepper)
                 with ui.step("Dynamics & extras", icon="graphic_eq"):
                     step_dynamics(ed)
                     nav(stepper)
-                with ui.step("Recording sheet", icon="checklist"):
-                    if importing:
-                        not_needed("Not needed when importing existing samples.")
-                    else:
-                        step_sheet(ed)
-                    nav(stepper)
-                with ui.step("Import & review", icon="content_cut"):
-                    step_review(ed)
+                with ui.step("Worksheet", icon="view_list"):
+                    step_worksheet(ed)
                     nav(stepper)
                 with ui.step("Sound & look", icon="tune"):
                     step_sound(ed)
@@ -488,6 +478,33 @@ def step_range(ed: Editor) -> None:
         else:
             sounds_editor()
         ui.label("Note names follow DecentSampler: middle C = C3 = MIDI 60.").classes("text-xs opacity-60")
+        if rng.mode != "sounds":
+            stretch()
+
+    def stretch() -> None:
+        """Keys beyond the recorded notes: playback only, so no recording or slicing again."""
+        p = inst.preset
+        ui.label("Beyond the recorded notes").classes("text-sm font-medium mt-4")
+        with ui.row().classes("items-start gap-4"):
+            ed.number("Stretch lowest note down", p, "extend_below", min=0, max=24, precision=0,
+                      suffix="semitones").classes("w-56")
+            ed.number("Stretch highest note up", p, "extend_above", min=0, max=24, precision=0,
+                      suffix="semitones").classes("w-56")
+
+        playable()
+
+    @ui.refreshable
+    def playable() -> None:
+        span = rng.span()
+        if span is None or rng.mode == "sounds":
+            return
+        p = inst.preset
+        lo, hi = max(0, span[0] - p.extend_below), min(127, span[1] + p.extend_above)
+        ui.label(f"Plays {notes.label(lo)} – {notes.label(hi)}: the lowest and highest recorded samples are "
+                 "pitched further. Only the built instrument changes; nothing needs recording or slicing "
+                 "again. More than 2–3 semitones starts to sound unnatural.").classes("text-xs opacity-70 max-w-3xl")
+
+    ed.on_change_hooks.append(playable.refresh)  # once; a no-op while it isn't shown
 
     def density_select() -> None:
         ui.select({1: "Every note (chromatic)", 2: "Every 2nd semitone", 3: "Every 3rd semitone (minor thirds)",
@@ -589,8 +606,10 @@ def step_range(ed: Editor) -> None:
 
 def step_dynamics(ed: Editor) -> None:
     inst, dyn, rec = ed.inst, ed.inst.dynamics, ed.inst.recording
-    ui.label("Velocity layers").classes("text-base font-medium")
-    ui.label("How many dynamic levels you'll play each note at, quietest first.").classes("text-sm opacity-70")
+    ui.label("Velocity lanes").classes("text-base font-medium")
+    ui.label("The dynamics every note is recorded at, quietest first, each in its own take. These are the "
+             "defaults: in the worksheet, single notes can get their own lanes and velocity ranges.") \
+        .classes("text-sm opacity-70 max-w-3xl")
 
     @ui.refreshable
     def layers() -> None:
@@ -612,13 +631,16 @@ def step_dynamics(ed: Editor) -> None:
 
     layers()
     if inst.recording.source == "samples":
-        ui.label("When importing: a sample whose file name contains a layer name (e.g. “_mf_”) goes to that "
-                 "layer; a velocity number like “v2” is ranked; otherwise the samples of each note are "
-                 "spread over the layers by loudness, and several samples in one layer become round "
-                 "robins.").classes("text-sm opacity-70 max-w-3xl")
+        velocity_layers(ed)
+        ui.label("When importing: a sample whose file name contains a lane name (e.g. “_mf_”) goes to that "
+                 "lane; a velocity number like “v2” is ranked; otherwise the samples of each note are "
+                 "spread over the lanes by loudness, and several samples in one lane become "
+                 "variations.").classes("text-sm opacity-70 max-w-3xl")
         return
+    velocity_layers(ed)
     with ui.row():
-        ed.number("Round robins (takes per layer)", dyn, "round_robins", min=1, max=32, precision=0).classes("w-64")
+        ed.number("Variations per lane", dyn, "round_robins", min=1, max=32, precision=0).classes("w-52") \
+            .tooltip("How many times each note is played per lane; DecentSampler alternates between them")
         ed.number("Ring / hold time per hit", rec, "ring_seconds", cast=float, min=0.5, max=60, step=0.5,
                   suffix="s").classes("w-56")
         ed.number("Noise floor", rec, "noise_floor_seconds", min=0, max=300, precision=0, suffix="s").classes("w-36")
@@ -653,64 +675,6 @@ def step_dynamics(ed: Editor) -> None:
         ui.button("+ Extra", on_click=add).props("outline dense")
 
     extras()
-
-
-def step_sheet(ed: Editor) -> None:
-    inst, rec = ed.inst, ed.inst.recording
-    with ui.row().classes("w-full items-start no-wrap"):
-        takes = ed.folder("Folder for the exported takes", rec, "takes_dir", "Folder for the exported takes",
-                          placeholder=store.default_takes_dir(inst.meta.name))
-
-        def show_takes() -> None:
-            folder = Path(rec.takes_dir or store.default_takes_dir(inst.meta.name)).expanduser()
-            try:
-                ensure_folder(folder)
-            except OSError as e:
-                ui.notify(str(e), type="warning")
-                return
-            if not rec.takes_dir:
-                takes.set_value(str(folder))
-            reveal(folder)
-
-        ui.button("Show in Finder", icon="folder_open", on_click=show_takes).props("flat dense")
-        ui.select([44100, 48000, 88200, 96000], label="Sample rate", value=rec.sample_rate,
-                  on_change=lambda e: ed.set(rec, "sample_rate", e.value)).classes("w-32")
-        ui.select([16, 24, 32], label="Bit depth", value=rec.bit_depth,
-                  on_change=lambda e: ed.set(rec, "bit_depth", e.value)).classes("w-28")
-
-    with ui.row():
-        ui.button("Open printable sheet", icon="print",
-                  on_click=lambda: (ed.autosave(), ui.navigate.to(f"/sheet/{inst.meta.slug}", new_tab=True)))
-
-        sheet_file = store.instrument_dir(inst.meta.slug) / sheet.HTML_NAME
-
-        def write_files() -> None:
-            ed.autosave()
-            html_path, csv_path = sheet.write(inst, store.instrument_dir(inst.meta.slug))
-            ui.notify(f"Wrote {html_path.name} and {csv_path.name} to {html_path.parent}", type="positive")
-            show.enable()
-
-        ui.button("Save sheet as HTML + CSV", icon="save", on_click=write_files).props("outline")
-        show = ui.button("Show in Finder", icon="folder_open", on_click=lambda: reveal(sheet_file)).props("flat")
-        show.set_enabled(sheet_file.is_file())
-
-    columns = [
-        {"name": "number", "label": "#", "field": "number", "align": "right"},
-        {"name": "title", "label": "What", "field": "title", "align": "left"},
-        {"name": "play", "label": "Play", "field": "play", "align": "left"},
-        {"name": "hits", "label": "Hits", "field": "hits", "align": "right"},
-        {"name": "files", "label": "Files", "field": "files", "align": "left"},
-    ]
-
-    @ui.refreshable
-    def table() -> None:
-        rows = [{"number": t.number, "title": t.title, "play": " · ".join(t.instructions),
-                 "hits": t.hits or "", "files": "  ".join(t.files)} for t in plan_takes(inst)]
-        ui.table(columns=columns, rows=rows, row_key="number", pagination=0).props("dense flat") \
-            .classes("w-full")
-
-    table()
-    ed.on_change_hooks.append(table.refresh)
 
 
 def run(port: int = 8080, show: bool = True, idle_exit: float = 0) -> None:
