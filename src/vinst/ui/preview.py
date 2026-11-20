@@ -81,11 +81,13 @@ def knob(x: float, y: float, size: float, k: preset.Knob, accent: str, text: str
             f"stroke-width='{5 * u:.2f}' stroke-linecap='round'/>")
 
 
+def white_index(n: int) -> int:
+    """How many white keys lie below MIDI note `n`."""
+    return (n // 12) * 7 + sum(1 for s in WHITE_STEPS if s < n % 12)
+
+
 def keyboard(tints: dict[int, str]) -> str:
     """DecentSampler's keyboard: its wheels, its keys from MIDI note 0 and its arrow, `tints` by key."""
-    def white_index(n: int) -> int:
-        return (n // 12) * 7 + sum(1 for s in WHITE_STEPS if s < n % 12)
-
     whites, blacks = [], []
     for n in range(128):
         if n % 12 in WHITE_STEPS:
