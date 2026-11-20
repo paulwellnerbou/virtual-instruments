@@ -50,6 +50,7 @@ def file_token(text: str) -> str:
 
 class Meta(BaseModel):
     name: str
+    subtitle: str = ""  # the line under the name in the instrument, e.g. "Hawaiian koa"
     slug: str
     type: InstrumentType
     author: str = ""
