@@ -230,6 +230,9 @@ def step_sound(ed: "Editor") -> None:
         colour_field(ed, "Background colour", "bg_color")
         colour_field(ed, "Text colour", "text_color")
         colour_field(ed, "Accent colour", "accent_color", "The knobs' lit arcs and the playable keys")
+    with ui.row().classes("items-center gap-4"):
+        ui.switch("Show the author", value=p.show_author, on_change=lambda e: ed.set(p, "show_author", e.value))
+        ui.switch("Show the version", value=p.show_version, on_change=lambda e: ed.set(p, "show_version", e.value))
 
     @ui.refreshable
     def look_preview() -> None:
