@@ -6,10 +6,13 @@ is -12 dB, not -24. Highpass and lowpass become 24 dB per octave, -6 dB at their
 The whole take is filtered before it's cut, so a narrow notch has rung in by the time a hit starts.
 """
 
+import itertools
 import json
+from pathlib import Path
 
 import numpy as np
-from scipy.signal import sosfiltfilt, sosfreqz
+import soundfile as sf
+from scipy.signal import sosfiltfilt, sosfreqz, welch
 
 from vinst.eq import biquad
 from vinst.spec import CleanupEq, EqFilter, Instrument
@@ -31,6 +34,76 @@ KIND_LABELS = {
     "highpass": "Highpass", "lowpass": "Lowpass", "hum": "Hum + harmonics",
 }
 HAS_GAIN = {"peak", "low_shelf", "high_shelf", "hum"}
+
+MAINS = {50: "Europe and most of the world", 60: "The Americas and parts of Asia"}
+# A mains frequency counts as found when one of its first harmonics stands this far above its
+# neighbourhood in the noise floor, and further than the other mains frequency's do.
+MAINS_PROMINENCE_DB = 10.0
+MAINS_MARGIN_DB = 6.0
+
+
+def mains_filter(hz: int) -> EqFilter:
+    _, gain, q = STARTS["hum"]
+    return EqFilter(kind="hum", hz=float(hz), gain_db=gain, q=q)
+
+
+def mains_prominence(audio: np.ndarray, sr: int, hz: float, harmonics: int = 4) -> float:
+    """How far (dB) the strongest of `hz` and its first multiples stands above the spectrum just beside it."""
+    # Up to 0.25 Hz bins, and at least four segments: one lone periodogram of hiss has chance peaks.
+    seg = min(4 * sr, len(audio) // 4)
+    if seg < sr:
+        return 0.0
+    freqs, power = welch(audio, sr, nperseg=seg)
+    best = 0.0
+    for k in range(1, harmonics + 1):
+        f = hz * k
+        peak = power[np.abs(freqs - f) <= 1.0].max()
+        near = power[(np.abs(freqs - f) >= 3) & (np.abs(freqs - f) <= 10)]
+        best = max(best, 10 * np.log10(max(peak, 1e-30) / max(np.median(near), 1e-30)))
+    return float(best)
+
+
+def mains_in(audio: np.ndarray, sr: int) -> int | None:
+    """50 or 60, whichever mains hum the recording has; None if neither clearly."""
+    p = {hz: mains_prominence(audio, sr, hz) for hz in MAINS}
+    (top, a), (_, b) = sorted(p.items(), key=lambda kv: -kv[1])
+    return top if a >= MAINS_PROMINENCE_DB and a - b >= MAINS_MARGIN_DB else None
+
+
+# (path, modification time) -> what mains_in found: the worksheet asks on every redraw.
+_heard: dict[tuple[Path, int], int | None] = {}
+
+
+def found_mains(inst: Instrument) -> dict[str, int]:
+    """Per signal, the mains hum heard in its noise-floor recording, for signals where one is."""
+    if not inst.recording.takes_dir:
+        return {}
+    takes_dir = Path(inst.recording.takes_dir).expanduser()
+    found = {}
+    for sig in inst.signals:
+        path = takes_dir / f"noisefloor_{sig.id}.wav"
+        try:
+            key = (path, path.stat().st_mtime_ns)
+            if key not in _heard:
+                sr = sf.info(str(path)).samplerate
+                audio, _ = sf.read(str(path), always_2d=True, dtype="float64", frames=30 * sr)
+                _heard[key] = mains_in(audio.mean(axis=1), sr)
+        except (OSError, RuntimeError):
+            continue
+        if _heard[key] is not None:
+            found[sig.id] = _heard[key]
+    return found
+
+
+def mains_eq(inst: Instrument, hz: int, found: dict[str, int]) -> CleanupEq:
+    """A clean-up EQ for every take against `hz` mains hum, for the signals it was heard on if that's
+    only some of them (a mic seldom picks it up), else for all."""
+    sigs = [s.id for s in inst.signals if found.get(s.id) == hz]
+    names = {e.name.lower() for e in inst.processing.cleanup_eqs}  # as renaming compares them
+    name = next(n for n in itertools.chain(["Mains hum"], (f"Mains hum {i}" for i in itertools.count(2)))
+                if n.lower() not in names)
+    return CleanupEq(name=name, every_take=True, filters=[mains_filter(hz)],
+                     signals=sigs if 0 < len(sigs) < len(inst.signals) else [])
 
 
 def fits(f: EqFilter, sr: int) -> int:

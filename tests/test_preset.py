@@ -650,8 +650,9 @@ def test_the_preview_marks_the_keys_that_really_play(built):
     inst, manifest = built
     mapping = preset.map_samples(inst, manifest)
     tint = preview.css(preset.pale(inst.preset.accent_color, 0.4))
-    assert preview.render(inst, False, mapping=mapping).count(f"fill='{tint}'") == sum(
-        1 for n in range(mapping.span[0], mapping.span[1] + 1) if n % 12 in preview.WHITE_STEPS)
+    shown = [n for n in range(mapping.span[0], mapping.span[1] + 1) if n % 12 in preview.WHITE_STEPS
+             and preview.KEYS_X0 + preview.white_index(n) * preview.WHITE_W <= preview.KEYS_X1]
+    assert shown and preview.render(inst, False, mapping=mapping).count(f"fill='{tint}'") == len(shown)
 
 
 def _smpl(data: bytes) -> np.ndarray:
