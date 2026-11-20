@@ -10,6 +10,7 @@ import io
 import itertools
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -549,6 +550,18 @@ def eq_summary(inst: Instrument, eq: CleanupEq) -> str:
     return f"{sigs} · {what}" if sigs else what
 
 
+def mains_items(found: dict[str, int], pick: Callable[[int], None], what: str = "") -> None:
+    """Menu items for 50 and 60 Hz mains hum, the one heard in the noise floor said so."""
+    for hz, where in cleanup_eq.MAINS.items():
+        with ui.item(on_click=lambda hz=hz: pick(hz)):
+            with ui.item_section():
+                ui.item_label(f"Mains hum, {hz} Hz")
+                ui.item_label(where + (f" · {what}" if what else "")).props("caption")
+            if hz in found.values():
+                with ui.item_section().props("side"):
+                    ui.label("in your noise floor").classes("text-xs text-primary")
+
+
 def cleanup_eqs(ed: "Editor") -> None:
     """The clean-up EQs and their editor; which takes use one is picked in a hit's dialog."""
     inst, proc = ed.inst, ed.inst.processing
@@ -564,8 +577,19 @@ def cleanup_eqs(ed: "Editor") -> None:
                     ui.label(eq_summary(inst, eq)).classes("text-xs opacity-60 truncate grow min-w-0")
                     ui.button(icon="tune", on_click=lambda i=i: edit(i)).props("flat dense round size=sm") \
                         .tooltip("Change it")
-            ui.button("EQ", icon="add", on_click=add).props("flat dense no-caps size=sm") \
-                .tooltip("A new clean-up EQ, e.g. for mains hum on a pickup")
+            found = cleanup_eq.found_mains(inst)
+            with ui.button("EQ", icon="add").props("flat dense no-caps size=sm") \
+                    .tooltip("A new clean-up EQ, e.g. for mains hum on a pickup"):
+                with ui.menu().props("auto-close"):
+                    mains_items(found, lambda hz: add_mains(hz, found), "for every take")
+                    ui.separator()
+                    ui.menu_item("Empty EQ", on_click=add)
+
+    def add_mains(hz: int, found: dict[str, int]) -> None:
+        proc.cleanup_eqs.append(cleanup_eq.mains_eq(inst, hz, found))
+        ed.changed()
+        eq_list.refresh()
+        edit(len(proc.cleanup_eqs) - 1)
 
     def add() -> None:
         names = {e.name for e in proc.cleanup_eqs}
@@ -582,6 +606,8 @@ def cleanup_eqs(ed: "Editor") -> None:
 
     def edit(i: int) -> None:
         eq = proc.cleanup_eqs[i]
+        found = cleanup_eq.found_mains(inst)
+        heard = set(found.values())
         eq_card.clear()
         with eq_card:
             ui.label("Clean-up EQ").classes("text-lg font-medium")
@@ -652,12 +678,16 @@ def cleanup_eqs(ed: "Editor") -> None:
                     for w in watched:  # after the field's own handler, so `f` holds the new value
                         w.on_value_change(lambda _e, check=out_of_range: check())
                 if not eq.filters:
-                    ui.label("No filters yet. Mains hum is 50 Hz in Europe, 60 Hz in the Americas.") \
+                    ui.label("No filters yet. " + (f"Your noise floor has {next(iter(heard))} Hz mains hum."
+                                                   if len(heard) == 1 else
+                                                   "Mains hum is 50 Hz in Europe, 60 Hz in the Americas.")) \
                         .classes("text-sm opacity-70")
 
             def kind(f: EqFilter, value: str) -> None:
                 f.kind = value
                 f.hz, f.gain_db, f.q = cleanup_eq.STARTS[value]
+                if value == "hum" and len(heard) == 1:
+                    f.hz = float(next(iter(heard)))
                 ed.changed()
                 bands.refresh()
 
@@ -666,17 +696,24 @@ def cleanup_eqs(ed: "Editor") -> None:
                 ed.changed()
                 bands.refresh()
 
-            def more() -> None:
-                hz, gain, q = cleanup_eq.STARTS["hum"]
-                eq.filters.append(EqFilter(kind="hum", hz=hz, gain_db=gain, q=q))
+            def more(f: EqFilter) -> None:
+                eq.filters.append(f)
                 ed.changed()
                 bands.refresh()
+
+            def other() -> None:
+                hz, gain, q = cleanup_eq.STARTS["peak"]
+                more(EqFilter(kind="peak", hz=hz, gain_db=gain, q=q))
 
             with ui.column().classes("w-full gap-1 mt-2"):
                 ui.label("Filters").classes("text-sm font-medium")
                 bands()
             with ui.row().classes("w-full items-center"):
-                ui.button("Filter", icon="add", on_click=more).props("flat dense no-caps")
+                with ui.button("Filter", icon="add").props("flat dense no-caps"):
+                    with ui.menu().props("auto-close"):
+                        mains_items(found, lambda hz: more(cleanup_eq.mains_filter(hz)))
+                        ui.separator()
+                        ui.menu_item("Other filter", on_click=other)
                 ui.space()
                 ui.button("Delete this EQ", on_click=lambda: remove(eq)).props("flat color=red no-caps")
                 ui.button("Close", on_click=eq_dialog.close).props("flat")
