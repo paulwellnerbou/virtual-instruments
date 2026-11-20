@@ -132,4 +132,12 @@ def validate_bundle(bundle: Path, preset_file: Path) -> Report:
     info = bundle / "DSLibraryInfo.xml"
     if not info.is_file():
         report.warnings.append("DSLibraryInfo.xml is missing")
+        return report
+    try:
+        cover = etree.parse(info).getroot().get("coverArt")
+    except etree.XMLSyntaxError as e:
+        report.errors.append(f"DSLibraryInfo.xml is not valid XML: {e}")
+        return report
+    if cover and not (info.parent / cover).is_file():
+        report.errors.append(f"missing cover image: {cover}")
     return report

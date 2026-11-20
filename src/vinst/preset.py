@@ -713,6 +713,8 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
     return etree.tostring(root.getroottree(), pretty_print=True, xml_declaration=True, encoding="UTF-8")
 
 
-def library_info(inst: Instrument) -> bytes:
+def library_info(inst: Instrument, cover_art: str | None = None) -> bytes:
     root = etree.Element("DecentSamplerLibraryInfo", name=inst.meta.name, version=inst.meta.version)
+    if cover_art:
+        root.set("coverArt", cover_art)
     return etree.tostring(root, pretty_print=True, xml_declaration=True, encoding="UTF-8")

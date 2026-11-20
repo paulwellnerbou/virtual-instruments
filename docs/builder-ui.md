@@ -129,12 +129,13 @@ After importing, the worksheet works as for recorded takes. Change the folder's 
 
 ![The Equalizer: its bands as a curve over the spectrum of your samples](images/equalizer.png)
 - **Look:** a background image (812 × 375 px, PNG or JPG; drop it on the upload box or click +, and it's copied into the instrument's folder), and background, text and accent colours, each with a colour picker (the accent lights the knobs' arcs and tints the playable keys). Under the title the instrument shows "by <author> · v<version>", and at the bottom right "<copyright> · <website>"; switch any of them off to leave it out of the panel. All of them, and the description, still go into the comment at the top of the preset and the soundfont's info (author, copyright, and the description and website as its comment). The preview below shows the instrument as DecentSampler does in its smallest window: its knobs at their starting values, and its keyboard with the playable keys and the extras' keys tinted.
+- **Library cover:** drop a square PNG or JPG on its upload box or click **+**. The builder copies it into the instrument's folder and includes it in the bundle for DecentSampler's File Browser. Click **Remove cover** to clear it.
 
 Only the built instrument changes here; your recordings and sliced samples stay as they are.
 
 ## 7. Build
 
-**Build** creates the instrument and checks it: the preset against DecentSampler's format, that every sample file exists, that every key and velocity is covered, and the variations. Warnings and errors are listed. You can build before everything is recorded, e.g. to try the first few notes.
+**Build** creates the instrument and checks the preset format, sample and artwork files, key and velocity coverage, and variations. Warnings and errors are listed. You can build before everything is recorded, e.g. to try the first few notes.
 
 - **DecentSampler:** **Install into DecentSampler** copies it into your DecentSampler library folder (`~/DecentSampler`), replacing only instruments this builder created. **Package .dslibrary** makes a single file to share. **Show in Finder** shows the built instrument.
 - **Soundfont:** the same instrument as an SF2 file, for MuseScore and other SF2 players, which play it without DecentSampler. SF2 has no variations, so each key and velocity always plays one sample (its own note's, the best in tune), and release noises are left out. The Equalizer, if chosen, is built into its samples, as its knobs start. **Download** saves it; **Copy to MuseScore** puts it into `~/Documents/MuseScore4/SoundFonts` (never over a soundfont made elsewhere): restart MuseScore and choose it as a staff's sound in the Mixer. **Show in Finder** shows the file.
