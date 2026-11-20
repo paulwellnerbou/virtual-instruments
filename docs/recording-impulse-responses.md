@@ -6,6 +6,7 @@ This guide covers two ways to get one:
 
 - **[Capturing a reverb plug-in](#capturing-a-reverb-plug-in)**, e.g. a Valhalla reverb. Quick, and always clean.
 - **[Recording a real room](#recording-a-real-room)**, e.g. your living room, a hall or a church. More work, and the result is only as good as the recording.
+  - **[On the road](#on-the-road-a-clap-and-a-recorder)**, with no computer: a clap or a balloon, and a handheld recorder or your phone.
 
 Then **[preparing the file](#preparing-the-file)**, which matters in both cases, and **[using it](#using-it)**.
 
@@ -67,6 +68,32 @@ REW does this as part of the measurement; with other tools you deconvolve the re
 
 Continue with preparing the file.
 
+### On the road: a clap and a recorder
+
+A church on holiday, the space under a bridge: no speaker, no computer. A short, loud sound and a recorder do it. Record what the room does with the sound, and at home keep only the room's answer. It's less clean than a sweep, but for the builder's send buses it's often enough: the builder low-passes the IR at 5 kHz and cuts the upper partials per band anyway, so the highs a clap lacks don't matter, and it sets the level itself. What matters is **noise** and the **[direct sound](#the-direct-sound)**.
+
+**The sound**, from best to worst:
+1. **A balloon pop:** loud, and more lows than a clap. In a church, ask first.
+2. **Two hardcover books slapped flat together,** or two pieces of wood: louder than hands, and more alike from hit to hit.
+3. **A clap with cupped hands:** more body than a flat clap, which is mostly 1–3 kHz.
+
+**The recorder** (a handheld one, e.g. a Zoom H4n; or your phone, see below):
+- **WAV, 48 kHz, 24-bit,** stereo with the built-in mics. An XY pair that can be turned goes to its wider setting (120°): reverb wants width.
+- **Limiter and compressor off:** they would pump the tail. **Low cut off,** except outdoors in wind, where it goes on with the windscreen.
+- **Put it down** on a ledge, a pew, a wall or a tripod; held in the hand, it records your hands. It stands where a listener would be; you stand **3–5 m away**, where you'd play, facing it.
+- **Level:** test with one clap; peaks around −6 to −10 dBFS, since a clap is faster than the meter. If the tail drowns in noise, more gain is fine even if **the clap itself** just clips: that first peak gets cut at home. Nothing after it may clip.
+
+**Recording:**
+1. Press Record, walk calmly to your place, and wait until your footsteps' echo is gone.
+2. **Say what this is** ("Church, position one, recorder by the font"): at home you won't remember.
+3. Clap, then **stand still and stay quiet** until the tail is gone, and a few seconds more: in a church often 5–10 s.
+4. **5–10 claps** per position: you'll keep the cleanest, with no car, cough or pigeon in it.
+5. **Two or three positions,** away from walls (boomy) and, under a bridge, off-centre between parallel walls (flutter). A photo of each setup helps later.
+
+**With only a phone:** the same, with the phone put down instead of the recorder. Use an app that records **uncompressed or lossless** (WAV, not AAC or MP3) and switch off **noise reduction, voice isolation or "enhance", and automatic level**: to them, a reverb tail is noise, and they eat it. Phone microphones are mostly mono: it works (the builder makes it stereo), but the reverb then sits in the middle instead of spreading wide.
+
+**At home,** [prepare the file](#preparing-the-file) as for any room: pick the cleanest clap (a quiet room before it, a tail that sinks evenly), cut just after the clap itself, fade out before the noise. Then **make up for the clap's missing lows:** a low shelf of about +6 dB below about 500 Hz, set by ear on your lowest notes. Without it, low notes get a thinner reverb and sound quieter at the same Reverb knob.
+
 ## Preparing the file
 
 ### The direct sound
@@ -118,6 +145,7 @@ Play a few notes, low and high, with the Reverb knob turned up, or try the IR in
 - [ ] Quiet room, nothing moving; or a plug-in at 100 % wet with modulation off
 - [ ] One interface for playing and recording; 48 kHz, 24-bit
 - [ ] Sweep 20 Hz–20 kHz, 10–15 s, silence longer than the tail; recording peaks around −6 dBFS, no clipping
+- [ ] Or on the road: balloon, books or cupped claps; recorder put down 3–5 m away, limiter off; 5–10 claps per position, silence until each tail is gone
 - [ ] Two or three takes per position; the cleanest kept
 - [ ] Direct sound removed (for the send buses)
 - [ ] Tail faded out before the noise; no longer than audible
