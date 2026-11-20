@@ -2,13 +2,18 @@ import asyncio
 from base64 import b64decode
 from pathlib import Path
 
-from nicegui import ui
+import pytest
+from fastapi import HTTPException
+from nicegui import app, ui
 from nicegui.testing import user_simulation
 
 from vinst import defaults, store
 from vinst.spec import InstrumentType
 from vinst.ui.app import Editor
-from vinst.ui.build_steps import step_sound
+from vinst.ui.build_steps import artwork_image, step_sound
+
+# Looked up at import: user_simulation resets the app's routes, and then serves the page for every path.
+ARTWORK_ROUTE = next(route.path for route in app.routes if getattr(route, "name", "") == "artwork_image")
 
 
 def test_library_cover_upload_rejects_invalid_replacements_and_removes_only_the_cover(tmp_path, monkeypatch):
@@ -21,13 +26,18 @@ def test_library_cover_upload_rejects_invalid_replacements_and_removes_only_the_
         async with user_simulation(lambda: step_sound(editor)) as user:
             await user.open("/")
             await user.should_see("Library cover")
-            background, cover = sorted(user.find(ui.upload).elements, key=lambda field: field.id)
+            images = [u for u in user.find(ui.upload).elements if ".png" in u.props["accept"]]
+            background, cover = sorted(images, key=lambda field: field.id)
 
             for uploader in (background, cover):
                 response = await user.http_client.post(uploader.props["url"], files={"file": ("art.png", png)})
                 assert response.status_code == 200
             await user.should_see("background.png")
             await user.should_see("cover.png")
+            thumbnails = [img.source for img in user.find(ui.image).elements]
+            assert len(thumbnails) == 1
+            assert thumbnails[0].split("?")[0] == ARTWORK_ROUTE.format(slug=inst.meta.slug, attr="cover_art")
+            assert Path(artwork_image(inst.meta.slug, "cover_art").path).read_bytes() == png
             editor.autosave()
             saved = store.load(inst.meta.slug).preset
             cover_path = Path(saved.cover_art)
@@ -42,9 +52,19 @@ def test_library_cover_upload_rejects_invalid_replacements_and_removes_only_the_
 
             user.find("Remove cover").click()
             await user.should_see("No library cover selected.")
+            await user.should_not_see(kind=ui.image)
+            with pytest.raises(HTTPException):
+                artwork_image(inst.meta.slug, "cover_art")
             editor.autosave()
             assert store.load(inst.meta.slug).preset.cover_art == ""
             assert not cover_path.exists()
             assert Path(inst.preset.background).read_bytes() == png
 
     asyncio.run(exercise())
+
+
+def test_artwork_route_answers_404_for_an_unknown_instrument(tmp_path, monkeypatch):
+    monkeypatch.setenv("VINST_HOME", str(tmp_path))
+    with pytest.raises(HTTPException) as err:
+        artwork_image("no-such-instrument", "cover_art")
+    assert err.value.status_code == 404

@@ -26,17 +26,38 @@ if TYPE_CHECKING:
 PREVIEW_MAX_W = 640
 
 
-# slug -> image path as currently typed in an editor; the preview refreshes before autosave
-# has written it to the spec file.
-_backgrounds: dict[str, Path] = {}
+ARTWORK_ATTRS = ("background", "cover_art")
+
+# (slug, preset attribute) -> image path as currently typed in an editor; previews refresh before
+# autosave has written it to the spec file.
+_artwork: dict[tuple[str, str], Path] = {}
 
 
-@app.get("/background/{slug}")
-def background_image(slug: str) -> FileResponse:
-    path = _backgrounds.get(slug) or Path(store.load(slug).preset.background).expanduser()
-    if not path.is_file():
+@app.get("/artwork/{slug}/{attr}")
+def artwork_image(slug: str, attr: str) -> FileResponse:
+    if attr not in ARTWORK_ATTRS:
+        raise HTTPException(404)
+    path = _artwork.get((slug, attr))
+    if path is None:
+        try:
+            value = getattr(store.load(slug).preset, attr)
+        except Exception:  # deleted, renamed or hand-broken instrument: a stale page asks for it
+            raise HTTPException(404) from None
+        path = Path(value).expanduser() if value else None
+    if path is None or not path.is_file():
         raise HTTPException(404)
     return FileResponse(path)
+
+
+def artwork_url(inst: "Instrument", attr: str) -> str | None:
+    """The image's URL for the browser, or None without an image file."""
+    value = getattr(inst.preset, attr)
+    path = Path(value).expanduser() if value else None
+    if path is None or not path.is_file():
+        _artwork.pop((inst.meta.slug, attr), None)
+        return None
+    _artwork[(inst.meta.slug, attr)] = path
+    return f"/artwork/{inst.meta.slug}/{attr}?v={path.stat().st_mtime_ns}"
 
 
 # slug -> (modification time of its hits.json, what it holds), so the preview needn't read it on every change.
@@ -57,11 +78,7 @@ def _sliced(slug: str) -> "review.Manifest | None":
 def preview_html(ed: "Editor") -> str:
     """The instrument as DecentSampler will show it (see preview)."""
     inst, p = ed.inst, ed.inst.preset
-    url = None
-    if p.background and Path(p.background).expanduser().is_file():
-        path = Path(p.background).expanduser()
-        _backgrounds[inst.meta.slug] = path
-        url = f"/background/{inst.meta.slug}?v={path.stat().st_mtime_ns}"
+    url = artwork_url(inst, "background")
     manifest = _sliced(inst.meta.slug)
     try:
         mapping = preset.map_samples(inst, manifest) if manifest else None
@@ -231,7 +248,8 @@ def step_sound(ed: "Editor") -> None:
                   "812 × 375 px. DecentSampler's keyboard covers the lower part.",
                   "The background colour fills the panel when no image is selected.")
     artwork_field(ed, "cover_art", "cover", "Library cover",
-                  "Use a square image for DecentSampler's File Browser.", "No library cover selected.")
+                  "Use a square image for DecentSampler's File Browser.", "No library cover selected.",
+                  thumbnail=True)
     with ui.row().classes("items-start gap-4 w-full"):
         colour_field(ed, "Background colour", "bg_color")
         colour_field(ed, "Text colour", "text_color")
@@ -251,7 +269,8 @@ def step_sound(ed: "Editor") -> None:
     ed.on_change_hooks.append(look_preview.refresh)
 
 
-def artwork_field(ed: "Editor", attr: str, stem: str, label: str, hint: str, empty: str) -> None:
+def artwork_field(ed: "Editor", attr: str, stem: str, label: str, hint: str, empty: str,
+                  thumbnail: bool = False) -> None:
     """Upload artwork into the instrument's folder and edit its preset path."""
     inst, p = ed.inst, ed.inst.preset
     folder = store.instrument_dir(inst.meta.slug)
@@ -269,9 +288,14 @@ def artwork_field(ed: "Editor", attr: str, stem: str, label: str, hint: str, emp
     @ui.refreshable
     def current() -> None:
         path = selected_path()
+        url = artwork_url(inst, attr)  # also forgets a removed image, so the route stops serving it
         if path is None:
             ui.label(empty).classes("text-sm opacity-70")
             return
+        if thumbnail and url:
+            # As uploaded, not cropped: a cover that isn't square shows as such.
+            ui.image(url).props("fit=contain").classes("w-32 h-32 rounded") \
+                .style("border: 1px solid rgba(127,127,127,.35)")
         with ui.row().classes("items-center gap-3"):
             if path.is_file():
                 ui.label(path.name).classes("text-sm")
