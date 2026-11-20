@@ -448,7 +448,8 @@ def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
                     ui.label("The dry sound stays as it is; the reverb gets less of each note's partials from about "
                              "three times its pitch up, and none of the click's highs, which otherwise ring on as a "
                              "hiss. The same room and damping, played as convolution reverbs on buses, one per few "
-                             "semitones; the knob works as before.").classes("text-xs opacity-70 max-w-3xl")
+                             "semitones. The knob still sets how much, though at the same setting the reverb is a "
+                             "little quieter, its highs gone.").classes("text-xs opacity-70 max-w-3xl")
                 if key == "lowcut":
                     ui.label("E.g. the low resonance of a ukulele's body that rings on after the pluck; the note itself, from its pitch up, "
                              "stays as it is. A curve, not a step, as drawn: the full amount well below the share "

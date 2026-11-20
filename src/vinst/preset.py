@@ -455,7 +455,7 @@ def reverb_bands(inst: Instrument, mapping: Mapping, controls: list[str]) -> lis
     """The pitch bands of the reverb's send buses; empty when DecentSampler's own reverb plays it."""
     if not (inst.preset.reverb_send and "reverb" in controls):
         return []
-    return reverb_send.bands([e.root for e in mapping.notes])
+    return reverb_send.bands([reverb_send.sample_pitch(e.lo, e.hi) for e in mapping.notes])
 
 
 def effects_for(inst: Instrument, controls: list[str], on_buses: bool = False) -> list[str]:
@@ -614,8 +614,9 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
         for e in entries:
             loop = dict(loopEnabled="true", loopStart=e.loop[0], loopEnd=e.loop[1], loopCrossfade=e.loop[2],
                         loopCrossfadeMode="equal_power") if e.loop else {}
-            # Besides the main output, the reverb's bus for the sample's pitch.
-            send = dict(output2Target=f"BUS_{reverb_send.band_of(e.root, bands) + 1}", output2Volume=1.0) if bands else {}
+            # Output 2 feeds only the reverb, so its band's filtering never touches the dry sound.
+            band = reverb_send.band_of(reverb_send.sample_pitch(e.lo, e.hi), bands) if bands else None
+            send = dict(output2Target=f"BUS_{band + 1}", output2Volume=1.0) if band is not None else {}
             _el(g, "sample", path=f"{SAMPLES_DIR}/{e.file}", rootNote=e.root, loNote=e.lo, hiNote=e.hi,
                 loVel=e.lo_vel, hiVel=e.hi_vel, tuning=float(e.tuning) if e.tuning else None,
                 volume=f"{e.volume_db:.2f}dB" if e.volume_db else None,

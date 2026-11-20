@@ -74,7 +74,7 @@ def builtin_reverb_ir(room: float, damping: float, seconds: float, rate: int = I
 
 @dataclass(frozen=True)
 class Band:
-    """Root notes sharing a bus; their reverb's shelf sits above the middle one's pitch."""
+    """Pitches (MIDI notes) sharing a bus; their reverb's shelf sits above the middle one."""
 
     lo: int
     hi: int
@@ -84,24 +84,30 @@ class Band:
         return SHELF_ABOVE * 440.0 * 2 ** (((self.lo + self.hi) / 2 - 69) / 12)
 
 
-def bands(roots: list[int]) -> list[Band]:
-    """Bands of a few semitones over the sampled roots, wider if more than DecentSampler's buses."""
-    roots = sorted(set(roots))
-    if not roots:
+def sample_pitch(lo: int, hi: int) -> int:
+    """The pitch a sample's reverb is filtered for: the middle of the keys it plays, not its root,
+    as a sample may play well above or below it."""
+    return (lo + hi) // 2
+
+
+def bands(pitches: list[int]) -> list[Band]:
+    """Bands of a few semitones over the samples' pitches, wider if more than DecentSampler's buses."""
+    pitches = sorted(set(pitches))
+    if not pitches:
         return []
-    width = max(BAND_SEMITONES, math.ceil((roots[-1] - roots[0] + 1) / MAX_BUSES))
+    width = max(BAND_SEMITONES, math.ceil((pitches[-1] - pitches[0] + 1) / MAX_BUSES))
     out = []
-    for start in range(roots[0], roots[-1] + 1, width):
-        inside = [r for r in roots if start <= r < start + width]
+    for start in range(pitches[0], pitches[-1] + 1, width):
+        inside = [r for r in pitches if start <= r < start + width]
         if inside:
             out.append(Band(inside[0], inside[-1]))
     return out
 
 
-def band_of(root: int, bands: list[Band]) -> int:
+def band_of(pitch: int, bands: list[Band]) -> int:
     """The band a sample's reverb goes through: its own, else the nearest (extras, release noises)."""
-    return min(range(len(bands)), key=lambda i: 0 if bands[i].lo <= root <= bands[i].hi
-               else min(abs(root - bands[i].lo), abs(root - bands[i].hi)))
+    return min(range(len(bands)), key=lambda i: 0 if bands[i].lo <= pitch <= bands[i].hi
+               else min(abs(pitch - bands[i].lo), abs(pitch - bands[i].hi)))
 
 
 def ir_path(index: int) -> str:
@@ -133,7 +139,7 @@ def write_irs(bundle: Path, bands: list[Band], room: float, damping: float) -> l
     base = builtin_reverb_ir(room, damping, IR_MAX_S)
     paths = [ir_path(i) for i in range(len(bands))]
     for path, band in zip(paths, bands):
-        sf.write(bundle / path, band_ir(base, band), IR_RATE, subtype="FLOAT")
+        sf.write(bundle / path, band_ir(base, band), IR_RATE, subtype="PCM_24")
     for old in folder.glob("reverb-*.wav"):
         if f"{IR_DIR}/{old.name}" not in paths:
             old.unlink()
