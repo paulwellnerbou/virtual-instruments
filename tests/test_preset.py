@@ -116,6 +116,30 @@ def test_a_chuck_stops_ringing_notes_and_plays_its_hits_in_turn(built):
     assert all(g.get("silencedByTags") is None for g in doc.iter("group"))
 
 
+def test_chucks_down_and_up_on_keys_of_their_own(built):
+    inst, manifest = built
+    chuck = next(x for x in inst.extras if x.id == "chuck")
+    chuck.stroke_keys = True
+    take = next(t for t in manifest.takes if t.base == "x_chuck")
+    take.hits[2].rejected = True  # a down stroke: the ones after it stay where they are
+    review.save(manifest, store.manifest_path(inst.meta.slug))
+    store.save(inst)
+    result = bundle.build(inst)
+    assert result.report.ok, result.report.errors
+    files = {h.files["piezo"]: h.index for h in take.hits}
+    down, up, both = (samples(result, f"Piezo Chuck / muted strum{s}") for s in (" down", " up", ""))
+    assert [files[s["path"].split("/")[-1]] for s in down] == [0, 4, 6, 8]
+    assert [files[s["path"].split("/")[-1]] for s in up] == [1, 3, 5, 7, 9]
+    assert {s["rootNote"] for s in down} == {"49"} and {s["rootNote"] for s in up} == {"51"}
+    assert [s["seqPosition"] for s in down] == ["1", "2", "3", "4"] and {s["seqLength"] for s in down} == {"4"}
+    assert len(both) == 9 and {s["rootNote"] for s in both} == {"48"}  # its own key keeps them all
+    doc = etree.parse(str(result.preset_file))
+    groups = {g.get("name"): g for g in doc.iter("group")}
+    assert preset.MUTE_TAG in groups["Piezo Chuck / muted strum up"].get("tags").split(",")
+    tinted = {c.get("loNote") for c in doc.iter("color")}
+    assert {"48", "49", "51"} <= tinted
+
+
 def test_older_instruments_get_a_muting_chuck():
     from vinst.spec import Extra
 

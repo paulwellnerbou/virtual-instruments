@@ -49,6 +49,7 @@ class Entry:
     sample_rate: int | None = None
     extra: str = ""  # an extra on its own key: its id, for a group of its own
     mutes: bool = False  # that extra stops the notes still ringing
+    stroke: str = ""  # "down" or "up": its strokes alone, on a key of their own
     removed: str = ""  # the file with what the low cut took out of this one, for the Low cut knob
 
 
@@ -232,12 +233,19 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
             if extra.use == "release":
                 m.release += [Entry(sig, h.files[sig], 60, 0, 0) for h in hits for sig in signals]
             else:
-                if extra.key not in m.fx_keys:
-                    m.fx_keys.append(extra.key)
-                for pos, h in enumerate(hits, 1):
-                    for sig in signals:
-                        m.keys.append(Entry(sig, h.files[sig], extra.key, extra.key, extra.key,
-                                            seq_pos=pos, seq_len=len(hits), extra=extra.id, mutes=extra.mutes))
+                # By its place in the recording, so a rejected hit doesn't swap down and up after it.
+                strokes = [("", extra.key, hits)]
+                if extra.stroke_keys:
+                    strokes += [("down", extra.down_key, [h for h in hits if h.index % 2 == 0]),
+                                ("up", extra.up_key, [h for h in hits if h.index % 2 == 1])]
+                for stroke, key, stroke_hits in strokes:
+                    if stroke_hits and key not in m.fx_keys:
+                        m.fx_keys.append(key)
+                    for pos, h in enumerate(stroke_hits, 1):
+                        for sig in signals:
+                            m.keys.append(Entry(sig, h.files[sig], key, key, key, seq_pos=pos,
+                                                seq_len=len(stroke_hits), extra=extra.id, mutes=extra.mutes,
+                                                stroke=stroke))
     # A recording with every hit rejected is fine while its velocity keeps others.
     for (pass_id, midi, lane), name in played.items():
         kept = notes.get(pass_id, {}).get(midi, {})
@@ -627,10 +635,11 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
     # and up), and a group's rotation would mix the extras' hits.
     names = {x.id: x.name for x in inst.extras}
     for sig in inst.signals:
-        for extra_id in dict.fromkeys(e.extra for e in mapping.keys):
-            entries = [e for e in mapping.keys if e.signal == sig.id and e.extra == extra_id]
+        for extra_id, stroke in dict.fromkeys((e.extra, e.stroke) for e in mapping.keys):
+            entries = [e for e in mapping.keys if e.signal == sig.id and e.extra == extra_id and e.stroke == stroke]
             more = [MUTE_TAG] if entries and entries[0].mutes else []
-            add_group(f"{sig.name} {names.get(extra_id, 'effects')}", tags(sig, FX_TAG, *more), entries,
+            name = " ".join(filter(None, [sig.name, names.get(extra_id, "effects"), stroke]))
+            add_group(name, tags(sig, FX_TAG, *more), entries,
                       enabled=enabled(sig), seqMode="round_robin", pitchKeyTrack=0.0)
 
     fx = _el(root, "effects")

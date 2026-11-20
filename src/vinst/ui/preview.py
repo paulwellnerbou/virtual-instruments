@@ -155,7 +155,8 @@ def render(inst: Instrument, cutting: bool, background_url: str | None = None, m
     else:
         wanted = inst.range.span()
         span = (max(0, wanted[0] - p.extend_below), min(127, wanted[1] + p.extend_above)) if wanted else None
-        extra_keys = [x.key for x in inst.extras if x.use == "key" and x.key is not None]
+        extra_keys = [k for x in inst.extras if x.use == "key"
+                      for k in ([x.key, x.down_key, x.up_key] if x.stroke_keys else [x.key])]
     tints: dict[int, str] = {}
     center = 60
     if span:

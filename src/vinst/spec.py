@@ -138,6 +138,10 @@ class Extra(BaseModel):
     key: int = Field(default=48, ge=0, le=127)
     # On its own key: whether playing it stops the notes still ringing, as a chuck mutes the strings.
     mutes: bool = False
+    # On its own key: hits recorded alternating down and up (1st, 3rd, … down) also each on a key of their own.
+    stroke_keys: bool = False
+    down_key: int = Field(default=49, ge=0, le=127)
+    up_key: int = Field(default=51, ge=0, le=127)
 
     @model_validator(mode="before")
     @classmethod

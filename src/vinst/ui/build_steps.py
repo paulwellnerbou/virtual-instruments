@@ -460,10 +460,22 @@ def extra_row(ed: "Editor", x: Extra) -> None:
             ui.select({"release": "Play on key release", "key": "Own key", "off": "Don't use"}, value=x.use,
                       label="Use", on_change=use_changed).classes("w-52")
         # Below the row, not beside it: closed, it takes no room even where the row would wrap.
-        with Collapse(x.use == "key", inner_classes="flex items-start gap-4 pl-52 pt-2") as key:
-            ed.note("Key", x, "key").classes("w-28")
-            ui.switch("Stops ringing notes", value=x.mutes, on_change=lambda e: ed.set(x, "mutes", e.value)) \
-                .classes("mt-2").tooltip("As a chuck mutes the strings: playing it fades out the notes still ringing")
+        with Collapse(x.use == "key", inner_classes="flex flex-col gap-2 pl-52 pt-2") as key:
+            with ui.row().classes("items-start gap-4"):
+                ed.note("Key", x, "key").classes("w-28")
+                ui.switch("Stops ringing notes", value=x.mutes, on_change=lambda e: ed.set(x, "mutes", e.value)) \
+                    .classes("mt-2").tooltip("As a chuck mutes the strings: playing it fades out the notes still ringing")
+
+            def strokes_changed(e: Any) -> None:
+                ed.set(x, "stroke_keys", e.value)
+                strokes.set_open(e.value)
+
+            ui.switch("Down and up on keys of their own", value=x.stroke_keys, on_change=strokes_changed) \
+                .tooltip("For hits recorded alternating down and up: the 1st, 3rd, … hit on the down key, "
+                         "the 2nd, 4th, … on the up key. The key above keeps playing them all in turn.")
+            with Collapse(x.stroke_keys, inner_classes="flex items-start gap-4") as strokes:
+                ed.note("Down key", x, "down_key").classes("w-28")
+                ed.note("Up key", x, "up_key").classes("w-28")
 
 
 def step_build(ed: "Editor") -> None:
