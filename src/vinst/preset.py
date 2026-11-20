@@ -146,10 +146,11 @@ BALANCE_MAX_DB = 18.0
 def keyboard_line(points: dict[int, float]) -> tuple[float, float]:
     """(dB per semitone, dB at key 0) of a straight line through `points` (key -> dB): the median of
     the slopes between every two of them and the median offset (Theil–Sen), so notes standing out, or
-    a string quieter than the others, don't tilt or shift it."""
+    a string quieter than the others, don't tilt or shift it. Flat below three notes: two can't tell a
+    trend from a mis-hit."""
     keys = sorted(points)
     slopes = [(points[b] - points[a]) / (b - a) for i, a in enumerate(keys) for b in keys[i + 1:]]
-    slope = float(np.median(slopes)) if slopes else 0.0
+    slope = float(np.median(slopes)) if len(keys) >= 3 else 0.0
     return slope, float(np.median([points[k] - slope * k for k in keys]))
 
 

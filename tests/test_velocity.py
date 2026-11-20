@@ -83,7 +83,8 @@ def test_an_older_off_aim_message_is_replaced():
                       message="p is 6 dB louder than its aim of -36 dB next to f, so it sounds like a different "
                               "dynamic than on the other notes")
     check_lanes([take], ["p", "f"], {"p": -36.0, "f": -23.0}, "f", evened_out=True)
-    assert take.message.startswith("p was played harder than on the other notes") and "different dynamic" not in take.message
+    assert take.message.startswith("p was played harder than on the other notes")
+    assert "different dynamic" not in take.message
 
 
 def test_velocities_meet_where_one_hands_over_to_the_next():

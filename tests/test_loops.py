@@ -183,3 +183,10 @@ def test_shortened_crossfades_are_reported(sustained):
     sustained.processing.loop_crossfade_ms = 500  # longer than the loops' start positions allow
     result = bundle.build(sustained)
     assert any("shorter one" in w for w in result.warnings)
+
+
+def test_two_notes_are_evened_out_towards_each_other():
+    # Two can't tell a trend from a mis-hit: a line through both would leave the mis-hit as it is.
+    notes = {60: {"mf": [_hit(-20.0, "h60")]}, 62: {"mf": [_hit(-30.0, "h62")]}}
+    corr = balance_corrections(notes, ["mf"], tolerance_db=1.5)
+    assert corr["h60"] == pytest.approx(-3.5) and corr["h62"] == pytest.approx(3.5)

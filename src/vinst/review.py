@@ -19,8 +19,8 @@ FLAGS: dict[str, tuple[str, str]] = {
     "layer_mismatch": ("warning", "loudness fits a different velocity of this note better"),
     "off_aim": ("warning", "played harder or softer than this velocity on the other notes, next to this note's "
                            "loudest velocity (see the row's aim), so it may sound brighter or duller. With "
-                           "loudness following velocity its loudness is evened out in the instrument, its "
-                           "sound stays"),
+                           "loudness following velocity its loudness is evened out in the instrument, but "
+                           "not its sound"),
     "uneven": ("info", "more than 3 dB louder or softer than this velocity's other hits on the note; even out "
                        "loudness brings it closer"),
     "cut_off": ("warning", "still ringing when the next hit (or the file) started"),
@@ -188,7 +188,8 @@ def off_aim_message(lane: str, reference: str | None, level: float, aim: float, 
             f"({abs(level - aim):.0f} dB {'over' if harder else 'under'} its aim of {aim:.0f} dB), so it may "
             f"sound {'brighter' if harder else 'duller'}. ")
     if evened_out:
-        return text + "Its loudness is evened out in the instrument, so record it again only if it sounds out of place"
+        return text + ("Its loudness is evened out in the instrument, so record it again only if it sounds out "
+                       "of place")
     closer = harder == (aim < reference_level)
     return text + f"The step to {reference} is also {'smaller' if closer else 'larger'} {ON_OTHER_NOTES}"
 
