@@ -47,8 +47,13 @@ ATTACK_S = 0.15
 # A sample starts where its signal first comes this close to the attack's peak: the pluck, not the
 # touch before it. Played from a key, any silence before the attack is latency.
 MAIN_RISE_DB = 20.0
-# ... and is this much louder than just before, so a ringing tail under a soft hit isn't its attack.
+# A bowed or blown note's slow rise is its sound: only the silence before it is left out.
+SUSTAINED_RISE_DB = 40.0
+# ... and is this much louder than the loudest of BEFORE_S before it, so a ringing tail under a soft
+# hit isn't its attack. BEFORE_S holds a full period of a low note.
 ATTACK_ABOVE_BEFORE_DB = 6.0
+BEFORE_S = 0.02
+MIN_CUT_S = 0.05  # shorter cuts set by hand are refused, and a snap never makes one
 SAME_CUT_S = 0.05  # a hit cut this close to where it was is the same hit
 LOUDNESS_WINDOW_S = 0.3
 ENVELOPE_POINTS = 400
@@ -87,7 +92,8 @@ def detect_onsets(ref: np.ndarray, sr: int, noise_rel_db: float) -> list[int]:
     return [attack for attack, _ in detect_sounds(ref, sr, noise_rel_db)]
 
 
-def detect_sounds(ref: np.ndarray, sr: int, noise_rel_db: float) -> list[tuple[int, int]]:
+def detect_sounds(ref: np.ndarray, sr: int, noise_rel_db: float,
+                  rise_db: float = MAIN_RISE_DB) -> list[tuple[int, int]]:
     """Per hit: where its attack begins, and where its sound begins, which can be earlier (a touch of
     the string, the hand moving in). The sample starts at the attack; the hit before it ends before
     the sound."""
@@ -105,44 +111,61 @@ def detect_sounds(ref: np.ndarray, sr: int, noise_rel_db: float) -> list[tuple[i
             continue
         rise = after.max() - (before.min() if before.size else -120)
         if rise >= MIN_RISE_DB and after.max() >= ref_noise + MIN_ABOVE_NOISE_DB:
-            sample = attack_start(ref, sr, begins)
+            sample = attack_start(ref, sr, begins, rise_db)
             if not out or sample - out[-1][0] >= MIN_GAP_S * sr:
                 out.append((sample, min(begins, sample)))
     return out
 
 
-def attack_start(ref: np.ndarray, sr: int, begins: int) -> int:
+def rise_db(inst: Instrument) -> float:
+    return SUSTAINED_RISE_DB if inst.meta.type in SUSTAINED_TYPES else MAIN_RISE_DB
+
+
+def attack_start(ref: np.ndarray, sr: int, begins: int, rise: float = MAIN_RISE_DB) -> int:
     """The sample where the attack of an onset found at `begins` starts. Frames are too coarse for it:
     a frame early is 5 ms of silence before the pluck."""
     a = max(0, begins - HOP)  # RMS frames are centred: the rise can begin half a frame before
-    found = attack_in(ref, a, begins + int(ATTACK_S * sr))
+    b = begins + int(ATTACK_S * sr)
+    # A soft hit over a louder tail only rises above it.
+    found = attack_in(ref, sr, a, b, rise)
+    found = attack_in(ref, sr, a, b, rise, above_before_db=0.0) if found is None else found
     return begins if found is None else found
 
 
-def attack_in(ref: np.ndarray, a: int, b: int) -> int | None:
-    """The first sample in [a, b) within MAIN_RISE_DB of the peak there and ATTACK_ABOVE_BEFORE_DB
-    above what came just before; None in a sound that doesn't rise."""
+def attack_in(ref: np.ndarray, sr: int, a: int, b: int, rise: float = MAIN_RISE_DB,
+              above_before_db: float = ATTACK_ABOVE_BEFORE_DB) -> int | None:
+    """The first sample in [a, b) within `rise` dB of the peak there and `above_before_db` above what
+    came just before; None in a sound that doesn't rise."""
     window = np.abs(ref[a:b])
     if window.size == 0:
         return None
-    before = np.abs(ref[max(0, a - HOP): a])
-    threshold = max(window.max() * 10 ** (-MAIN_RISE_DB / 20),
-                    (before.max() if before.size else 0) * 10 ** (ATTACK_ABOVE_BEFORE_DB / 20))
+    before = np.abs(ref[max(0, a - int(BEFORE_S * sr)): a])
+    threshold = max(window.max() * 10 ** (-rise / 20),
+                    (before.max() if before.size else 0) * 10 ** (above_before_db / 20))
     above = np.nonzero(window >= threshold)[0]
     return a + int(above[0]) if above.size else None
 
 
-def snap_to_attack(ref: np.ndarray, sr: int, start: int, end: int) -> int:
+def snap_to_attack(ref: np.ndarray, sr: int, start: int, end: int, rise: float = MAIN_RISE_DB) -> int:
     """A start set by hand, moved forward to PREROLL_S before the attack that follows it: dragged on a
-    whole recording's waveform, it lands milliseconds early. Never earlier than it was set."""
-    found = attack_in(ref, start, min(end, start + int(ATTACK_S * sr)))
-    return start if found is None else max(start, found - int(PREROLL_S * sr))
+    whole recording's waveform, it lands milliseconds early. Never earlier than it was set, and never
+    so late that the cut gets shorter than MIN_CUT_S."""
+    found = attack_in(ref, sr, start, min(end, start + int(ATTACK_S * sr)), rise)
+    if found is None:
+        return start
+    snapped = max(start, found - int(PREROLL_S * sr))
+    return snapped if end - snapped >= MIN_CUT_S * sr else start
 
 
-def snap_cut(paths: list[Path], start: int, end: int) -> int:
-    """snap_to_attack for a cut set by hand in the recording `paths` (one file per signal)."""
-    signals, sr = load_signals(paths)
-    return snap_to_attack(mix(signals), sr, start, end)
+def hand_start(inst: Instrument, take: TakeResult, start: int, end: int) -> int:
+    """Where a start dragged in the cut editor is kept: snapped as slicing snaps it, so the cut kept is
+    the one shown. As dragged if the recording can't be read; slicing then reports why."""
+    paths = [Path(inst.recording.takes_dir).expanduser() / f for f in take.files]
+    try:
+        signals, sr = load_signals(paths)
+    except (OSError, RuntimeError, ValueError):
+        return start
+    return snap_to_attack(mix(signals), sr, start, end, rise_db(inst))
 
 
 def cut_points(ref: np.ndarray, sr: int, onsets: list[int], noise_rel_db: float,
@@ -323,8 +346,8 @@ def find_cuts(inst: Instrument, path: Path, ref: np.ndarray, sr: int, rel_floor:
     by_hand = takes_meta.cuts(inst.meta.slug, path)
     if by_hand is not None:
         kept = [(max(0, a), min(len(ref), b)) for a, b in by_hand if min(len(ref), b) > max(0, a)]
-        return [(snap_to_attack(ref, sr, a, b), b, False) for a, b in kept]
-    sounds = detect_sounds(ref, sr, rel_floor)
+        return [(snap_to_attack(ref, sr, a, b, rise_db(inst)), b, False) for a, b in kept]
+    sounds = detect_sounds(ref, sr, rel_floor, rise_db(inst))
     onsets, begins = [a for a, _ in sounds], dict(sounds)
     grid = takes_meta.hits_at(inst.meta.slug, path)
     if grid is None:
@@ -550,9 +573,12 @@ def carry_over(inst: Instrument, result: TakeResult, earlier: TakeResult | None,
     `same_cuts`: cut where it was after an edit, so its hits are the same ones."""
     if earlier and (same_cuts or earlier.source == result.source):
         old = {h.id: h for h in earlier.hits}
+        sr = result.sample_rate or 48000
+        # A start set by hand may have snapped forward to its attack since (see snap_to_attack).
+        snapped = ATTACK_S if result.cut_by_hand and earlier.cut_by_hand else 0
         for h in result.hits:
             was = old.get(h.id)
-            if was and abs(was.start - h.start) <= SAME_CUT_S * (result.sample_rate or 48000):
+            if was and -SAME_CUT_S * sr <= h.start - was.start <= (SAME_CUT_S + snapped) * sr:
                 h.rejected, h.loop_off, h.layer_set = was.rejected, was.loop_off, was.layer_set
     settle(result, note_lanes(inst, result.note))
 

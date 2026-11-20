@@ -408,21 +408,83 @@ def test_a_hit_starts_at_its_attack_not_at_the_touch_before_it(uke, touch_s):
     assert pluck_at - 0.003 * SR <= hit.start <= pluck_at  # the sample starts with the pluck
 
 
-def test_a_start_set_by_hand_moves_forward_to_the_pluck(uke):
-    take = lane(uke, "p")
-    rng = np.random.default_rng(7)
+def touched_pluck(take, pluck_at, rng):
+    """A pluck at `pluck_at` with a quiet touch of the string 12 ms before it."""
     audio = rng.normal(0, 10 ** (-75 / 20), int(7.5 * SR))
-    pluck_at = int(1.56 * SR) + 37
     audio[pluck_at - int(0.012 * SR):pluck_at] += rng.normal(0, 10 ** (-58 / 20), int(0.012 * SR))
     tone = pluck(440 * 2 ** ((take.note.midi - 69) / 12), 0.3, 2.0, SR, rng)
     audio[pluck_at: pluck_at + len(tone)] += tone
-    path = write(uke, take.files[0], audio, grid=[0.5])
+    return audio
+
+
+def test_a_start_set_by_hand_moves_forward_to_the_pluck(uke):
+    take = lane(uke, "p")
+    pluck_at = int(1.56 * SR) + 37
+    path = write(uke, take.files[0], touched_pluck(take, pluck_at, np.random.default_rng(7)), grid=[0.5])
     early, late = pluck_at - int(0.03 * SR), pluck_at + int(0.5 * SR)  # dragged 30 ms early; inside the note
     takes_meta.save_cuts(uke.meta.slug, path, [(early, pluck_at + int(0.4 * SR)), (late, late + SR)])
-    first, second = result(process(uke), take.key).hits
+    found = result(process(uke), take.key)
+    first, second = found.hits
     assert pluck_at - 0.003 * SR <= first.start <= pluck_at and first.end == pluck_at + int(0.4 * SR)
     assert second.start == late  # no attack after it: left where it was set
-    assert slicing.snap_cut([path], early, pluck_at + int(0.4 * SR)) == first.start  # as the cut editor saves it
+    # The cut editor keeps a dragged start where slicing puts it, or as dragged if it can't read the take.
+    assert slicing.hand_start(uke, found, early, pluck_at + int(0.4 * SR)) == first.start
+    path.unlink()
+    assert slicing.hand_start(uke, found, early, pluck_at + int(0.4 * SR)) == early
+
+
+def test_a_snap_never_makes_a_cut_too_short():
+    rng = np.random.default_rng(3)
+    ref = rng.normal(0, 1e-4, SR)
+    at = int(0.5 * SR)
+    ref[at: at + SR // 4] += pluck(440, 0.5, 0.25, SR, rng)
+    start = at - int(0.1 * SR)
+    assert slicing.snap_to_attack(ref, SR, start, at + int(0.2 * SR)) > start
+    assert slicing.snap_to_attack(ref, SR, start, at + int(0.03 * SR)) == start  # would be 32 ms long
+
+
+def test_a_slow_attack_keeps_its_rise_on_a_sustained_instrument():
+    """A bowed note rising over 80 ms: only the silence before it is left out."""
+    rng = np.random.default_rng(5)
+    ref = rng.normal(0, 10 ** (-80 / 20), SR)
+    at, rise = int(0.5 * SR), int(0.08 * SR)
+    t = np.arange(SR - at) / SR
+    ref[at:] += 0.5 * np.sin(2 * np.pi * 220 * t) * np.minimum(1, (np.arange(SR - at) / rise) ** 2)
+    early = at - int(0.05 * SR)
+    plucked = slicing.snap_to_attack(ref, SR, early, SR)
+    sustained = slicing.snap_to_attack(ref, SR, early, SR, slicing.SUSTAINED_RISE_DB)
+    assert plucked > at + 0.02 * SR  # a pluck's rule cuts 20 ms into the bow's rise
+    assert at - 0.003 * SR <= sustained <= at + 0.01 * SR
+    assert slicing.rise_db(uke_type(InstrumentType.SUSTAINED)) == slicing.SUSTAINED_RISE_DB
+    assert slicing.rise_db(uke_type(InstrumentType.PLUCKED)) == slicing.MAIN_RISE_DB
+
+
+def uke_type(kind):
+    return defaults.new_instrument("Uke", kind)
+
+
+def test_a_soft_hit_over_a_louder_tail_starts_at_its_rise():
+    rng = np.random.default_rng(9)
+    n = 2 * SR
+    t = np.arange(n) / SR
+    ref = 3.0 * np.exp(-3 * t) * np.sin(2 * np.pi * 196 * t)  # 0.15 when the hit comes
+    at = SR
+    ref[at:] += pluck(330, 0.12, 1.0, SR, rng)  # less than 6 dB above the tail
+    begins = at - 3 * slicing.HOP  # the onset found frames early
+    assert at - 0.003 * SR <= slicing.attack_start(ref, SR, begins) <= at + 0.003 * SR
+
+
+def test_a_hit_cut_by_hand_keeps_its_decisions_when_its_start_snaps_far(uke):
+    take = lane(uke, "p")
+    pluck_at = int(1.56 * SR) + 37
+    path = write(uke, take.files[0], touched_pluck(take, pluck_at, np.random.default_rng(7)), grid=[0.5])
+    early = pluck_at - int(0.1 * SR)  # set before starts snapped: 100 ms early
+    takes_meta.save_cuts(uke.meta.slug, path, [(early, pluck_at + SR)])
+    m = process(uke)
+    (hit,) = result(m, take.key).hits
+    assert hit.start > early + slicing.SAME_CUT_S * SR
+    hit.start, hit.rejected = early, True  # as sliced before starts set by hand snapped
+    assert result(process(uke, m), take.key).hits[0].rejected
 
 
 def test_a_rejected_recording_only_warns_when_its_velocity_keeps_nothing(uke):

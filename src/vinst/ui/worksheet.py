@@ -1058,9 +1058,12 @@ def step_worksheet(ed: "Editor") -> None:
         reopen(take.key, hit.start)
 
     def reopen(key: str, start: int) -> None:
-        """After slicing a recording from its dialog: the dialog again, on the hit that starts at `start`."""
+        """After slicing a recording from its dialog: the dialog again, on the hit that starts at `start`
+        (or close to it: slicing may snap a start set by hand once more)."""
         found = next((t for t in state["manifest"].takes if t.key == key), None) if state["manifest"] else None
-        again = next((h for h in found.hits if h.start == start), None) if found else None
+        near = slicing.SAME_CUT_S * ((found.sample_rate or 48000) if found else 0)
+        again = min((h for h in found.hits if abs(h.start - start) <= near), default=None,
+                    key=lambda h: abs(h.start - start)) if found else None
         if found and again:
             open_hit(found, again)
         elif found:
@@ -1132,10 +1135,10 @@ def step_worksheet(ed: "Editor") -> None:
             a, b = (int(round(float(detail[k]) * (take.length or 0))) for k in ("start", "end"))
         except (KeyError, TypeError, ValueError):
             return
-        if b - a < int(0.05 * (take.sample_rate or 48000)):
+        if b - a < int(slicing.MIN_CUT_S * (take.sample_rate or 48000)):
             return
         # Snapped here as slicing would, so the cut kept is the one shown and the hit keeps its decisions.
-        a = await run.io_bound(slicing.snap_cut, [Path(rec.takes_dir).expanduser() / f for f in take.files], a, b)
+        a = await run.io_bound(slicing.hand_start, inst, take, a, b)
         cuts = [(h.start, h.end) for h in take.hits if hit is None or h.id != hit.id] + [(a, b)]
         takes_meta.save_cuts(slug, first_file(take), cuts)
         if hit is not None:
