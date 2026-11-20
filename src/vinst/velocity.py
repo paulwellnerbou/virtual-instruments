@@ -1,20 +1,23 @@
-"""Loudness by velocity: a straight line in dB from velocity 1 to 127, the same for every note and
-velocity, so moving from one recorded velocity to the next changes the sound, not the loudness.
+"""Loudness by velocity: one curve for every note and velocity, so moving from one recorded velocity
+to the next changes the sound, not the loudness.
 
-DecentSampler's velocity tracking (ampVelTrack) scales the amplitude linearly with velocity, which
-falls far short of a line in dB at high velocities (at most 8.7 / velocity dB per step). So each
-velocity range is played in slices, each with its own volume and tracking, near enough to the line
-that no step between two velocities is heard.
+The volume follows a power of the velocity: steep at the soft end, so pianissimo stays, and flatter
+at the top, so the usual playing range (about 60 to 100) stays even. At NATIVE_RANGE_DB it is
+DecentSampler's own velocity tracking at full strength (ampVelTrack 1: volume in proportion to
+velocity), and each velocity range plays in one piece. Other ranges fall more or less steeply than
+that tracking can (at most 8.7 / velocity dB per velocity step), so each velocity range is played in
+slices, each with its own volume and tracking, near enough to the curve that no step is heard.
 """
 
 import math
 
-MAX_DEVIATION_DB = 0.25  # from the line, anywhere in a slice: steps between velocities stay under about 0.5 dB
+MAX_DEVIATION_DB = 0.25  # from the curve, anywhere in a slice
+NATIVE_RANGE_DB = 20 * math.log10(127)  # 42.1: volume in proportion to velocity
 
 
 def curve_db(velocity: float, range_db: float) -> float:
     """The loudness at `velocity`, relative to velocity 127: 0 there, -range_db at velocity 1."""
-    return -range_db * (127 - velocity) / 126
+    return range_db * math.log10(velocity / 127) / math.log10(127)
 
 
 def tracking_db(velocity: float, track: float) -> float:
@@ -39,7 +42,7 @@ def _fit(lo: int, hi: int, range_db: float) -> tuple[float, float]:
 
 def slices(lo: int, hi: int, range_db: float) -> list[tuple[int, int, float, float]]:
     """(lowest, highest velocity, dB relative to `hi`'s level, ampVelTrack) per slice of lo..hi, from
-    the top down. The dB is the slice's volume: with its tracking, it plays the line's level at its
+    the top down. The dB is the slice's volume: with its tracking, it plays the curve's level at its
     highest velocity, and near it below."""
     out = []
     top = hi

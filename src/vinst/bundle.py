@@ -24,8 +24,8 @@ from vinst.validate import Report, validate_bundle
 # Also shown in the worksheet, next to its slice button: so no pointer to a step here.
 FINDER_MESSAGE = ("Hits are now found more precisely than when these takes were sliced. Slicing again keeps "
                   "your decisions and your cuts set by hand.")
-CLEANUP_MESSAGE = ("The clean-up of the sliced samples (low cut, denoise) changed since they were sliced. "
-                   "Slicing again applies it to all of them; your decisions are kept.")
+CLEANUP_MESSAGE = ("The clean-up of the sliced samples (pitch-relative low cut, denoise) changed since they were "
+                   "sliced. Slicing again applies it to all of them; your decisions are kept.")
 STALE_MESSAGE = ("Signals, recording passes or the loop setting changed since the takes were sliced; "
                  "slicing again keeps your decisions.")
 def _names(titles: list[str]) -> str:
@@ -266,8 +266,9 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
         raise ValueError("No usable hits: record and slice some notes first.")
     mapping.info[:0] = recut_info
     if cut_in_samples(manifest):
-        mapping.warnings.append("The sliced samples still have the low cut they were sliced with, so changes to it "
-                                "don't apply; slice them again (step 5) once and it's applied when building.")
+        mapping.warnings.append("The sliced samples still have the pitch-relative low cut they were sliced with, so "
+                                "changes to it don't apply; slice them again (step 5) once and it's applied when "
+                                "building.")
 
     name = bundle_name(inst)
     bundle = build_root() / inst.meta.slug / f"{name}.dsbundle"

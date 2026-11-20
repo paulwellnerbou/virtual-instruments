@@ -18,8 +18,9 @@ FLAGS: dict[str, tuple[str, str]] = {
     "no_pitch": ("warning", "no stable pitch found"),
     "layer_mismatch": ("warning", "loudness fits a different velocity of this note better"),
     "off_aim": ("warning", "played harder or softer than this velocity on the other notes, next to this note's "
-                           "loudest velocity (see the row's aim); with loudness following velocity the "
-                           "instrument evens out the loudness, but not the sound"),
+                           "loudest velocity (see the row's aim), so it may sound brighter or duller. With "
+                           "loudness following velocity its loudness is evened out in the instrument, but "
+                           "not its sound"),
     "uneven": ("info", "more than 3 dB louder or softer than this velocity's other hits on the note; even out "
                        "loudness brings it closer"),
     "cut_off": ("warning", "still ringing when the next hit (or the file) started"),
@@ -131,16 +132,16 @@ AIM_TOLERANCE_DB = 3.0  # how far a hit may be from its aim, or from its lane's 
 
 
 def check_lanes(results: list["TakeResult"], lanes: list[str], aims: dict[str, float] | None = None,
-                reference: str | None = None, sustained: bool = False) -> None:
+                reference: str | None = None, sustained: bool = False, evened_out: bool = False) -> None:
     """Loudness across one note's lanes: hits that fit another lane better, lanes out of order; with
     `aims` (see vinst.aims), lanes and hits off their aim next to `reference`, and hits off their
-    lane's others."""
+    lane's others. `evened_out`: the instrument sets the loudness by velocity (see vinst.velocity)."""
     hits = [h for t in results for h in t.hits if not h.rejected and h.layer in lanes]
     for t in results:
         for h in t.hits:
             h.flags = [f for f in h.flags if f not in LANE_FLAGS]
         t.message = "; ".join(m for m in t.message.split("; ") if m and not m.endswith(LANES_OUT_OF_ORDER)
-                              and not m.endswith(STEP_OFF)
+                              and ON_OTHER_NOTES not in m
                               and m != "this note's velocities don't get louder in order")  # in older manifests
     level = {h.id: loudness(h, sustained) for h in hits}
     medians = {lane: float(np.median([level[h.id] for h in hits if h.layer == lane]))
@@ -167,8 +168,8 @@ def check_lanes(results: list["TakeResult"], lanes: list[str], aims: dict[str, f
     for lane, m in medians.items():
         aim = (aims or {}).get(lane)
         if lane != reference and aim is not None and abs(m - aim) > AIM_TOLERANCE_DB:
-            messages.append(f"{lane} is {abs(m - aim):.0f} dB {'louder' if m > aim else 'softer'} than its aim "
-                            f"of {aim:.0f} dB next to {reference}, so {STEP_OFF}")
+            messages.append(off_aim_message(lane, reference, m, aim, (aims or {}).get(reference, aim),
+                                            evened_out))
     if messages:
         first = next((t for t in results if t.hits), None)
         if first is not None:
@@ -176,7 +177,21 @@ def check_lanes(results: list["TakeResult"], lanes: list[str], aims: dict[str, f
 
 
 LANES_OUT_OF_ORDER = "playing harder wouldn't sound louder"
-STEP_OFF = "it sounds like a different dynamic than on the other notes"
+ON_OTHER_NOTES = "than on the other notes"  # in every off-aim message, so checking again replaces it
+
+
+def off_aim_message(lane: str, reference: str | None, level: float, aim: float, reference_level: float,
+                    evened_out: bool) -> str:
+    """What a velocity played off its aim means, in words: its sound, and its loudness."""
+    harder = level > aim
+    text = (f"{lane} was played {'harder' if harder else 'softer'} {ON_OTHER_NOTES}, next to {reference} "
+            f"({abs(level - aim):.0f} dB {'over' if harder else 'under'} its aim of {aim:.0f} dB), so it may "
+            f"sound {'brighter' if harder else 'duller'}. ")
+    if evened_out:
+        return text + ("Its loudness is evened out in the instrument, so record it again only if it sounds out "
+                       "of place")
+    closer = harder == (aim < reference_level)
+    return text + f"The step to {reference} is also {'smaller' if closer else 'larger'} {ON_OTHER_NOTES}"
 
 
 class Manifest(BaseModel):

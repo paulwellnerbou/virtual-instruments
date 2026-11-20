@@ -21,15 +21,25 @@ def played(lo: int, hi: int, range_db: float) -> dict[int, float]:
 
 @pytest.mark.parametrize("range_db", [0, 12, 36, 60])
 @pytest.mark.parametrize("lo, hi", [(1, 127), (1, 80), (81, 127), (100, 100)])
-def test_slices_cover_the_range_and_follow_the_line(lo, hi, range_db):
+def test_slices_cover_the_range_and_follow_the_curve(lo, hi, range_db):
     level = played(lo, hi, range_db)
     assert sorted(level) == list(range(lo, hi + 1))  # every velocity, once
     for v, db in level.items():
         assert db == pytest.approx(velocity.curve_db(v, range_db) - velocity.curve_db(hi, range_db),
                                    abs=velocity.MAX_DEVIATION_DB + 1e-9)
     steps = [level[v + 1] - level[v] for v in range(lo, hi)]
-    # Rising, by about a velocity's share of the range: no step to hear.
-    assert all(0 <= s <= range_db / 126 + 2 * velocity.MAX_DEVIATION_DB for s in steps)
+    # Rising as the curve does from one velocity to the next, no step of its own to hear.
+    curve = [velocity.curve_db(v + 1, range_db) - velocity.curve_db(v, range_db) for v in range(lo, hi)]
+    assert all(s >= 0 and abs(s - c) <= 2 * velocity.MAX_DEVIATION_DB + 1e-9 for s, c in zip(steps, curve))
+
+
+def test_the_curve_is_steep_at_the_soft_end_and_flat_at_the_top():
+    db = {v: velocity.curve_db(v, velocity.NATIVE_RANGE_DB) for v in (1, 20, 64, 100, 127)}
+    assert db[1] == pytest.approx(-42.08, abs=0.01) and db[127] == 0
+    assert db[100] - db[64] < 4  # the usual playing range stays even
+    assert db[20] < -15  # and pianissimo stays
+    # At its own range, DecentSampler's tracking plays it in one piece.
+    assert len(velocity.slices(1, 80, velocity.NATIVE_RANGE_DB)) == 1
 
 
 def test_the_step_is_the_instruments_own_once_enough_notes_have_two_velocities():
@@ -54,14 +64,27 @@ def test_hits_off_their_aim_and_uneven_variations_are_flagged():
     take = TakeResult(number=1, base="n", title="C4", kind="note", status="ok", expected_hits=5, hits=[
         _hit(-23.0, "f1", "f"), _hit(-23.5, "f2", "f"), _hit(-29.0, "f3", "f"),
         _hit(-44.0, "p1", "p"), _hit(-46.0, "p2", "p")])
-    check_lanes([take], ["p", "f"], {"p": -36.0, "f": -23.0}, "f")
+    check_lanes([take], ["p", "f"], {"p": -36.0, "f": -23.0}, "f", evened_out=True)
     flags = {h.id: h.flags for h in take.hits}
     assert flags["f3"] == ["uneven"]  # 5.5 dB under its velocity's others
     assert flags["p1"] == flags["p2"] == ["off_aim"]
     assert flags["f1"] == flags["f2"] == []
-    assert "p is 9 dB softer than its aim of -36 dB next to f" in take.message
-    check_lanes([take], ["p", "f"], {"p": -36.0, "f": -23.0}, "f")
-    assert take.message.count("softer than its aim") == 1  # checking again replaces it
+    assert take.message == ("p was played softer than on the other notes, next to f (9 dB under its aim of -36 dB), "
+                            "so it may sound duller. Its loudness is evened out in the instrument, so record it "
+                            "again only if it sounds out of place")
+    check_lanes([take], ["p", "f"], {"p": -36.0, "f": -23.0}, "f")  # loudness as recorded
+    assert take.message.endswith("The step to f is also larger than on the other notes")
+    assert take.message.count("than on the other notes,") == 1  # checking again replaces it
+
+
+def test_an_older_off_aim_message_is_replaced():
+    take = TakeResult(number=1, base="n", title="C4", kind="note", status="ok", expected_hits=2,
+                      hits=[_hit(-23.0, "f1", "f"), _hit(-30.0, "p1", "p")],
+                      message="p is 6 dB louder than its aim of -36 dB next to f, so it sounds like a different "
+                              "dynamic than on the other notes")
+    check_lanes([take], ["p", "f"], {"p": -36.0, "f": -23.0}, "f", evened_out=True)
+    assert take.message.startswith("p was played harder than on the other notes")
+    assert "different dynamic" not in take.message
 
 
 def test_velocities_meet_where_one_hands_over_to_the_next():
@@ -72,7 +95,8 @@ def test_velocities_meet_where_one_hands_over_to_the_next():
     level = {h.id: h.rms_db + offsets[h.id] for hs in notes[60].values() for h in hs}  # at velocity 127
     p_at_80 = level["p1"] + velocity.curve_db(80, 36)
     f_at_81 = level["f1"] + velocity.curve_db(81, 36)
-    assert f_at_81 - p_at_80 == pytest.approx(36 / 126, abs=1.0)  # one velocity step, not 21 dB
+    step = velocity.curve_db(81, 36) - velocity.curve_db(80, 36)
+    assert f_at_81 - p_at_80 == pytest.approx(step, abs=1.0)  # one velocity step, not 21 dB
     # Variations keep how far they are from their median (-43), by up to ±1.5 dB: p1 -1, p2 +6 → +1.5.
     assert level["p2"] - level["p1"] == pytest.approx(2.5)
     # The loudest velocity sounds as recorded in the middle of its range.

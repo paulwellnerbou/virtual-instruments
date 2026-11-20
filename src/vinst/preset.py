@@ -66,7 +66,7 @@ class Mapping:
     info: list[str] = field(default_factory=list)
     gain_db: float = 0.0  # for all samples: the recordings keep their level, the instrument is made louder
     # Loudness follows velocity over this range (see vinst.velocity): a note entry's volume_db is then its
-    # level at its highest velocity, and it plays softer below by the line. None: velocity tracking.
+    # level at its highest velocity, and it plays softer below along the curve. None: velocity tracking.
     loudness_range_db: float | None = None
 
     @property
@@ -139,31 +139,39 @@ MUTE_FADE_S = 0.06
 MAX_GAIN_DB = 24.0
 
 
-# Evening out compares each note with this many recorded notes on either side, so a register that
-# is naturally louder (bass, say) keeps its shape and only notes standing out from their neighbours move.
-BALANCE_NEIGHBOURS = 3
 # A hit this far off is most likely a mis-hit or a slicing error; raising it further would raise its noise.
 BALANCE_MAX_DB = 18.0
 
 
+def keyboard_line(points: dict[int, float]) -> tuple[float, float]:
+    """(dB per semitone, dB at key 0) of a straight line through `points` (key -> dB): the median of
+    the slopes between every two of them and the median offset (Theil–Sen), so notes standing out, or
+    a string quieter than the others, don't tilt or shift it. Flat below three notes: two can't tell a
+    trend from a mis-hit."""
+    keys = sorted(points)
+    slopes = [(points[b] - points[a]) / (b - a) for i, a in enumerate(keys) for b in keys[i + 1:]]
+    slope = float(np.median(slopes)) if len(keys) >= 3 else 0.0
+    return slope, float(np.median([points[k] - slope * k for k in keys]))
+
+
 def balance_corrections(pass_notes: dict[int, dict[str, list[Hit]]], layers: list[str],
                         tolerance_db: float, sustained: bool = False) -> dict[str, float]:
-    """dB per hit (by id) that keeps it within tolerance_db of the median loudness of its velocity on
-    the notes around it. Smaller differences stay as played; a hit beyond them is brought back to that
-    difference (not to the median, so it doesn't jump past neighbours just inside it), by at most
-    BALANCE_MAX_DB. Soft velocities stay softer than loud ones."""
+    """dB per hit (by id) that keeps it within tolerance_db of a straight line through its velocity's
+    loudness over the keyboard (see keyboard_line). A trend from low to high notes stays; a note, or a
+    string's notes, louder or softer than it is brought back to the tolerance (not to the line, so it
+    doesn't jump past notes just inside it), by at most BALANCE_MAX_DB. Each velocity has its own
+    line, so soft velocities stay softer than loud ones."""
     out: dict[str, float] = {}
     for layer in layers:
         roots = sorted(r for r, by_layer in pass_notes.items() if by_layer.get(layer))
         if sum(len(pass_notes[r][layer]) for r in roots) < 2:
             continue
-        for i, root in enumerate(roots):
-            # At the ends the window is cut off rather than shifted inwards: shifted, its median would sit
-            # away from the end note and flatten a register trend there.
-            window = roots[max(0, i - BALANCE_NEIGHBOURS):i + BALANCE_NEIGHBOURS + 1]
-            median = float(np.median([loudness(h, sustained) for r in window for h in pass_notes[r][layer]]))
+        # Each note once, however many variations it has.
+        slope, at_zero = keyboard_line({r: float(np.median([loudness(h, sustained) for h in pass_notes[r][layer]]))
+                                        for r in roots})
+        for root in roots:
             for h in pass_notes[root][layer]:
-                off = loudness(h, sustained) - median
+                off = loudness(h, sustained) - (at_zero + slope * root)
                 excess = off - float(np.clip(off, -tolerance_db, tolerance_db))
                 out[h.id] = round(float(np.clip(-excess, -BALANCE_MAX_DB, BALANCE_MAX_DB)), 2)
     return out
@@ -176,7 +184,7 @@ def curve_offsets(pass_notes: dict[int, dict[str, list[Hit]]], bounds: dict[int,
 
     That level comes from the note's loudest recorded velocity, as evened out across the notes
     (`corrections`): it sounds as recorded at the middle of its velocity range. The softer velocities'
-    own level doesn't count, only their sound: they are lifted or lowered to the line. A hit keeps how
+    own level doesn't count, only their sound: they are lifted or lowered to the curve. A hit keeps how
     much louder or softer it is than the other hits of its velocity on the note, by up to
     `tolerance_db`."""
     out: dict[str, float] = {}
@@ -565,7 +573,8 @@ def knobs_for(inst: Instrument, controls: list[str], effects: list[str], buses: 
                     tooltip=f"{eq.TYPES[band.type]} at {eq.where(band)}: boost or cut, in dB"))
         elif c == "lowcut":
             # 0 %: as recorded, 100 %: the cut set when building; between, a blend of the two.
-            knobs.append(Knob("lowcut", f"{CONTROLS[c]} %", 0, 100, 100, [  # a knob shows a bare number
+            # A knob shows a bare number; its label has room for about 10 characters.
+            knobs.append(Knob("lowcut", "Low cut %", 0, 100, 100, [
                 dict(type="amp", level="tag", identifier=LOW_TAG, parameter="AMP_VOLUME", translation="table",
                      translationTable="0,1;100,0;100.001,0")],
                 tooltip=f"The low resonance below each note's pitch, e.g. of the body after a pluck: 0 % as "

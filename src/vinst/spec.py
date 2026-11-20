@@ -222,7 +222,7 @@ CONTROLS = {
     "mix": "Signal mix",
     "tone": "Tone",
     "eq": "Equalizer",
-    "lowcut": "Low cut",
+    "lowcut": "Pitch-relative low cut",
     "attack": "Attack",
     "release": "Release",
     "reverb": "Reverb",
@@ -273,16 +273,16 @@ class Preset(BaseModel):
     attack: float = Field(default=0.0, ge=0, le=10)
     release: float = Field(default=1.0, ge=0, le=20)
     vel_track: float | None = Field(default=None, ge=0, le=1, description="None: 0.3 with layers, else 0.8")
-    # How much softer velocity 1 is than 127, in a straight line in dB that every velocity's samples are
-    # lifted or lowered to, so moving between velocities changes the sound, not the loudness (see
+    # How much softer velocity 1 is than 127, on a curve flatter at the top that every velocity's samples
+    # are lifted or lowered to, so moving between velocities changes the sound, not the loudness (see
     # vinst.velocity). It can reach beyond the dynamics recorded. None: the samples as recorded, with
     # vel_track.
-    loudness_range_db: float | None = Field(default=36.0, ge=0, le=60)
+    loudness_range_db: float | None = Field(default=42.0, ge=0, le=60)
     # The lowest velocity of each layer after the first, e.g. [80] for "f from 80". Empty, or not
     # fitting the layers (e.g. after adding one), means an even split.
     velocity_splits: list[int] = []
-    # Keep every sample within this of its velocity's loudness on the notes around it (see
-    # preset.balance_corrections).
+    # Keep every sample within this of a straight line through its velocity's loudness over the
+    # keyboard (see preset.balance_corrections).
     balance: bool = False
     balance_tolerance_db: float = Field(default=3.0, ge=0, le=12)
     controls: list[str] = ["mix", "tone", "release", "reverb", "noise"]  # the low cut's: see Processing.low_cut
