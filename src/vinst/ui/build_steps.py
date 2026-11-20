@@ -181,13 +181,14 @@ def step_sound(ed: "Editor") -> None:
     ui.label("Loudness").classes("text-base font-medium")
     with ui.row().classes("items-center gap-4"):
         ui.switch("Even out loudness within each velocity", value=p.balance,
-                  on_change=lambda e: (ed.set(p, "balance", e.value), max_db.set_open(e.value)))
-        with Collapse(p.balance, axis="x") as max_db:
-            ed.number("At most", p, "balance_max_db", cast=float, min=0.5, max=30, step=0.5,
-                      suffix="dB").classes("w-28")
-    ui.label("Brings every sample of a velocity to that velocity's median loudness, so notes and their "
-             "hits play alike; soft velocities stay softer than loud ones. Only the instrument's copies "
-             "of the samples change.").classes("text-xs opacity-70 max-w-3xl")
+                  on_change=lambda e: (ed.set(p, "balance", e.value), tolerance.set_open(e.value)))
+        with Collapse(p.balance, axis="x") as tolerance:
+            ed.number("Allowed difference", p, "balance_tolerance_db", cast=float, min=0, max=12, step=0.5,
+                      prefix="±", suffix="dB").classes("w-36")
+    ui.label("A sample louder or softer than the same velocity on the notes around it by more than the "
+             "allowed difference is brought back to it; smaller differences stay as played. At 0 every "
+             "sample is brought to its neighbours' loudness. Soft velocities stay softer than loud ones. "
+             "Only the instrument's copies of the samples change.").classes("text-xs opacity-70 max-w-3xl")
 
     ui.separator()
     ui.label("Extras").classes("text-base font-medium")
