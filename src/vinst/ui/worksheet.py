@@ -10,6 +10,7 @@ import io
 import itertools
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -549,7 +550,7 @@ def eq_summary(inst: Instrument, eq: CleanupEq) -> str:
     return f"{sigs} · {what}" if sigs else what
 
 
-def mains_items(found: dict[str, int], pick, what: str = "") -> None:
+def mains_items(found: dict[str, int], pick: Callable[[int], None], what: str = "") -> None:
     """Menu items for 50 and 60 Hz mains hum, the one heard in the noise floor said so."""
     for hz, where in cleanup_eq.MAINS.items():
         with ui.item(on_click=lambda hz=hz: pick(hz)):

@@ -1,6 +1,7 @@
 """Clean-up EQ: its filters, and slicing the takes that use one again when it changes."""
 
 import os
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -102,7 +103,17 @@ def test_the_mains_frequency_is_found_in_a_noise_floor():
     assert cleanup_eq.mains_in(hummy(50), SR) == 50
     assert cleanup_eq.mains_in(hummy(60), SR) == 60
     assert cleanup_eq.mains_in(hummy(None), SR) is None
-    assert cleanup_eq.mains_in(hummy(50)[: SR // 2], SR) is None  # too short to tell
+    assert cleanup_eq.mains_in(hummy(50)[: 3 * SR], SR) is None  # too short to tell
+    assert cleanup_eq.mains_in(hummy(50, seconds=4), SR) == 50
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert cleanup_eq.mains_in(np.zeros(5 * SR), SR) is None  # digital silence
+
+
+def test_hiss_alone_is_no_mains_hum():
+    for seed in range(20):
+        hiss = np.random.default_rng(seed).normal(0, 0.01, 4 * SR)
+        assert cleanup_eq.mains_in(hiss, SR) is None
 
 
 def test_a_mains_eq_is_for_the_signals_that_hum(tmp_path):
@@ -116,7 +127,7 @@ def test_a_mains_eq_is_for_the_signals_that_hum(tmp_path):
     eq = cleanup_eq.mains_eq(inst, 50, found)
     assert (eq.name, eq.signals, eq.every_take) == ("Mains hum", ["piezo"], True)
     assert eq.filters == [cleanup_eq.mains_filter(50)] and eq.filters[0].kind == "hum"
-    inst.processing.cleanup_eqs = [eq]
+    inst.processing.cleanup_eqs = [eq.model_copy(update={"name": "MAINS HUM"})]  # names differ in more than case
     other = cleanup_eq.mains_eq(inst, 60, found)  # heard on neither: for all of them
     assert (other.name, other.signals, other.filters[0].hz) == ("Mains hum 2", [], 60)
 

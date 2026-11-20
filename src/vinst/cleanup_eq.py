@@ -49,16 +49,17 @@ def mains_filter(hz: int) -> EqFilter:
 
 def mains_prominence(audio: np.ndarray, sr: int, hz: float, harmonics: int = 4) -> float:
     """How far (dB) the strongest of `hz` and its first multiples stands above the spectrum just beside it."""
-    seg = min(len(audio), 4 * sr)  # 0.25 Hz bins: 50 and 60 Hz hum lie far apart
+    # Up to 0.25 Hz bins, and at least four segments: one lone periodogram of hiss has chance peaks.
+    seg = min(4 * sr, len(audio) // 4)
     if seg < sr:
         return 0.0
     freqs, power = welch(audio, sr, nperseg=seg)
-    best = -np.inf
+    best = 0.0
     for k in range(1, harmonics + 1):
         f = hz * k
         peak = power[np.abs(freqs - f) <= 1.0].max()
         near = power[(np.abs(freqs - f) >= 3) & (np.abs(freqs - f) <= 10)]
-        best = max(best, 10 * np.log10(peak / max(np.median(near), 1e-30)))
+        best = max(best, 10 * np.log10(max(peak, 1e-30) / max(np.median(near), 1e-30)))
     return float(best)
 
 
@@ -98,9 +99,9 @@ def mains_eq(inst: Instrument, hz: int, found: dict[str, int]) -> CleanupEq:
     """A clean-up EQ for every take against `hz` mains hum, for the signals it was heard on if that's
     only some of them (a mic seldom picks it up), else for all."""
     sigs = [s.id for s in inst.signals if found.get(s.id) == hz]
-    names = {e.name for e in inst.processing.cleanup_eqs}
+    names = {e.name.lower() for e in inst.processing.cleanup_eqs}  # as renaming compares them
     name = next(n for n in itertools.chain(["Mains hum"], (f"Mains hum {i}" for i in itertools.count(2)))
-                if n not in names)
+                if n.lower() not in names)
     return CleanupEq(name=name, every_take=True, filters=[mains_filter(hz)],
                      signals=sigs if 0 < len(sigs) < len(inst.signals) else [])
 
