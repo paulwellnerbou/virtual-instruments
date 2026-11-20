@@ -137,19 +137,33 @@ MUTE_FADE_S = 0.06
 MAX_GAIN_DB = 24.0
 
 
+# Evening out compares each note with this many recorded notes on either side, so a register that
+# is naturally louder (bass, say) keeps its shape and only notes standing out from their neighbours move.
+BALANCE_NEIGHBOURS = 3
+# A hit this far off is most likely a mis-hit or a slicing error; raising it further would raise its noise.
+BALANCE_MAX_DB = 18.0
+
+
 def balance_corrections(pass_notes: dict[int, dict[str, list[Hit]]], layers: list[str],
-                        max_db: float, sustained: bool = False) -> dict[str, float]:
-    """dB per hit (by id) that brings it to its velocity's median loudness over all notes, by at most
-    max_db. Every sample of a velocity then plays alike, from note to note and from one hit of a note
-    to the next; soft velocities stay softer than loud ones."""
+                        tolerance_db: float, sustained: bool = False) -> dict[str, float]:
+    """dB per hit (by id) that keeps it within tolerance_db of the median loudness of its velocity on
+    the notes around it. Smaller differences stay as played; a hit beyond them is brought back to that
+    difference (not to the median, so it doesn't jump past neighbours just inside it), by at most
+    BALANCE_MAX_DB. Soft velocities stay softer than loud ones."""
     out: dict[str, float] = {}
     for layer in layers:
-        hits = [h for by_layer in pass_notes.values() for h in by_layer.get(layer, [])]
-        if len(hits) < 2:
+        roots = sorted(r for r, by_layer in pass_notes.items() if by_layer.get(layer))
+        if sum(len(pass_notes[r][layer]) for r in roots) < 2:
             continue
-        median = float(np.median([loudness(h, sustained) for h in hits]))
-        for h in hits:
-            out[h.id] = round(float(np.clip(median - loudness(h, sustained), -max_db, max_db)), 2)
+        for i, root in enumerate(roots):
+            # At the ends the window is cut off rather than shifted inwards: shifted, its median would sit
+            # away from the end note and flatten a register trend there.
+            window = roots[max(0, i - BALANCE_NEIGHBOURS):i + BALANCE_NEIGHBOURS + 1]
+            median = float(np.median([loudness(h, sustained) for r in window for h in pass_notes[r][layer]]))
+            for h in pass_notes[root][layer]:
+                off = loudness(h, sustained) - median
+                excess = off - float(np.clip(off, -tolerance_db, tolerance_db))
+                out[h.id] = round(float(np.clip(-excess, -BALANCE_MAX_DB, BALANCE_MAX_DB)), 2)
     return out
 
 
@@ -245,13 +259,17 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
     played: dict[str, dict[str, float]] = defaultdict(dict)
     sustained = inst.meta.type in SUSTAINED_TYPES
     balanced: list[float] = []
+    capped: list[str] = []
     for pass_id, pass_notes in notes.items():
         roots = sorted(pass_notes)
         all_lanes = list(dict.fromkeys(lane for by_lane in pass_notes.values() for lane in by_lane))
-        corrections = balance_corrections(pass_notes, all_lanes, inst.preset.balance_max_db,
+        corrections = balance_corrections(pass_notes, all_lanes, inst.preset.balance_tolerance_db,
                                           sustained=inst.meta.type in SUSTAINED_TYPES) \
             if inst.preset.balance else {}
         balanced += [c for c in corrections.values() if abs(c) >= 0.5]
+        capped += [f"{note_of.get((pass_id, r)) or r} ({lane})" for r, by_lane in pass_notes.items()
+                   for lane, hs in by_lane.items() for h in hs
+                   if abs(corrections.get(h.id, 0.0)) >= BALANCE_MAX_DB]
         zones = key_zones(roots, inst.preset.extend_below, inst.preset.extend_above)
         spans.append((zones[roots[0]][0], zones[roots[-1]][1]))
         for root in roots:
@@ -287,6 +305,10 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
     if inst.preset.balance:
         m.info.append(f"Loudness evened out: {len(balanced)} samples corrected"
                       + (f", largest {max(balanced, key=abs):+.1f} dB." if balanced else "."))
+    if capped:
+        m.warnings.append("These samples are far louder or softer than the notes around them and were evened out "
+                          f"by only {BALANCE_MAX_DB:g} dB: " + ", ".join(dict.fromkeys(capped))
+                          + ". Probably a mis-hit or a slicing error; check them in the worksheet.")
     if inst.processing.loops:
         looped = {e.file for e in m.notes if e.loop}
         m.info.append(f"Loops: {len(looped)} of {len({e.file for e in m.notes})} note samples loop.")
