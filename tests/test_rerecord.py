@@ -393,18 +393,19 @@ def test_cuts_set_by_hand_replace_the_found_ones_until_reset(uke):
     assert not again.cut_by_hand and [h.start for h in again.hits] == [h.start for h in found.hits]
 
 
-def test_a_hit_starts_at_its_attack_not_at_the_touch_before_it(uke):
+@pytest.mark.parametrize("touch_s", [0.08, 0.012, 0.0])
+def test_a_hit_starts_at_its_attack_not_at_the_touch_before_it(uke, touch_s):
     take = lane(uke, "p")
     rng = np.random.default_rng(7)
     audio = rng.normal(0, 10 ** (-75 / 20), int(7.5 * SR))
-    pluck_at = int(1.56 * SR)
-    touch_at = pluck_at - int(0.08 * SR)
+    pluck_at = int(1.56 * SR) + 37  # not on a frame boundary
+    touch_at = pluck_at - int(touch_s * SR)
     audio[touch_at:pluck_at] += rng.normal(0, 10 ** (-58 / 20), pluck_at - touch_at)
     tone = pluck(440 * 2 ** ((take.note.midi - 69) / 12), 0.3, 2.0, SR, rng)
     audio[pluck_at: pluck_at + len(tone)] += tone
     write(uke, take.files[0], audio, grid=[0.5])
     (hit,) = result(process(uke), take.key).hits
-    assert pluck_at - 0.02 * SR <= hit.start <= pluck_at  # just before the pluck, not 80 ms early
+    assert pluck_at - 0.003 * SR <= hit.start <= pluck_at  # the sample starts with the pluck
 
 
 def test_a_rejected_recording_only_warns_when_its_velocity_keeps_nothing(uke):

@@ -31,9 +31,10 @@ from vinst.spec import SUSTAINED_TYPES, Instrument
 # Raised whenever hits are found differently, so older results are offered for slicing again.
 # 1: attack judged over ATTACK_S, starts moved to the main rise.
 # 2: a hit's tail ends where the next sound begins, not at the next attack.
-HIT_FINDER = 2
+# 3: starts found to the sample, PREROLL_S before the attack, not frames before it.
+HIT_FINDER = 3
 HOP = 256
-PREROLL_S = 0.005
+PREROLL_S = 0.002
 FADE_OUT_S = 0.05
 MIN_RISE_DB = 6.0  # an onset must be this much louder than just before it
 MIN_ABOVE_NOISE_DB = 15.0
@@ -42,10 +43,11 @@ MIN_GAP_S = 0.15
 # How long after an onset its loudness is judged. Onsets are placed where the rise begins, which can
 # be a finger touching the string well before the pluck peaks.
 ATTACK_S = 0.15
-# An onset whose loudness only comes this many frames later (a touch, then the pluck) moves forward to
-# where it comes within MAIN_RISE_DB of its peak: a sample must start with its attack.
-LATE_RISE_FRAMES = 3
+# A sample starts where its signal first comes this close to the attack's peak: the pluck, not the
+# touch before it. Played from a key, any silence before the attack is latency.
 MAIN_RISE_DB = 20.0
+# ... and is this much louder than just before, so a ringing tail under a soft hit isn't its attack.
+ATTACK_ABOVE_BEFORE_DB = 6.0
 SAME_CUT_S = 0.05  # a hit cut this close to where it was is the same hit
 LOUDNESS_WINDOW_S = 0.3
 ENVELOPE_POINTS = 400
@@ -102,13 +104,24 @@ def detect_sounds(ref: np.ndarray, sr: int, noise_rel_db: float) -> list[tuple[i
             continue
         rise = after.max() - (before.min() if before.size else -120)
         if rise >= MIN_RISE_DB and after.max() >= ref_noise + MIN_ABOVE_NOISE_DB:
-            main = int(np.argmax(after >= after.max() - MAIN_RISE_DB))
-            if main > LATE_RISE_FRAMES:
-                f += main - 1  # the frame before: the attack begins within it
-            sample = int(f * HOP)
+            sample = attack_start(ref, sr, begins)
             if not out or sample - out[-1][0] >= MIN_GAP_S * sr:
-                out.append((sample, begins))
+                out.append((sample, min(begins, sample)))
     return out
+
+
+def attack_start(ref: np.ndarray, sr: int, begins: int) -> int:
+    """The sample where the attack of an onset found at `begins` starts. Frames are too coarse for it:
+    a frame early is 5 ms of silence before the pluck."""
+    a = max(0, begins - HOP)  # RMS frames are centred: the rise can begin half a frame before
+    window = np.abs(ref[a: begins + int(ATTACK_S * sr)])
+    if window.size == 0:
+        return begins
+    before = np.abs(ref[max(0, a - HOP): a])
+    threshold = max(window.max() * 10 ** (-MAIN_RISE_DB / 20),
+                    (before.max() if before.size else 0) * 10 ** (ATTACK_ABOVE_BEFORE_DB / 20))
+    above = np.nonzero(window >= threshold)[0]
+    return a + int(above[0]) if above.size else begins
 
 
 def cut_points(ref: np.ndarray, sr: int, onsets: list[int], noise_rel_db: float,
