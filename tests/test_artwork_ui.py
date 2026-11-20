@@ -34,9 +34,9 @@ def test_library_cover_upload_rejects_invalid_replacements_and_removes_only_the_
                 assert response.status_code == 200
             await user.should_see("background.png")
             await user.should_see("cover.png")
-            thumbnails = [img.source for img in user.find(ui.image).elements]
-            assert len(thumbnails) == 1
-            assert thumbnails[0].split("?")[0] == ARTWORK_ROUTE.format(slug=inst.meta.slug, attr="cover_art")
+            art = cover.style["--vi-art"]
+            assert art.startswith("url('") and art.endswith("')")
+            assert art[5:-2].split("?")[0] == ARTWORK_ROUTE.format(slug=inst.meta.slug, attr="cover_art")
             assert Path(artwork_image(inst.meta.slug, "cover_art").path).read_bytes() == png
             editor.autosave()
             saved = store.load(inst.meta.slug).preset
@@ -52,7 +52,8 @@ def test_library_cover_upload_rejects_invalid_replacements_and_removes_only_the_
 
             user.find("Remove cover").click()
             await user.should_see("No library cover selected.")
-            await user.should_not_see(kind=ui.image)
+            assert cover.style["--vi-art"] == "none"
+            assert background.style["--vi-art"].startswith("url('")
             with pytest.raises(HTTPException):
                 artwork_image(inst.meta.slug, "cover_art")
             editor.autosave()

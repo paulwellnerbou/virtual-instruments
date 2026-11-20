@@ -129,7 +129,7 @@ After importing, the worksheet works as for recorded takes. Change the folder's 
 
 ![The Equalizer: its bands as a curve over the spectrum of your samples](images/equalizer.png)
 - **Look:** a background image (812 × 375 px, PNG or JPG; drop it on the upload box or click +, and it's copied into the instrument's folder), and background, text and accent colours, each with a colour picker (the accent lights the knobs' arcs and tints the playable keys). Under the title the instrument shows "by <author> · v<version>", and at the bottom right "<copyright> · <website>"; switch any of them off to leave it out of the panel. All of them, and the description, still go into the comment at the top of the preset and the soundfont's info (author, copyright, and the description and website as its comment). The preview below shows the instrument as DecentSampler does in its smallest window: its knobs at their starting values, and its keyboard with the playable keys and the extras' keys tinted.
-- **Library cover:** drop a square PNG or JPG on its upload box or click **+**. The builder copies it into the instrument's folder, shows it under the box as uploaded (so you can see whether it's square), and includes it in the bundle for DecentSampler's File Browser. Click **Remove cover** to clear it.
+- **Library cover:** drop a square PNG or JPG on its upload box or click **+**. The builder copies it into the instrument's folder and shows it in the box, uncropped, so you can see whether it's square. DecentSampler's File Browser shows it when you select the instrument. Click **Remove cover** to clear it.
 
 Only the built instrument changes here; your recordings and sliced samples stay as they are.
 

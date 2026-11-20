@@ -244,12 +244,13 @@ def step_sound(ed: "Editor") -> None:
 
     ui.separator()
     ui.label("Look").classes("text-base font-medium")
-    artwork_field(ed, "background", "background", "Background image",
+    ui.add_css(ARTWORK_CSS)
+    artwork_field(ed, "background", "background", "Background image", f"{preset.UI_W} / {preset.UI_H}",
                   "812 × 375 px. DecentSampler's keyboard covers the lower part.",
                   "The background colour fills the panel when no image is selected.")
-    artwork_field(ed, "cover_art", "cover", "Library cover",
-                  "Use a square image for DecentSampler's File Browser.", "No library cover selected.",
-                  thumbnail=True)
+    artwork_field(ed, "cover_art", "cover", "Library cover", "1",
+                  "Square. DecentSampler's File Browser shows it when you select the instrument.",
+                  "No library cover selected.")
     with ui.row().classes("items-start gap-4 w-full"):
         colour_field(ed, "Background colour", "bg_color")
         colour_field(ed, "Text colour", "text_color")
@@ -269,9 +270,18 @@ def step_sound(ed: "Editor") -> None:
     ed.on_change_hooks.append(look_preview.refresh)
 
 
-def artwork_field(ed: "Editor", attr: str, stem: str, label: str, hint: str, empty: str,
-                  thumbnail: bool = False) -> None:
-    """Upload artwork into the instrument's folder and edit its preset path."""
+# The upload box is the image's frame, at the shape DecentSampler wants. "contain" shows an image
+# of another shape as such instead of cropping it.
+ARTWORK_CSS = """
+.vi-artwork { max-height: none; }
+.vi-artwork .q-uploader__subtitle { display: none; }
+.vi-artwork .q-uploader__list { flex: none; min-height: 0; aspect-ratio: var(--vi-ratio);
+                                background: var(--vi-art) center / contain no-repeat; }
+"""
+
+
+def artwork_field(ed: "Editor", attr: str, stem: str, label: str, ratio: str, hint: str, empty: str) -> None:
+    """Upload artwork into the instrument's folder and edit its preset path; the upload box shows it."""
     inst, p = ed.inst, ed.inst.preset
     folder = store.instrument_dir(inst.meta.slug)
     format_message = f"Choose a PNG or JPG image for {label.lower()}."
@@ -289,13 +299,10 @@ def artwork_field(ed: "Editor", attr: str, stem: str, label: str, hint: str, emp
     def current() -> None:
         path = selected_path()
         url = artwork_url(inst, attr)  # also forgets a removed image, so the route stops serving it
+        upload.style(f"--vi-art: url('{url}')" if url else "--vi-art: none")
         if path is None:
             ui.label(empty).classes("text-sm opacity-70")
             return
-        if thumbnail and url:
-            # As uploaded, not cropped: a cover that isn't square shows as such.
-            ui.image(url).props("fit=contain").classes("w-32 h-32 rounded") \
-                .style("border: 1px solid rgba(127,127,127,.35)")
         with ui.row().classes("items-center gap-3"):
             if path.is_file():
                 ui.label(path.name).classes("text-sm")
@@ -340,8 +347,9 @@ def artwork_field(ed: "Editor", attr: str, stem: str, label: str, hint: str, emp
     with ui.row().classes("items-start gap-4 w-full"):
         upload = ui.upload(on_upload=uploaded, auto_upload=True, max_files=1,
                            on_rejected=lambda: ui.notify(format_message, type="warning"),
-                           label="Drop a PNG or JPG here, or click +") \
-            .props(f'accept="{",".join(bundle.IMAGE_SIGNATURES)}" flat bordered color=grey-8').classes("w-80 max-w-full")
+                           label="Drop a PNG or JPG") \
+            .props(f'accept="{",".join(bundle.IMAGE_SIGNATURES)}" flat bordered color=grey-8') \
+            .classes("vi-artwork w-48 max-w-full").style(f"--vi-ratio: {ratio}")
         with ui.column().classes("gap-1 pt-2"):
             current()
             ui.label(hint).classes("text-xs opacity-70")
