@@ -2,6 +2,7 @@
 
 import getpass
 import os
+from datetime import date
 
 from vinst import notes
 from vinst.spec import (
@@ -106,15 +107,20 @@ def type_defaults(kind: InstrumentType) -> tuple[Range, Dynamics, list[Extra], R
     raise ValueError(kind)
 
 
+def copyright_for(author: str) -> str:
+    return f"© {date.today().year} {author.strip()}" if author.strip() else ""
+
+
 def new_instrument(name: str, kind: InstrumentType, author: str | None = None) -> Instrument:
     rng, dyn, extras, rec = type_defaults(kind)
+    author = system_author() if author is None else author
     signals = (
         [Signal(id="pickup", name="Pickup")]
         if kind == InstrumentType.PLUCKED
         else [Signal(id="mic", name="Mic")]
     )
     inst = Instrument(
-        meta=Meta(name=name, slug=slugify(name), type=kind, author=system_author() if author is None else author),
+        meta=Meta(name=name, slug=slugify(name), type=kind, author=author, copyright=copyright_for(author)),
         signals=signals,
         range=rng,
         dynamics=dyn,

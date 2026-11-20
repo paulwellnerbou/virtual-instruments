@@ -467,9 +467,20 @@ def step_instrument(ed: Editor) -> None:
     inst, meta = ed.inst, ed.inst.meta
     with ui.column().classes("w-full max-w-xl"):
         ed.text("Name", meta, "name").classes("w-full")
+
+        def author_changed(e: Any) -> None:
+            # A copyright still as it was filled in follows the author (also through an emptied
+            # author field); one typed by hand stays.
+            if meta.copyright == defaults.copyright_for(meta.author):
+                copyright_field.value = defaults.copyright_for(e.value)
+            ed.set(meta, "author", e.value)
+
         with ui.row().classes("w-full"):
-            ed.text("Author", meta, "author").classes("grow")
+            ui.input("Author", value=meta.author, on_change=author_changed).classes("grow")
             ed.text("Version", meta, "version").classes("w-32")
+        with ui.row().classes("w-full"):
+            ed.text("Website", meta, "website", placeholder="example.com").classes("grow")
+            copyright_field = ed.text("Copyright", meta, "copyright", placeholder="© year name").classes("grow")
         ed.text("Description", meta, "description").props("autogrow type=textarea").classes("w-full")
 
         def source_changed(e: Any) -> None:

@@ -6,7 +6,7 @@ On the start page you can create, open, **duplicate** and **delete** instruments
 
 ## 1. Instrument
 
-Name, author, version and description, and the **type**, which fills in sensible defaults for everything after it:
+Name, author, version, website, copyright (a new instrument starts with "© <year> <author>") and description, and the **type**, which fills in sensible defaults for everything after it:
 
 | Type | Examples | Defaults |
 |---|---|---|
@@ -128,7 +128,7 @@ After importing, the worksheet works as for recorded takes. Change the folder's 
 - **Equalizer** (instead of the tone knob; switching one on switches the other off): up to 8 bands (low and high shelf, peak, low and high cut, notch), drawn as a curve over the average spectrum of your samples. Drag a point to set its frequency and gain, scroll on it for its width (Q), double-click to add a band; or type the values in the table. **Listen** plays a few notes from low to high through the EQ, and **Hear with EQ** switches it off to compare. In the instrument, each peak and shelf gets a knob to boost or cut it, starting where you set it here; cuts and notches stay as set. Evening out and the level count the EQ as its knobs start. Boosts run after the level, so if they'd take the samples over full scale, the instrument plays just that much quieter, and the build says by how much. The soundfont has no effects, so it gets the EQ built into its samples.
 
 ![The Equalizer: its bands as a curve over the spectrum of your samples](images/equalizer.png)
-- **Look:** a background image (812 × 375 px, PNG or JPG; drop it on the upload box or click +, and it's copied into the instrument's folder), and background, text and accent colours, each with a colour picker (the accent lights the knobs' arcs and tints the playable keys). Under the title the instrument shows "by <author> · v<version>"; switch either off to leave it out of the panel (it stays in the metadata). The preview below shows the instrument as DecentSampler does in its smallest window: its knobs at their starting values, and its keyboard with the playable keys and the extras' keys tinted.
+- **Look:** a background image (812 × 375 px, PNG or JPG; drop it on the upload box or click +, and it's copied into the instrument's folder), and background, text and accent colours, each with a colour picker (the accent lights the knobs' arcs and tints the playable keys). Under the title the instrument shows "by <author> · v<version>", and at the bottom right "<copyright> · <website>"; switch any of them off to leave it out of the panel. All of them, and the description, still go into the comment at the top of the preset and the soundfont's info (author, copyright, and the description and website as its comment). The preview below shows the instrument as DecentSampler does in its smallest window: its knobs at their starting values, and its keyboard with the playable keys and the extras' keys tinted.
 
 Only the built instrument changes here; your recordings and sliced samples stay as they are.
 

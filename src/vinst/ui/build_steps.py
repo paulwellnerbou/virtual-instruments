@@ -233,6 +233,9 @@ def step_sound(ed: "Editor") -> None:
     with ui.row().classes("items-center gap-4"):
         ui.switch("Show the author", value=p.show_author, on_change=lambda e: ed.set(p, "show_author", e.value))
         ui.switch("Show the version", value=p.show_version, on_change=lambda e: ed.set(p, "show_version", e.value))
+        ui.switch("Show the copyright", value=p.show_copyright,
+                  on_change=lambda e: ed.set(p, "show_copyright", e.value))
+        ui.switch("Show the website", value=p.show_website, on_change=lambda e: ed.set(p, "show_website", e.value))
 
     @ui.refreshable
     def look_preview() -> None:

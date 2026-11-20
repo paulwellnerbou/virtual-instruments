@@ -832,3 +832,48 @@ def test_the_panel_and_preview_show_the_subtitle(built):
     assert [x.get("text") for x in xml.iter("label")][0] == "Test Uke"
     assert not any(x.get("text", "").startswith(("by ", "v")) for x in xml.iter("label"))
     assert "\n  by " not in result.preset_file.read_text().split("-->")[0]
+
+
+def test_footer_shows_copyright_and_website_unless_switched_off():
+    inst = defaults.new_instrument("Uke", InstrumentType.PLUCKED, author="Paul")
+    assert inst.meta.copyright.startswith("© 20") and inst.meta.copyright.endswith(" Paul")
+    assert defaults.new_instrument("Y", InstrumentType.PLUCKED, author="").meta.copyright == ""
+    inst.meta.copyright, inst.meta.website = "© 2026 Paul", "https://www.example.com/"
+    assert preset.footer(inst) == "© 2026 Paul · www.example.com"
+    inst.preset.show_copyright = False
+    assert preset.footer(inst) == "www.example.com"
+    inst.preset.show_website = False
+    assert preset.footer(inst) == ""
+
+
+def test_the_instrument_carries_its_credits(built):
+    from vinst import sf2
+    from vinst.ui import preview
+
+    inst, _ = built
+    inst.meta.author, inst.meta.copyright, inst.meta.website = "Paul", "© 2026 Paul", "example.com"
+    inst.meta.description = "A travel ukulele.\nRecorded with a pickup."
+    result = bundle.build(inst)
+    xml = etree.parse(str(result.preset_file))
+    foot = [x for x in xml.iter("label") if x.get("text") == "© 2026 Paul · example.com"]
+    assert foot and int(foot[0].get("y")) + int(foot[0].get("height")) <= preset.VISIBLE_H
+    assert "© 2026 Paul · example.com" in preview.render(inst, cutting=False)
+    head = result.preset_file.read_text().split("-->")[0]
+    assert "© 2026 Paul" in head and "example.com" in head and "Recorded with a pickup." in head
+    assert "  Test Uke\n  version 0.1.0\n  by Paul\n  © 2026 Paul\n  example.com\n  A travel ukulele.\n" in head
+    assert validate_bundle(result.preset_file.parent, result.preset_file).ok
+
+    info = sf2.header(result.soundfont)
+    assert b"IENG" in info and b"Paul\0" in info and b"(c) 2026 Paul\0" in info
+    assert b"A travel ukulele.\nRecorded with a pickup.\nexample.com\n\nvinst instrument: " in info
+
+    # However long the description, the soundfont still says which instrument it is.
+    inst.meta.description = "x" * 1000
+    assert sf2.comment(inst).endswith("\n\n" + sf2.OF + inst.meta.slug)
+    assert len(sf2.text(sf2.comment(inst))) <= sf2.INFO_MAX
+    folder = result.soundfont.parent / "SoundFonts"
+    folder.mkdir()
+    old = sf2.install(bundle.build(inst).soundfont, inst.meta.slug, folder)
+    inst.meta.name = "Test Uke renamed"
+    new = sf2.install(bundle.build(inst).soundfont, inst.meta.slug, folder)
+    assert new.exists() and not old.exists()
