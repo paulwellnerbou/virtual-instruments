@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 from lxml import etree
 
+from vinst import eq
 from vinst.plan import Pass, Take, lane_bounds, note_lanes, plan_takes, recording_passes
 from vinst.review import Hit, Manifest, lane_of
 from vinst.spec import (CONTROLS, FX_TAG, LOW_TAG, NOTES_TAG, RELEASE_TAG, SUSTAINED_TYPES, Instrument, Signal,
@@ -429,12 +430,25 @@ def active_controls(inst: Instrument, mapping: Mapping) -> list[str]:
             continue
         if c == "lowcut" and not any(e.removed for e in mapping.notes):
             continue
+        if c == "tone" and "eq" in inst.preset.controls:
+            continue  # the Equalizer takes the Tone knob's place
+        if c == "eq" and not any(b.on for b in inst.preset.eq):
+            continue
         out.append(c)
     return out
 
 
-def effects_for(controls: list[str]) -> list[str]:
-    return [fx for c, fx in (("tone", "lowpass"), ("chorus", "chorus"), ("reverb", "reverb")) if c in controls]
+def eq_bands(inst: Instrument) -> list[int]:
+    """Indices of the equalizer's bands that play."""
+    return [i for i, b in enumerate(inst.preset.eq) if b.on]
+
+
+def effects_for(inst: Instrument, controls: list[str]) -> list[str]:
+    """The instrument's effects in order: "lowpass" (Tone), "eq<i>" per band, "chorus", "reverb"."""
+    out = ["lowpass"] if "tone" in controls else []
+    if "eq" in controls:
+        out += [f"eq{i}" for i in eq_bands(inst)]
+    return out + [fx for fx in ("chorus", "reverb") if fx in controls]
 
 
 def knobs_for(inst: Instrument, controls: list[str], effects: list[str]) -> list[Knob]:
@@ -457,6 +471,16 @@ def knobs_for(inst: Instrument, controls: list[str], effects: list[str]) -> list
             knobs.append(Knob("tone", CONTROLS[c], 0, 1, p.tone, [
                 dict(type="effect", level="instrument", position=effects.index("lowpass"),
                      parameter="FX_FILTER_FREQUENCY", translation="table", translationTable=TONE_TABLE)]))
+        elif c == "eq":
+            for i in eq_bands(inst):
+                band = p.eq[i]
+                if not eq.has_gain(band):
+                    continue  # cuts and notches stay as set in the builder
+                span = eq.knob_range(band)
+                knobs.append(Knob(f"eq{i}", eq.label(band), -span, span, round(band.gain_db, 1), [
+                    dict(type="effect", level="instrument", position=effects.index(f"eq{i}"),
+                         parameter="FX_FILTER_GAIN", translation="table", translationTable=eq.gain_table(span))],
+                    tooltip=f"{eq.TYPES[band.type]} at {eq.where(band)}: boost or cut, in dB"))
         elif c == "lowcut":
             # 0 %: as recorded, 100 %: the cut set when building; between, a blend of the two.
             knobs.append(Knob("lowcut", f"{CONTROLS[c]} %", 0, 100, 100, [  # a knob shows a bare number
@@ -505,7 +529,7 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
     root.addprevious(etree.Comment(re.sub(r"-{2,}", "-", header)))
 
     controls = active_controls(inst, mapping)
-    effects = effects_for(controls)
+    effects = effects_for(inst, controls)
     knobs = knobs_for(inst, controls, effects)
 
     ui_attrs = dict(width=UI_W, height=UI_H, bgColor=p.bg_color)
@@ -614,14 +638,24 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
         if name == "lowpass":
             # The same cutoff the Tone knob's default maps to, so knob and sound agree on load.
             _el(fx, "effect", type="lowpass", frequency=round(table_value(TONE_TABLE, p.tone), 1))
+        elif name.startswith("eq"):
+            band = p.eq[int(name[2:])]
+            if eq.has_gain(band):
+                _el(fx, "effect", type=band.type, frequency=round(band.freq, 1), q=round(band.q, 3),
+                    gain=round(10 ** (band.gain_db / 20), 5))
+            elif band.type == "notch":
+                _el(fx, "effect", type="notch", frequency=round(band.freq, 1), q=round(band.q, 3))
+            else:
+                _el(fx, "effect", type=band.type, frequency=round(band.freq, 1), resonance=round(band.q, 3))
         elif name == "chorus":
             _el(fx, "effect", type="chorus", mix=float(p.chorus))
         elif name == "reverb":
             _el(fx, "effect", type="reverb", wetLevel=float(p.reverb), roomSize=float(p.reverb_room),
                 damping=float(p.reverb_damping))
 
-    # Not the low cut: at rest, the wheel would bring all the low end back.
-    cc_target = "tone" if "tone" in knob_index else next((k for k in knob_index if k != "lowcut"), None)
+    # Not the low cut: at rest, the wheel would bring all the low end back; nor an EQ band, cut fully at rest.
+    cc_target = "tone" if "tone" in knob_index else next(
+        (k for k in knob_index if k != "lowcut" and not k.startswith("eq")), None)
     if cc_target is not None:
         target = next(k for k in knobs if k.key == cc_target)
         midi = _el(root, "midi")

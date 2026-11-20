@@ -5,11 +5,9 @@ exciting the body. A fixed filter can't separate the two over a whole range, as 
 note lies where the pitch of a low one is, so the cut follows each note.
 """
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import soundfile as sf
 from scipy.signal import butter, sosfiltfilt
 
 if TYPE_CHECKING:
@@ -63,18 +61,3 @@ def curve(below: float, reduction_db: float, shares: list[float]) -> list[float]
     gain = 1 - (1 - 10 ** (-reduction_db / 20)) * np.abs(h) ** 2  # filtered both ways: |H|²
     return [float(20 * np.log10(max(g, 1e-6))) for g in gain]
 
-
-def loudness_change(path: Path, midi: float, below: float, reduction_db: float) -> tuple[float, float]:
-    """How much the cut lowers a sample's loudness, in dB: over its attack and over its held part
-    (as slicing measures them), so evening out and the level can work with what's played."""
-    from vinst.slicing import LOUDNESS_WINDOW_S, body_level, db
-
-    audio, sr = sf.read(str(path), always_2d=True, dtype="float64")
-    x = audio[:, 0]
-    y = reduce(x, sr, midi, below, reduction_db)
-    n = int(LOUDNESS_WINDOW_S * sr)
-
-    def attack(z: np.ndarray) -> float:
-        return float(db(np.sqrt(np.mean(z[:n] ** 2))))
-
-    return round(attack(y) - attack(x), 2), round(body_level(y, sr) - body_level(x, sr), 2)

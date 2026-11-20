@@ -13,6 +13,7 @@ from vinst.preset import mixable_signals
 from vinst.spec import CONTROLS, Extra
 from vinst.ui.anim import Collapse
 from vinst.ui import preview
+from vinst.ui.equalizer import equalizer
 from vinst.ui.finder import reveal
 
 if TYPE_CHECKING:
@@ -212,10 +213,11 @@ def step_sound(ed: "Editor") -> None:
     ui.separator()
     ui.label("Controls").classes("text-base font-medium")
     ui.label("The knobs in the instrument.").classes("text-xs opacity-70")
-    with ui.column().classes("gap-1"):
+    switches: dict[str, ui.switch] = {}
+    with ui.column().classes("gap-1 w-full"):
         for key in CONTROLS:
             if key in shown_controls(inst):
-                control_row(ed, key)
+                control_row(ed, key, switches)
 
     ui.separator()
     ui.label("Look").classes("text-base font-medium")
@@ -361,7 +363,9 @@ def shown_controls(inst: "Instrument") -> list[str]:
 # What each control does, in a line under its switch.
 CONTROL_TEXT = {
     "mix": "Blends the signals, e.g. pickup and microphone.",
-    "tone": "Darkens the sound, as a lowpass filter does; the mod wheel moves it.",
+    "tone": "Darkens the sound, as a lowpass filter does; the mod wheel moves it. Instead of the Equalizer.",
+    "eq": "Shapes the sound with up to 8 bands; each peak or shelf gets a knob to boost or cut it. "
+          "Instead of the Tone knob.",
     "lowcut": "Makes the frequencies below each note's pitch quieter.",
     "attack": "How long each note takes to fade in; starts at the envelope's attack. Not for plucked or "
               "struck strings: it only softens the pluck.",
@@ -372,7 +376,11 @@ CONTROL_TEXT = {
 }
 
 
-def control_row(ed: "Editor", key: str) -> None:
+# Both shape the sound: one or the other.
+RIVALS = {"tone": "eq", "eq": "tone"}
+
+
+def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
     """A control's switch; its settings, if it has any, slide open below it while it's on: below, not
     beside, so they keep their width in a narrow column and take no room while closed."""
     inst, p, proc = ed.inst, ed.inst.preset, ed.inst.processing
@@ -383,16 +391,28 @@ def control_row(ed: "Editor", key: str) -> None:
         if key == "lowcut":
             ed.set(proc, "low_cut", e.value)
         else:
-            ed.set(p, "controls", [c for c in CONTROLS if (c == key and e.value) or (c != key and c in p.controls)])
+            gone = RIVALS.get(key) if e.value else None
+            ed.set(p, "controls", [c for c in CONTROLS
+                                   if (c == key and e.value) or (c not in (key, gone) and c in p.controls)])
+            if gone in switches:
+                switches[gone].set_value(False)
         if settings is not None:
             settings.set_open(e.value)
 
     name = CONTROLS[key]
     settings = None
-    with ui.column().classes("gap-0 py-1"):
-        ui.switch(name, value=on, on_change=switched)
+    with ui.column().classes("gap-0 py-1 w-full"):
+        switches[key] = ui.switch(name, value=on, on_change=switched)
         ui.label(CONTROL_TEXT[key]).classes("text-xs opacity-70 pl-12 -mt-2")
-        if key in ("lowcut", "tone", "reverb", "chorus"):
+        if key == "eq":
+            with Collapse(on, inner_classes="flex flex-col gap-1 pl-12 pt-2") as settings:
+                ui.label("Drag a band's point on the curve, or type its values. In the instrument, each peak "
+                         "or shelf gets a knob starting where you set it here; cuts and notches stay as set. "
+                         "The grey area is the average spectrum of your samples; Listen plays a few notes "
+                         "through the EQ. MuseScore's soundfont gets the EQ built into its samples.") \
+                    .classes("text-xs opacity-70 max-w-3xl")
+                equalizer(ed)
+        elif key in ("lowcut", "tone", "reverb", "chorus"):
             with Collapse(on, inner_classes="flex flex-col gap-1 pl-12 pt-2") as settings:
                 with ui.row().classes("items-center gap-2"):
                     if key == "lowcut":

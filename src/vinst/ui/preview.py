@@ -42,6 +42,10 @@ def knob_keys(inst: Instrument, cutting: bool) -> list[str]:
                 continue
             if c == "noise" and not any(x.use == "release" for x in inst.extras):
                 continue
+            if c == "tone" and "eq" in p.controls:
+                continue
+            if c == "eq" and not any(b.on for b in p.eq):
+                continue
             out.append(c)
     return out
 
@@ -125,7 +129,7 @@ def render(inst: Instrument, cutting: bool, background_url: str | None = None, m
     p = inst.preset
     accent, text = css(p.accent_color), css(p.text_color)
     keys = knob_keys(inst, cutting)
-    knobs = preset.knobs_for(inst, keys, preset.effects_for(keys))
+    knobs = preset.knobs_for(inst, keys, preset.effects_for(inst, keys))
     x0, step, size = preset.knob_layout(len(knobs))
     parts = [f"<rect width='{preset.UI_W}' height='{VIEW_H}' fill='{css(p.bg_color)}'/>"]
     if background_url:

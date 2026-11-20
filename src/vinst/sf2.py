@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
+from vinst import eq
 from vinst.preset import Entry, Mapping
 from vinst.spec import Instrument
 
@@ -145,10 +146,13 @@ def pick(entries: list[Entry]) -> list[Entry]:
 
 def write(inst: Instrument, mapping: Mapping, samples_dir: Path, dest: Path) -> Soundfont:
     """Writes the soundfont of `mapping`, whose samples in `samples_dir` are as the instrument plays
-    them (so their volume is in them, as the build writes them)."""
+    them (so their volume is in them, as the build writes them), but for `mapping.gain_db`. The
+    equalizer, an effect in DecentSampler, goes into the soundfont's samples, as its knobs start."""
     zones = pick(mapping.notes) + pick(mapping.keys)
     signals = list(dict.fromkeys(e.signal for e in zones))
     p = inst.preset
+    bands = [b for b in p.eq if b.on] if "eq" in p.controls else []
+    factor = 10 ** (mapping.gain_db / 20)
 
     # Sample data: 24 bits, as the upper 16 in smpl and the lower 8 in sm24.
     files = list(dict.fromkeys(e.file for e in zones))
@@ -156,7 +160,7 @@ def write(inst: Instrument, mapping: Mapping, samples_dir: Path, dest: Path) -> 
     at = 0
     for i, name in enumerate(files):
         audio, sr = sf.read(str(samples_dir / name), always_2d=True, dtype="float64")
-        mono = np.clip(audio.mean(axis=1), -1.0, 1.0 - 2 ** -23)
+        mono = np.clip(eq.apply(audio.mean(axis=1), sr, bands) * factor, -1.0, 1.0 - 2 ** -23)
         ints = np.round(mono * 2 ** 23).astype(np.int32)
         hi_parts.append(np.concatenate([(ints >> 8).astype("<i2"), np.zeros(PAD, "<i2")]).tobytes())
         lo_parts.append(np.concatenate([(ints & 0xFF).astype("u1"), np.zeros(PAD, "u1")]).tobytes())
