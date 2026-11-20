@@ -55,6 +55,8 @@ class Meta(BaseModel):
     author: str = ""
     version: str = "0.1.0"
     description: str = ""
+    website: str = ""
+    copyright: str = ""
 
 
 class Signal(BaseModel):
@@ -290,9 +292,11 @@ class Preset(BaseModel):
     bg_color: str = "FF1F2328"
     text_color: str = "FFFFFFFF"
     accent_color: str = "FFE0A458"  # the knobs' lit arc and the playable keys
-    # The line under the title; the author and version stay in the metadata either way.
+    # What the panel shows under the title and at its foot; all of it stays in the metadata either way.
     show_author: bool = True
     show_version: bool = True
+    show_copyright: bool = True
+    show_website: bool = True
 
 
 class Instrument(BaseModel):

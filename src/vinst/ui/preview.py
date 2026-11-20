@@ -150,6 +150,9 @@ def render(inst: Instrument, cutting: bool, background_url: str | None = None, m
                      f"stroke='{text}'/><text x='{menu_x + 6}' y='43' font-size='13' fill='{text}'>"
                      f"{escape(switched[0].name)} ▾</text>")
     parts += [knob(round(x0 + i * step), preset.KNOB_Y, size, k, accent, text) for i, k in enumerate(knobs)]
+    if foot := preset.footer(inst):
+        parts.append(f"<text x='{preset.UI_W - m}' y='{preset.FOOTER_Y + 13}' font-size='11' fill='{text}' "
+                     f"opacity='.5' text-anchor='end'>{escape(foot)}</text>")
     if mapping is not None:
         span, extra_keys = mapping.span, list(mapping.fx_keys)
     else:

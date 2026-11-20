@@ -93,11 +93,12 @@ def timecents(seconds: float) -> int:
 
 
 def ascii_text(value: str) -> bytes:
-    """SF2 names are ASCII: accents folded away ("Übung" → "Ubung"), anything else as "_"."""
+    """SF2 text is ASCII: accents folded away ("Übung" → "Ubung"), "©" as "(c)", line breaks kept,
+    anything else as "_"."""
     import unicodedata
 
-    folded = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
-    return "".join(c if " " <= c <= "~" else "_" for c in folded).encode("ascii")
+    folded = unicodedata.normalize("NFKD", value.replace("©", "(c)")).encode("ascii", "ignore").decode()
+    return "".join(c if " " <= c <= "~" or c == "\n" else "_" for c in folded).encode("ascii")
 
 
 def name20(value: str) -> bytes:
@@ -115,6 +116,22 @@ def text(value: str) -> bytes:
     """An INFO string: zero-terminated, padded with another zero to an even length, at most INFO_MAX."""
     data = ascii_text(value)[:INFO_MAX - 2] + b"\0"
     return data + b"\0" * (len(data) % 2)
+
+
+def credits(inst: Instrument) -> list[bytes]:
+    """The author (IENG) and copyright (ICOP), where there are any."""
+    meta = inst.meta
+    return [chunk(tag, text(value.strip()))
+            for tag, value in [(b"IENG", meta.author), (b"ICOP", meta.copyright)] if value.strip()]
+
+
+def comment(inst: Instrument) -> str:
+    """The description and website, cut short so the line saying which instrument this is fits behind."""
+    mark = OF + inst.meta.slug
+    room = INFO_MAX - 2 - len(ascii_text(mark)) - 2
+    head = "\n".join(x for x in [inst.meta.description.strip(), inst.meta.website.strip()] if x)
+    head = ascii_text(head)[:room].decode().strip() if room > 0 else ""
+    return f"{head}\n\n{mark}" if head else mark
 
 
 def riff_list(kind: bytes, *chunks: bytes) -> bytes:
@@ -224,7 +241,7 @@ def write(inst: Instrument, mapping: Mapping, samples_dir: Path, dest: Path) -> 
 
     info = riff_list(b"INFO", chunk(b"ifil", struct.pack("<HH", 2, 4)), chunk(b"isng", text("EMU8000")),
                      chunk(b"INAM", text(inst.meta.name)), chunk(b"ISFT", text(MARK.decode())),
-                     chunk(b"ICMT", text(OF + inst.meta.slug)))
+                     *credits(inst), chunk(b"ICMT", text(comment(inst))))
     sdta = riff_list(b"sdta", chunk(b"smpl", b"".join(hi_parts)), chunk(b"sm24", b"".join(lo_parts)))
     pdta = riff_list(b"pdta", chunk(b"phdr", b"".join(phdr)), chunk(b"pbag", b"".join(pbag)),
                      chunk(b"pmod", b"".join(pmod)), chunk(b"pgen", b"".join(pgen)),
