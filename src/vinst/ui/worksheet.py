@@ -1134,6 +1134,8 @@ def step_worksheet(ed: "Editor") -> None:
             return
         if b - a < int(0.05 * (take.sample_rate or 48000)):
             return
+        # Snapped here as slicing would, so the cut kept is the one shown and the hit keeps its decisions.
+        a = await run.io_bound(slicing.snap_cut, [Path(rec.takes_dir).expanduser() / f for f in take.files], a, b)
         cuts = [(h.start, h.end) for h in take.hits if hit is None or h.id != hit.id] + [(a, b)]
         takes_meta.save_cuts(slug, first_file(take), cuts)
         if hit is not None:
