@@ -3,7 +3,7 @@
 With loudness following velocity (see vinst.velocity) the instrument sets the loudness itself, so the
 recordings of a note's velocities only need to sound like their dynamic. Played alike on every note,
 they are about the same distance apart; a note whose soft velocity was played harder or softer than
-on the others sounds like a different dynamic there (and without the line, jumps further). The aim is the instrument's
+on the others sounds like a different dynamic there (and without the curve, jumps further). The aim is the instrument's
 own step: its typical dB per velocity between the middles of two neighbouring velocities, as
 recorded, so a note with its own split, or a third velocity, gets an aim to match.
 """

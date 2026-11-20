@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from vinst import eq
+from vinst import eq, level, velocity
 from vinst.preset import Entry, Mapping, subtitle
 from vinst.spec import Instrument
 
@@ -24,7 +24,6 @@ INITIAL_ATTENUATION, FINE_TUNE, SAMPLE_ID, SAMPLE_MODES = 48, 52, 53, 54
 FILTER_FC = 8
 VELOCITY_CONCAVE_NEGATIVE = 0x0502  # the default velocity → attenuation modulator's source
 VELOCITY_LINEAR_NEGATIVE = 0x0102
-VELOCITY_LINEAR_POSITIVE = 0x0002
 VELOCITY_SWITCH = 0x0C02  # the default velocity → filter modulator's amount source
 INFO_MAX = 256  # bytes of an INFO string, its terminating zeros included (FluidSynth rejects longer)
 PAD = 46  # zero samples the specification wants after each sample
@@ -168,22 +167,36 @@ def write(inst: Instrument, mapping: Mapping, samples_dir: Path, dest: Path) -> 
     equalizer, an effect in DecentSampler, goes into the soundfont's samples, as its knobs start."""
     note_zones = pick(mapping.notes)
     zones = note_zones + pick(mapping.keys)
-    # Loudness following velocity is a line in dB, as a soundfont's linear velocity modulator makes it.
-    curved = {id(z) for z in note_zones} if mapping.loudness_range_db is not None else set()
-    per_velocity = (mapping.loudness_range_db or 0.0) / 126
+    curve = mapping.loudness_range_db
+    curved = {id(z) for z in note_zones} if curve is not None else set()
+    # A concave velocity modulator attenuates by amount·(40/96)·log10(127/velocity) cB: the velocity curve
+    # (see vinst.velocity) at this amount, 0 at velocity 127. Attenuation can't be negative, so each note
+    # sample is lifted here to its level at velocity 127, and its zones only take off from there.
+    concave = round(24 * curve / math.log10(127)) if curve is not None else 0
+    lift: dict[str, float] = {}
+    for z in note_zones if curve is not None else []:
+        lift[z.file] = max(lift.get(z.file, -math.inf), z.volume_db - velocity.curve_db(z.hi_vel, curve))
     signals = list(dict.fromkeys(e.signal for e in zones))
     p = inst.preset
     bands = [b for b in p.eq if b.on] if "eq" in p.controls else []
     factor = 10 ** (mapping.gain_db / 20)
+
+    def mono(name: str) -> tuple[np.ndarray, int]:
+        audio, sr = sf.read(str(samples_dir / name), always_2d=True, dtype="float64")
+        return eq.apply(audio.mean(axis=1), sr, bands) * 10 ** (lift.get(name, 0.0) / 20), sr
+
+    # Lifted, a soft sample can reach past full scale: then the whole soundfont is a little quieter.
+    lifted = [name for name, db in lift.items() if db > 0.01]
+    loudest = max((float(np.max(np.abs(mono(name)[0]))) for name in lifted), default=0.0) * factor
+    factor *= min(1.0, 10 ** (level.CEILING_DB / 20) / loudest) if loudest else 1.0
 
     # Sample data: 24 bits, as the upper 16 in smpl and the lower 8 in sm24.
     files = list(dict.fromkeys(e.file for e in zones))
     hi_parts, lo_parts, headers, index = [], [], [], {}
     at = 0
     for i, name in enumerate(files):
-        audio, sr = sf.read(str(samples_dir / name), always_2d=True, dtype="float64")
-        mono = np.clip(eq.apply(audio.mean(axis=1), sr, bands) * factor, -1.0, 1.0 - 2 ** -23)
-        ints = np.round(mono * 2 ** 23).astype(np.int32)
+        audio, sr = mono(name)
+        ints = np.round(np.clip(audio * factor, -1.0, 1.0 - 2 ** -23) * 2 ** 23).astype(np.int32)
         hi_parts.append(np.concatenate([(ints >> 8).astype("<i2"), np.zeros(PAD, "<i2")]).tobytes())
         lo_parts.append(np.concatenate([(ints & 0xFF).astype("u1"), np.zeros(PAD, "u1")]).tobytes())
         e = next(z for z in zones if z.file == name)
@@ -221,14 +234,14 @@ def write(inst: Instrument, mapping: Mapping, samples_dir: Path, dest: Path) -> 
         for e in (z for z in zones if z.signal == signal):
             ibag.append(struct.pack("<HH", len(igen), len(imod)))
             igen += [rng(KEY_RANGE, e.lo, e.hi), rng(VEL_RANGE, e.lo_vel, e.hi_vel)]
-            if id(e) in curved:
-                # In cB: per_velocity·(hi_vel − velocity) − volume_db, as A − amount·velocity/128, never below
-                # 0 within the zone (players clamp it there). The instrument's velocity modulator is
-                # replaced by one of 0: same source and destination.
-                amount = round(1280 * per_velocity)
-                igen.append(gen(INITIAL_ATTENUATION, round(10 * (per_velocity * e.hi_vel - e.volume_db))))
-                imod += [struct.pack("<HHhHH", VELOCITY_LINEAR_NEGATIVE, INITIAL_ATTENUATION, 0, 0, 0),
-                         struct.pack("<HHhHH", VELOCITY_LINEAR_POSITIVE, INITIAL_ATTENUATION, -amount, 0, 0)]
+            if id(e) in curved and curve is not None:
+                # From the lifted sample down to the entry's level at its top velocity, and below it along
+                # the curve: the concave modulator replaces the instrument's one of 0, and one of 0 its
+                # linear one (same source and destination).
+                drop = lift[e.file] - e.volume_db + velocity.curve_db(e.hi_vel, curve)
+                igen.append(gen(INITIAL_ATTENUATION, max(0, round(10 * drop))))
+                imod += [struct.pack("<HHhHH", VELOCITY_CONCAVE_NEGATIVE, INITIAL_ATTENUATION, concave, 0, 0),
+                         struct.pack("<HHhHH", VELOCITY_LINEAR_NEGATIVE, INITIAL_ATTENUATION, 0, 0, 0)]
             elif e.volume_db < 0:
                 igen.append(gen(INITIAL_ATTENUATION, round(-10 * e.volume_db)))
             if e.tuning:

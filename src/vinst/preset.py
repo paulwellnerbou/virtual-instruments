@@ -66,7 +66,7 @@ class Mapping:
     info: list[str] = field(default_factory=list)
     gain_db: float = 0.0  # for all samples: the recordings keep their level, the instrument is made louder
     # Loudness follows velocity over this range (see vinst.velocity): a note entry's volume_db is then its
-    # level at its highest velocity, and it plays softer below by the line. None: velocity tracking.
+    # level at its highest velocity, and it plays softer below along the curve. None: velocity tracking.
     loudness_range_db: float | None = None
 
     @property
@@ -183,7 +183,7 @@ def curve_offsets(pass_notes: dict[int, dict[str, list[Hit]]], bounds: dict[int,
 
     That level comes from the note's loudest recorded velocity, as evened out across the notes
     (`corrections`): it sounds as recorded at the middle of its velocity range. The softer velocities'
-    own level doesn't count, only their sound: they are lifted or lowered to the line. A hit keeps how
+    own level doesn't count, only their sound: they are lifted or lowered to the curve. A hit keeps how
     much louder or softer it is than the other hits of its velocity on the note, by up to
     `tolerance_db`."""
     out: dict[str, float] = {}

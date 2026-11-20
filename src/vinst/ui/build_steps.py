@@ -215,7 +215,7 @@ def step_sound(ed: "Editor") -> None:
              "differences stay as played. At 0 every sample is brought onto the line. Soft velocities stay "
              "softer than loud ones. Only the instrument's copies of the samples change.") \
         .classes("text-xs opacity-70 max-w-3xl")
-    remembered = {"range": p.loudness_range_db or 36.0}
+    remembered = {"range": p.loudness_range_db or 42.0}
 
     def follow(on: bool) -> None:
         if p.loudness_range_db is not None:
@@ -231,7 +231,9 @@ def step_sound(ed: "Editor") -> None:
         with Collapse(p.loudness_range_db is not None, axis="x") as loudness_range:
             range_field = ed.number("Velocity 1 to 127", p, "loudness_range_db", cast=float, min=0, max=60,
                                     step=1, suffix="dB").classes("w-40")
-    ui.label("From the softest to the hardest key press, the loudness rises evenly by this much, and each "
+    ui.label("From the softest to the hardest key press, the loudness rises by this much: quickly at the soft "
+             "end, gently at the top, so the usual playing range stays even (at 42 dB the volume is in "
+             "proportion to velocity: velocity 64 about 6 dB softer than 127, velocity 20 about 16 dB). Each "
              "velocity's samples are lifted or lowered to it: moving from one velocity to the next changes "
              "the sound, not the loudness. It can reach further than you played, e.g. pianissimo and "
              "fortissimo from p and mf. A note's loudest velocity sounds as recorded in the middle of its "

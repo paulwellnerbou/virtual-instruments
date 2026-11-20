@@ -444,10 +444,11 @@ def test_loudness_follows_velocity_without_a_step_between_velocities(built):
                                                  + velocity.tracking_db(v, float(s["ampVelTrack"])))
     played = {v: float(np.median(dbs)) for v, dbs in by_velocity.items()}
     assert sorted(played) == list(range(1, 128))
-    steps = [played[v + 1] - played[v] for v in range(1, 127)]
-    # Three velocities recorded, each with its own loudness: across all of them one even rise.
-    assert max(steps) < 1.0 and min(steps) > -0.5
-    assert played[127] - played[1] == pytest.approx(inst.preset.loudness_range_db, abs=3)
+    range_db = inst.preset.loudness_range_db
+    off = [played[v] - played[127] - velocity.curve_db(v, range_db) for v in range(1, 128)]
+    # Three velocities recorded, each with its own loudness: across all of them the one curve.
+    assert max(off) - min(off) < 2.0
+    assert played[127] - played[1] == pytest.approx(range_db, abs=3)
 
 
 def test_quiet_recordings_play_louder_by_how_loud_their_notes_are(built):
@@ -614,7 +615,10 @@ def _riff(data: bytes, at: int, end: int) -> dict[bytes, list[bytes]]:
 
 
 def test_the_build_writes_a_valid_soundfont(built):
+    import math
     import struct
+
+    from vinst import velocity
 
     inst, _ = built
     result = bundle.build(inst)
@@ -643,24 +647,27 @@ def test_the_build_writes_a_valid_soundfont(built):
             assert zone[0] == 43 and zone[1] == 44 and zone[-1] == 53
     mods = [struct.unpack("<HHhHH", m) for m in records[b"imod"]]
     mod_bags = [struct.unpack("<HH", b)[1] for b in records[b"ibag"]]
-    per_velocity = 10 * inst.preset.loudness_range_db / 126  # cB
-    curved = 0
+    range_db = inst.preset.loudness_range_db
+    curved, loudest_zone = 0, {}
     for (a, b), (ma, mb) in zip(zip(bags, bags[1:]), zip(mod_bags, mod_bags[1:])):
         zone = dict(gens[a:b])
         if 53 not in zone or mb == ma:
             continue
-        # A note's zone: loudness by velocity, a line in dB, as a player sums its attenuation.
+        # A note's zone: loudness by velocity along the curve, as a player sums its attenuation.
         lo, hi = zone[44] & 0xFF, zone[44] >> 8
-        sources = {0x0102: lambda v: 1 - v / 128, 0x0002: lambda v: v / 128}
+        sources = {0x0102: lambda v: 1 - v / 128, 0x0502: lambda v: 40 / 96 * math.log10(127 / v)}
 
         def attenuation(v: int) -> float:
             return zone.get(48, 0) + sum(amount * sources[src](v) for src, dest, amount, _, _ in mods[ma:mb]
                                          if dest == 48)
 
-        assert -1 <= attenuation(hi) <= 2  # as loud as written at its top velocity, whatever range it has
-        assert attenuation(lo) - attenuation(hi) == pytest.approx(per_velocity * (hi - lo), abs=2)
+        assert attenuation(lo) - attenuation(hi) == pytest.approx(
+            10 * (velocity.curve_db(hi, range_db) - velocity.curve_db(lo, range_db)), abs=3)
+        loudest_zone[zone[53]] = min(loudest_zone.get(zone[53], 1e9), zone.get(48, 0))
         curved += 1
-    assert curved
+    # Each sample is lifted by what the curve takes off at its loudest zone's top velocity, so there it plays
+    # as the build wrote it, with nothing more to take off.
+    assert curved and all(a == 0 for a in loudest_zone.values())
     sample_ids = {amount for op, amount in gens if op == 53}
     assert sample_ids == set(range(len(records[b"shdr"]) - 1))
     assert result.soundfont.parent == result.bundle.parent and result.soundfont_samples == len(sample_ids)
