@@ -135,7 +135,7 @@ def render(inst: Instrument, cutting: bool, background_url: str | None = None, m
     switched = preset.switched_passes(inst)
     # Clipped where DecentSampler's label ends, before the passes menu if there is one.
     title = (f"<text x='0' y='49' font-size='28' fill='{text}'>{escape(inst.meta.name)}</text>"
-             + (f"<text x='0' y='68' font-size='13' fill='{text}' opacity='.6'>{escape(sub)}</text>"
+             + (f"<text x='0' y='71' font-size='{preset.SUBTITLE_SIZE}' fill='{text}'>{escape(sub)}</text>"
                 if (sub := preset.subtitle(inst)) else ""))
     parts.append(f"<svg x='{m}' y='0' width='{preset.title_width(bool(switched))}' height='84' overflow='hidden'>"
                  f"{title}</svg>")

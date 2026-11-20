@@ -15,7 +15,7 @@ import numpy as np
 import soundfile as sf
 
 from vinst import eq
-from vinst.preset import Entry, Mapping
+from vinst.preset import Entry, Mapping, subtitle
 from vinst.spec import Instrument
 
 # Generators and modulator sources of the SF2 2.04 specification.
@@ -126,10 +126,10 @@ def credits(inst: Instrument) -> list[bytes]:
 
 
 def comment(inst: Instrument) -> str:
-    """The description and website, cut short so the line saying which instrument this is fits behind."""
+    """The subtitle, description and website, cut short so the line saying which instrument this is fits behind."""
     mark = OF + inst.meta.slug
     room = INFO_MAX - 2 - len(ascii_text(mark)) - 2
-    head = "\n".join(x for x in [inst.meta.description.strip(), inst.meta.website.strip()] if x)
+    head = "\n".join(x for x in [subtitle(inst), inst.meta.description.strip(), inst.meta.website.strip()] if x)
     head = ascii_text(head)[:room].decode().strip() if room > 0 else ""
     return f"{head}\n\n{mark}" if head else mark
 

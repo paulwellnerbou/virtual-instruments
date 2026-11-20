@@ -872,48 +872,53 @@ def test_the_mod_wheel_leaves_the_equalizer_alone(built):
     assert [k.get("label") for k in xml.iter("labeled-knob") if k.get("tags") == tag] == ["Reverb"]
 
 
-def test_subtitle_shows_author_and_version_unless_switched_off():
-    inst = defaults.new_instrument("Uke", InstrumentType.PLUCKED, author="Paul")
-    inst.meta.version = "1.2"
-    assert preset.subtitle(inst) == "by Paul · v1.2"
-    inst.meta.version = "v2"
-    assert preset.subtitle(inst) == "by Paul · v2"
-    inst.preset.show_author = False
-    assert preset.subtitle(inst) == "v2"
-    inst.preset.show_version = False
-    assert preset.subtitle(inst) == ""
-    inst.preset.show_author = True
-    inst.meta.author = " "
-    assert preset.subtitle(inst) == ""
-
-
-def test_the_panel_and_preview_show_the_subtitle(built):
+def test_the_panel_and_preview_show_the_subtitle_under_the_title(built):
     from vinst.ui import preview
 
     inst, _ = built
-    inst.meta.author, inst.meta.version = "Paul", "1.2"
-    xml = etree.parse(str(bundle.build(inst).preset_file))
-    assert "by Paul · v1.2" in [x.get("text") for x in xml.iter("label")]
-    assert "by Paul · v1.2" in preview.render(inst, cutting=False)
-
-    inst.meta.author = ""
-    inst.preset.show_version = False
+    inst.meta.subtitle = " Hawaiian koa "
     result = bundle.build(inst)
-    xml = etree.parse(str(result.preset_file))
-    assert [x.get("text") for x in xml.iter("label")][0] == "Test Uke"
-    assert not any(x.get("text", "").startswith(("by ", "v")) for x in xml.iter("label"))
-    assert "\n  by " not in result.preset_file.read_text().split("-->")[0]
+    labels = [x for x in etree.parse(str(result.preset_file)).iter("label")]
+    assert [x.get("text") for x in labels[:2]] == ["Test Uke", "Hawaiian koa"]
+    assert labels[1].get("textColor") == inst.preset.text_color
+    assert int(labels[1].get("y")) + int(labels[1].get("height")) <= 84  # above the hairline
+    assert "\n  Hawaiian koa\n" in result.preset_file.read_text().split("-->")[0]
+    assert ">Hawaiian koa</text>" in preview.render(inst, cutting=False)
+
+    inst.meta.subtitle, inst.meta.author = " ", ""
+    result = bundle.build(inst)
+    labels = [x.get("text") for x in etree.parse(str(result.preset_file)).iter("label")]
+    assert labels[0] == "Test Uke" and "" not in labels and " " not in labels
+    head = result.preset_file.read_text().split("-->")[0]
+    assert "\n  by " not in head and "\n  \n" not in head
 
 
-def test_footer_shows_copyright_and_website_unless_switched_off():
+def test_footer_shows_author_version_copyright_and_website_unless_switched_off():
     inst = defaults.new_instrument("Uke", InstrumentType.PLUCKED, author="Paul")
     assert inst.meta.copyright.startswith("© 20") and inst.meta.copyright.endswith(" Paul")
     assert defaults.new_instrument("Y", InstrumentType.PLUCKED, author="").meta.copyright == ""
-    inst.meta.copyright, inst.meta.website = "© 2026 Paul", "https://www.example.com/"
+    inst.meta.version = "1.2"
+    inst.meta.copyright, inst.meta.website = "© 2026", "https://www.example.com/"
+    assert preset.footer(inst) == "by Paul · v1.2 · © 2026 · www.example.com"
+    inst.meta.version = "v2"
+    assert preset.footer(inst) == "by Paul · v2 · © 2026 · www.example.com"
+    # A copyright that names the author says it already; switched off, "by" says it instead.
+    inst.meta.copyright = "© 2026 PAUL"
+    assert preset.footer(inst) == "v2 · © 2026 PAUL · www.example.com"
+    inst.preset.show_copyright = False
+    assert preset.footer(inst) == "by Paul · v2 · www.example.com"
+    inst.preset.show_copyright = True
+    inst.meta.copyright = "© 2026 Paul"
+    inst.preset.show_author = False
+    assert preset.footer(inst) == "v2 · © 2026 Paul · www.example.com"
+    inst.preset.show_version = False
     assert preset.footer(inst) == "© 2026 Paul · www.example.com"
     inst.preset.show_copyright = False
     assert preset.footer(inst) == "www.example.com"
     inst.preset.show_website = False
+    assert preset.footer(inst) == ""
+    inst.preset.show_author = True
+    inst.meta.author = " "
     assert preset.footer(inst) == ""
 
 
@@ -926,9 +931,9 @@ def test_the_instrument_carries_its_credits(built):
     inst.meta.description = "A travel ukulele.\nRecorded with a pickup."
     result = bundle.build(inst)
     xml = etree.parse(str(result.preset_file))
-    foot = [x for x in xml.iter("label") if x.get("text") == "© 2026 Paul · example.com"]
+    foot = [x for x in xml.iter("label") if x.get("text") == "v0.1.0 · © 2026 Paul · example.com"]
     assert foot and int(foot[0].get("y")) + int(foot[0].get("height")) <= preset.VISIBLE_H
-    assert "© 2026 Paul · example.com" in preview.render(inst, cutting=False)
+    assert "v0.1.0 · © 2026 Paul · example.com" in preview.render(inst, cutting=False)
     head = result.preset_file.read_text().split("-->")[0]
     assert "© 2026 Paul" in head and "example.com" in head and "Recorded with a pickup." in head
     assert "  Test Uke\n  version 0.1.0\n  by Paul\n  © 2026 Paul\n  example.com\n  A travel ukulele.\n" in head
@@ -937,6 +942,8 @@ def test_the_instrument_carries_its_credits(built):
     info = sf2.header(result.soundfont)
     assert b"IENG" in info and b"Paul\0" in info and b"(c) 2026 Paul\0" in info
     assert b"A travel ukulele.\nRecorded with a pickup.\nexample.com\n\nvinst instrument: " in info
+    inst.meta.subtitle = "Hawaiian koa"
+    assert sf2.comment(inst).startswith("Hawaiian koa\nA travel ukulele.\n")
 
     # However long the description, the soundfont still says which instrument it is.
     inst.meta.description = "x" * 1000
