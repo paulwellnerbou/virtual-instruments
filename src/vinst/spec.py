@@ -290,6 +290,9 @@ class Preset(BaseModel):
     bg_color: str = "FF1F2328"
     text_color: str = "FFFFFFFF"
     accent_color: str = "FFE0A458"  # the knobs' lit arc and the playable keys
+    # The line under the title; the author and version stay in the metadata either way.
+    show_author: bool = True
+    show_version: bool = True
 
 
 class Instrument(BaseModel):

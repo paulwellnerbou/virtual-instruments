@@ -799,3 +799,36 @@ def test_the_mod_wheel_leaves_the_equalizer_alone(built):
     xml = etree.parse(str(bundle.build(inst).preset_file))
     tag = xml.find("midi/cc/binding").get("controlTags")
     assert [k.get("label") for k in xml.iter("labeled-knob") if k.get("tags") == tag] == ["Reverb"]
+
+
+def test_subtitle_shows_author_and_version_unless_switched_off():
+    inst = defaults.new_instrument("Uke", InstrumentType.PLUCKED, author="Paul")
+    inst.meta.version = "1.2"
+    assert preset.subtitle(inst) == "by Paul · v1.2"
+    inst.meta.version = "v2"
+    assert preset.subtitle(inst) == "by Paul · v2"
+    inst.preset.show_author = False
+    assert preset.subtitle(inst) == "v2"
+    inst.preset.show_version = False
+    assert preset.subtitle(inst) == ""
+    inst.preset.show_author = True
+    inst.meta.author = " "
+    assert preset.subtitle(inst) == ""
+
+
+def test_the_panel_and_preview_show_the_subtitle(built):
+    from vinst.ui import preview
+
+    inst, _ = built
+    inst.meta.author, inst.meta.version = "Paul", "1.2"
+    xml = etree.parse(str(bundle.build(inst).preset_file))
+    assert "by Paul · v1.2" in [x.get("text") for x in xml.iter("label")]
+    assert "by Paul · v1.2" in preview.render(inst, cutting=False)
+
+    inst.meta.author = ""
+    inst.preset.show_version = False
+    result = bundle.build(inst)
+    xml = etree.parse(str(result.preset_file))
+    assert [x.get("text") for x in xml.iter("label")][0] == "Test Uke"
+    assert not any(x.get("text", "").startswith(("by ", "v")) for x in xml.iter("label"))
+    assert "\n  by " not in result.preset_file.read_text().split("-->")[0]
