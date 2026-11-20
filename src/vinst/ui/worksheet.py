@@ -18,9 +18,10 @@ import numpy as np
 import soundfile as sf
 from fastapi import HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
-from nicegui import app, run, ui
+from nicegui import app, background_tasks, run, ui
 
 from vinst import cleanup_eq, loops, relocate, review, slicing, store, takes_meta
+from vinst import notes as note_names
 from vinst.bundle import CLEANUP_MESSAGE, FINDER_MESSAGE, STALE_MESSAGE, changed_message, eq_message
 from vinst.plan import (
     Take,
@@ -226,6 +227,30 @@ def waveform(take: TakeResult, highlight: str | set[str] | None = None, height: 
             f"{polygon} fill-opacity='0.6' clip-path='url(#{clip_id})'/></svg>")
 
 
+def hit_info(take: TakeResult, hit: Hit, imported: bool = False) -> str:
+    """What a hit is, for its tooltip: where it's from, how long, its pitch and loudness, what to
+    look at; not how it got where it is. An imported sample is a file of its own, not a stretch of
+    a recording."""
+    rate = hit.sample_rate or take.sample_rate or 1
+    if imported:
+        first = next(iter(hit.files.values()), take.title)
+    else:
+        first = f"{take.files[0] if take.files else take.base} · {hit.start / rate:.2f}–{hit.end / rate:.2f} s"
+    lines = [first, f"Length {(hit.end - hit.start) / rate:.2f} s"]
+    if hit.midi_detected is not None:
+        # Off the note it's nearest to: on the wrong note, a flag below says so.
+        nearest = round(hit.midi_detected)
+        lines.append(f"Pitch {note_names.name(nearest)} {(hit.midi_detected - nearest) * 100:+.0f} cents")
+    lines.append(f"Loudness {hit.rms_db:.1f} dBFS (first 0.3 s), peak {hit_peak_db(hit):.1f} dBFS")
+    if hit.loop_start is not None:
+        lines.append("Loop turned off" if hit.loop_off else "Loop from a marker in the recording"
+                     if hit.loop_source == "marker" else f"Automatic loop, match {hit.loop_score:.2f}")
+    lines += [FLAGS[f][1][0].upper() + FLAGS[f][1][1:] for f in hit.flags if f in FLAGS]
+    if hit.rejected:
+        lines.append("Rejected: left out of the instrument")
+    return "\n".join(lines)
+
+
 def hit_peak_db(hit: Hit) -> float:
     return max(hit.peak_db.values(), default=-120.0)
 
@@ -384,6 +409,7 @@ window.viCut || (() => {
     box.dataset.start = start; box.dataset.end = end;
     box.dispatchEvent(new CustomEvent('cut-change', {detail: {start, end}}));
   });
+  window.viCutting = () => drag !== null;  // so the server doesn't redraw the dialog under a drag
   window.viCut = true;
 })();
 """
@@ -659,7 +685,8 @@ def step_worksheet(ed: "Editor") -> None:
     slug = inst.meta.slug
     path = store.manifest_path(slug)
     state: dict[str, Any] = {"manifest": None, "problems_only": False, "busy": False,
-                             "progress": 0.0, "label": "", "stale": None, "edited": []}
+                             "progress": 0.0, "label": "", "stale": None, "edited": [], "edited_keys": [],
+                             "changed": set(), "deleted": set()}
     ui.add_css(CSS)
     ui.add_body_html(f"<script>{JS}</script>")
     try:
@@ -805,6 +832,7 @@ def step_worksheet(ed: "Editor") -> None:
         recording.record_more(ed, plan.key, 1, after)
 
     def open_hit(take: TakeResult, hit: Hit, autoplay: bool = True) -> None:
+        state["dialog_of"] = (take.key, hit.id)
         dialog_card.clear()
         with dialog_card:
             ui.label(plain_title(take)).classes("text-lg font-medium")
@@ -993,6 +1021,7 @@ def step_worksheet(ed: "Editor") -> None:
 
     def open_recording(take: TakeResult) -> None:
         """A recording in which no hit was found: mark the one that was played by hand, or move it."""
+        state["dialog_of"] = (take.key, None)
         dialog_card.clear()
         with dialog_card:
             ui.label(plain_title(take)).classes("text-lg font-medium")
@@ -1117,20 +1146,21 @@ def step_worksheet(ed: "Editor") -> None:
         changed = take.cleanup_eq != cleanup_eq.take_setup(inst, take.key, take.signals)
         return "clean-up EQ" + (f": {names}" if names else "") + (", changed since slicing" if changed else "")
 
-    def hit_text(h: Hit) -> tuple[str, list[str]]:
-        """A hit's short label (its tuning, its loop) and what's worth knowing about it."""
+    def hit_text(h: Hit) -> str:
+        """A hit's short label: its tuning, its loop."""
         text = f"{h.cents:+.0f}¢" if h.cents is not None else "●"
-        tips = [f.replace("_", " ") for f in h.flags]
-        if h.layer_set:
-            tips.append("moved here")
         if h.loop_start is not None:
             # ⟳ loops, ⟳M uses a marker from the take, a crossed-out ⟳ was turned off.
             text += " ⟳̸" if h.loop_off else (" ⟳M" if h.loop_source == "marker" else " ⟳")
-            tips.append("loop turned off" if h.loop_off else "loop from a marker" if h.loop_source == "marker"
-                        else f"automatic loop, match {h.loop_score:.2f}")
-        if h.rejected:
-            tips.append("rejected")
-        return text, tips
+        return text
+
+    def info_tip(element: Any, take: TakeResult, h: Hit) -> None:
+        with element:
+            text = hit_info(take, h, importing)
+            if take.cleanup_eq:
+                eq = eq_tip(take)
+                text += "\n" + eq[0].upper() + eq[1:]
+            ui.tooltip(text).classes("whitespace-pre-line text-xs")
 
     def draggable_hit(element: Any, take: TakeResult, h: Hit) -> None:
         element.props("draggable").on("click", lambda t=take, hit=h: open_hit(t, hit))
@@ -1138,17 +1168,13 @@ def step_worksheet(ed: "Editor") -> None:
 
     def chip(take: TakeResult, h: Hit, number: int | None = None) -> None:
         """A hit without a waveform to show it in: imported samples, hits of a removed velocity."""
-        text, tips = hit_text(h)
-        text += f" · {h.rms_db:.0f} dB"
-        if take.cleanup_eq:
-            tips.append(eq_tip(take))
+        text = hit_text(h) + f" · {h.rms_db:.0f} dB"
         c = ui.chip(text if number is None else f"{number} {text}", color=None,
                     icon="graphic_eq" if take.cleanup_eq else None) \
             .props("dense square clickable").classes("vi-chip-drag").style(
                 f"background:{hit_color(h)};color:white" + (";text-decoration:line-through" if h.rejected else ""))
         draggable_hit(c, take, h)
-        if tips:
-            c.tooltip(", ".join(tips))
+        info_tip(c, take, h)
 
     def compare_button(hits: list[tuple[TakeResult, Hit]]) -> None:
         kept = [h for _, h in hits if not h.rejected]  # rejected ones are decided; compare the rest
@@ -1292,20 +1318,18 @@ def step_worksheet(ed: "Editor") -> None:
                 if not r.envelope:  # e.g. imported files: nothing to draw
                     chip(r, h)
                     continue
-                text, tips = hit_text(h)
+                text = hit_text(h)
                 basis = hit_seconds(r, h) / span_s * 100 if span_s else 100 / len(hits)
                 with ui.element("div").classes("vi-hit").style(f"flex:0 1 {basis:.2f}%;position:relative") as tile:
                     ui.html(hit_wave(r, h, WAVE_H, loudest_db), sanitize=False)
                     if r.cleanup_eq:
-                        ui.icon("graphic_eq").classes("vi-hit-eq")
-                        tips.append(eq_tip(r))
+                        ui.icon("graphic_eq").classes("vi-hit-eq")  # its tooltip says which EQ
                     ui.label(text).classes("vi-hit-label").style(
                         f"color:{hit_color(h)}" + (";text-decoration:line-through" if h.rejected else ""))
                     # The attack's loudness: what decides which velocity a hit fits.
                     ui.label(f"{h.rms_db:.0f} dB").classes("vi-hit-level")
                 draggable_hit(tile, r, h)
-                if tips:
-                    tile.tooltip(", ".join(tips))
+                info_tip(tile, r, h)
 
     def note_card(lane_takes: list[Take], results_by_key: dict[str, TakeResult]) -> None:
         first = lane_takes[0]
@@ -1336,6 +1360,7 @@ def step_worksheet(ed: "Editor") -> None:
             # A row's own status ("not recorded yet") shows in the row: here what needs attention, in
             # orange, and what's good to know, in grey.
             recorded_recs = [r for r in recs if r.status != "missing"]
+            changed_here(recorded_recs, title)
             for text, style in (("; ".join(filter(None, (r.message for r in recorded_recs))), "text-orange-600"),
                                 ("; ".join(filter(None, (r.info for r in recorded_recs))), "opacity-60")):
                 if text:
@@ -1384,6 +1409,31 @@ def step_worksheet(ed: "Editor") -> None:
                     for n, (r, h) in enumerate(orphans, 1):
                         chip(r, h, n)
 
+    def changed_here(recs: list[TakeResult], note_title: str) -> None:
+        """At the note too, not only above the list: which of its recordings changed since slicing."""
+        def short(r: TakeResult) -> str:
+            return r.title.removeprefix(f"{note_title} · ")
+
+        edited = [r for r in recs if r.key in state["edited_keys"]]
+        other = [r for r in recs if r.title in state["changed"] and r.key not in state["edited_keys"]]
+        gone = [r for r in other if r.title in state["deleted"]]
+        other = [r for r in other if r.title not in state["deleted"]]
+        if edited:
+            with ui.row().classes("items-center gap-2"):
+                ui.label("Edited since slicing: " + ", ".join(short(r) for r in edited) + ".") \
+                    .classes("text-xs text-orange-600")
+                ui.button("Update", icon="sync", on_click=lambda keys=[r.key for r in edited]: update_edited(keys)) \
+                    .props("flat dense no-caps size=sm") \
+                    .tooltip("Cut again where it was cut, keeping your decisions, so you hear the edited sound")
+        for r in other:
+            with ui.row().classes("items-center gap-2"):
+                ui.label(f"{short(r)}: changed since slicing.").classes("text-xs text-orange-600")
+                ui.button("Re-slice", icon="content_cut", on_click=lambda r=r: reslice(r)) \
+                    .props("flat dense no-caps size=sm").tooltip("Find this recording's hits again")
+        if gone:
+            ui.label(", ".join(short(r) for r in gone) + ": deleted since slicing; Slice them (above) takes "
+                     f"{'its hits' if len(gone) == 1 else 'their hits'} out.").classes("text-xs text-orange-600")
+
     def import_card(take: TakeResult) -> None:
         label, color = STATUS[take.status]
         if state["problems_only"] and not is_problem([take]):
@@ -1408,6 +1458,10 @@ def step_worksheet(ed: "Editor") -> None:
     def results() -> None:
         """The list: every note, then the extras."""
         manifest: Manifest | None = state["manifest"]
+        if state["stale"] is None:
+            # What changed on disk is found in the background (it reads files): shown when it's in.
+            found_nothing()
+            ui.timer(0, check_now, once=True)
         overview.refresh()
         noise.refresh()
         counts.refresh()
@@ -1465,43 +1519,71 @@ def step_worksheet(ed: "Editor") -> None:
         with anchor:
             ui.timer(0.25, results.refresh, once=True)
 
-    def pending(manifest: Manifest | None) -> str:
-        """Why slicing is needed, or "" if everything on disk is sliced."""
+    def found_nothing() -> None:
+        state.update(stale="", edited=[], edited_keys=[], changed=set(), deleted=set())
+
+    def check(manifest: Manifest | None) -> dict[str, Any]:
+        """What changed on disk since slicing, and why slicing is needed ("" if it isn't), as the state
+        keys it sets. Runs in a worker thread: it reads files and touches nothing else."""
+        found: dict[str, Any] = {"stale": "", "edited": [], "edited_keys": [], "changed": set(), "deleted": set()}
         if importing:
-            return ""
+            return found
         if manifest is None:
             takes_dir = Path(rec.takes_dir).expanduser() if rec.takes_dir else None
-            found = takes_dir is not None and takes_dir.is_dir() and any(
+            there = takes_dir is not None and takes_dir.is_dir() and any(
                 all((takes_dir / f).exists() for f in t.files) for t in slicing.recordings(inst, takes_dir))
-            return "Takes in the folder aren't sliced yet." if found else ""
+            found["stale"] = "Takes in the folder aren't sliced yet." if there else ""
+            return found
         if manifest.setup != slicing_setup(inst):
-            return STALE_MESSAGE
+            return {**found, "stale": STALE_MESSAGE}
         if manifest.finder != slicing.HIT_FINDER and manifest.source == "takes":
-            return FINDER_MESSAGE
+            return {**found, "stale": FINDER_MESSAGE}
         if slicing.sliced_cleanup(inst, manifest) != slicing.cleanup_setup(inst) and manifest.source == "takes":
-            return CLEANUP_MESSAGE
+            return {**found, "stale": CLEANUP_MESSAGE}
         changed = slicing.changed_takes(inst, manifest)
-        state["edited"] = []
         if not changed:
             eq_changed = slicing.eq_changed_takes(inst, manifest)
-            return eq_message(eq_changed) if eq_changed else ""
+            return {**found, "stale": eq_message(eq_changed)} if eq_changed else found
+        takes_dir = Path(rec.takes_dir).expanduser()
+        found["changed"] = set(changed)
+        found["deleted"] = {t.title for t in manifest.takes
+                            if t.title in found["changed"] and not all((takes_dir / f).exists() for f in t.files)}
         # Edited without moving a hit (e.g. an EQ): cut again where they were, no slicing needed.
         edited = slicing.edited_takes(inst, manifest)
+        found["edited_keys"] = edited
         titles = sorted({t.title for t in manifest.takes if t.key in edited})
         if edited and set(changed) <= set(titles):
-            state["edited"] = edited
+            found["edited"] = edited
             names = ", ".join(titles[:3]) + (f" and {len(titles) - 3} more" if len(titles) > 3 else "")
-            return (f"Edited since slicing: {names}. Building cuts {'it' if len(titles) == 1 else 'them'} again "
-                    "where it was cut and keeps your decisions; Update them does it now, to listen here.")
-        return changed_message(changed)
+            one = len(titles) == 1
+            found["stale"] = (f"Edited since slicing: {names}. Updating {'it' if one else 'them'} in a moment, "
+                              f"cut where {'it was' if one else 'they were'}; your decisions are kept.")
+        else:
+            found["stale"] = changed_message(changed)
+        return found
 
-    async def update_edited() -> None:
-        """Cut the edited recordings again where they were cut (see slicing.recut)."""
+    async def check_now() -> dict[str, Any] | None:
+        """Check in the background and show what's found; None if slicing or an update ran meanwhile,
+        whose results it would overwrite with what was true before."""
+        if state["busy"] or not still_there():
+            return None
+        manifest = state["manifest"]
+        found = await run.io_bound(check, manifest)
+        if state["busy"] or state["manifest"] is not manifest or not still_there():
+            return None
+        if any(state.get(k) != v for k, v in found.items()):
+            state.update(found)
+            results.refresh()  # the notes say which of their recordings changed, too
+        return found
+
+    async def update_edited(only: list[str] | None = None) -> bool:
+        """Cut the edited recordings (or those of `only`) again where they were cut (see slicing.recut)."""
         while state["busy"]:
             await asyncio.sleep(0.1)
-        keys = list(state["edited"])
+        # Only what's still edited: the automatic update may have done it meanwhile.
+        keys = [k for k in (only if only is not None else state["edited"]) if k in state["edited_keys"]]
         if not keys or not still_there() or state["manifest"] is None:
-            return
+            return True
         state["busy"] = True
         button.disable()
         progress_box.set_open(True)
@@ -1513,34 +1595,79 @@ def step_worksheet(ed: "Editor") -> None:
             manifest = await run.io_bound(slicing.recut, inst.model_copy(deep=True), state["manifest"], keys, report)
         except Exception as e:  # unexpected I/O or audio errors: show them instead of failing silently
             ui.notify(f"Updating failed: {e}", type="negative", multi_line=True)
+            return False
         else:
             review.save(manifest, path)
             state["manifest"] = manifest
             state["stale"] = None
             results.refresh()
-            ui.notify(f"{len(keys)} edited recording{'' if len(keys) == 1 else 's'} cut again where "
-                      f"{'it was' if len(keys) == 1 else 'they were'} cut.", type="positive")
+            background_tasks.create(reshow(keys), name="reshow")
+            titles = [t.title for t in manifest.takes if t.key in keys]
+            ui.notify("Updated after editing: " + "; ".join(titles[:3])
+                      + (f" and {len(titles) - 3} more" if len(titles) > 3 else ""), type="positive")
         finally:
             state["busy"] = False
             button.enable()
             progress_box.set_open(False)
             state["label"] = ""
+        return True
 
-    def recheck() -> None:
-        """Notices recordings changed on disk, e.g. edited in another application, while the page is open."""
-        if state["busy"] or importing or not still_there():
+    async def reshow(keys: list[str]) -> None:
+        """An open dialog of an updated recording shows it anew, with the new sample to play; not
+        while a cut line is being dragged in it, which a redraw would drop."""
+        for _ in range(600):  # a minute at most
+            if not dialog.value:
+                return
+            try:
+                # The dialog's client: this runs as a background task, outside any page context.
+                if not await dialog.client.run_javascript("window.viCutting ? window.viCutting() : false",
+                                                          timeout=2):
+                    break
+            except TimeoutError:
+                break
+            await asyncio.sleep(0.1)
+        of = state.get("dialog_of")
+        if not dialog.value or not of or of[0] not in keys or state["manifest"] is None:
             return
-        now = pending(state["manifest"])
-        if now != state["stale"]:
-            state["stale"] = now
-            overview.refresh()
+        take = next((t for t in state["manifest"].takes if t.key == of[0]), None)
+        hit = next((h for h in take.hits if h.id == of[1]), None) if take else None
+        if take is not None and hit is not None:
+            open_hit(take, hit, autoplay=False)
+        elif take is not None and not take.hits:
+            open_recording(take)
+
+    def edit_stamps() -> dict[str, str]:
+        """The edited recordings' files as they are now: an edit is taken up once it stays put."""
+        takes_dir = Path(rec.takes_dir).expanduser()
+        out = {}
+        for t in state["manifest"].takes if state["manifest"] else []:
+            if t.key in state["edited_keys"]:
+                paths = [takes_dir / f for f in t.files]
+                if all(p.exists() for p in paths):
+                    out[t.key] = slicing.fingerprint(paths)
+        return out
+
+    async def recheck() -> None:
+        """Notices recordings changed on disk, e.g. edited in another application, while the page is open.
+        One edited without moving a hit is cut again where it was, once two looks a few seconds apart
+        find it unchanged: an editor may still be writing it."""
+        if importing:
+            return
+        found = await check_now()
+        if found is None:
+            return
+        stamps = edit_stamps()
+        # Each saved version is tried once: a failing one isn't retried until it's saved again.
+        if stamps and stamps == state.get("edit_seen") and stamps != state.get("edit_failed"):
+            state["edit_seen"] = {}
+            if not await update_edited(list(stamps)):
+                state["edit_failed"] = stamps
+            return
+        state["edit_seen"] = stamps
 
     @ui.refreshable
     def overview() -> None:
         """What needs slicing again, and the counts; redrawn with the results."""
-        manifest: Manifest | None = state["manifest"]
-        if state["stale"] is None:  # computing it scans the takes or import folder, so only after changes
-            state["stale"] = pending(manifest)
         # Only offered when something needs it: takes recorded here are sliced right away.
         button.set_visibility(importing or bool(state["stale"]))
         if not importing:

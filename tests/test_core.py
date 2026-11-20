@@ -260,3 +260,18 @@ def test_a_recording_replaced_without_the_app_loses_its_grid(tmp_path, monkeypat
     time.sleep(0.01)
     sf.write(str(take), np.full(48000, 0.1), 48000)
     assert takes_meta.hits_at(inst.meta.slug, take) is None
+
+
+def test_a_hits_tooltip_says_what_it_is():
+    from vinst.review import Hit, TakeResult
+    from vinst.ui.worksheet import hit_info
+
+    take = TakeResult(number=1, base="062_C-2_forte", title="D3 (62) · forte", kind="note", status="ok",
+                      signals=["pickup"], sample_rate=48000, expected_hits=1)
+    hit = Hit(id="h", index=0, start=48000, end=96000, files={"pickup": "062_x_01_pickup.wav"},
+              midi_detected=63.02, cents=102.0, rms_db=-20.0, peak_db={"pickup": -6.0}, flags=["wrong_note"])
+    text = hit_info(take, hit)
+    assert text.startswith("062_C-2_forte_pickup.wav · 1.00–2.00 s")
+    assert "Pitch D#3 +2 cents" in text  # off the note it names, not the one expected
+    assert "more than 50 cents away" in text
+    assert hit_info(take, hit, imported=True).startswith("062_x_01_pickup.wav\n")  # its own file
