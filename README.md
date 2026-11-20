@@ -40,7 +40,7 @@ The builder walks you through seven steps. Everything is saved as you go, so you
 3. **Range:** for string instruments the strings, their tuning and how many frets; otherwise the lowest and highest note.
 4. **Dynamics & extras:** the velocities to record (e.g. soft and loud), how many variations of each note, and extra sounds such as release noise, a muted strum or a body knock.
 5. **Worksheet:** record, check and fix every note (see below).
-6. **Sound & look:** tuning correction, knobs, effects, colours and a background image.
+6. **Sound & look:** tuning correction, an equalizer, knobs, effects, colours and a background image.
 7. **Build:** creates the instrument, checks it, installs it into DecentSampler and can package it as a `.dslibrary` to share.
 
 ### Recording and checking in the worksheet
@@ -50,9 +50,16 @@ The builder walks you through seven steps. Everything is saved as you go, so you
 - **Every hit is cut and analysed for you:** you see its waveform, how far it is out of tune and how loud its attack is. Wrong notes, clipping and hits that belong to another velocity are flagged.
 - **Listen and compare:** ▶ plays the hits of a row one after another, so you can pick the best ones.
 - **Fix what's wrong:** click a hit to review it. You can reject it, record a new one instead, move it to another velocity (or drag it there), or drag the blue lines to change where it was cut.
+- **Clean up noise:** a clean-up EQ takes hum, buzz or a click's ring out of the recordings you pick; only the samples change, never your recordings. Hits it went through show a small EQ mark.
 - **Per-note velocities:** drag the dots on the slider beside a note to set where the next velocity starts, or add a velocity to just that note.
 
 ![Reviewing a hit: details, where it was cut, and what to do with it](docs/images/hit-review.png)
+
+### Shaping the sound
+
+The **Equalizer** in Sound & look draws its bands as a curve over the spectrum of your samples. Drag a point to shape it, scroll on it for its width, and **Listen** to a few notes through it. In the instrument, each band you boost or cut gets a knob of its own.
+
+![The Equalizer: its bands as a curve over the spectrum of your samples](docs/images/equalizer.png)
 
 ### Where your files go
 
