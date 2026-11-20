@@ -169,14 +169,18 @@ def step_sound(ed: "Editor") -> None:
 
     ui.separator()
     ui.label("Mapping").classes("text-base font-medium")
-    with ui.row().classes("items-center gap-4"):
-        ui.label("Use neighbours as extra round robins:")
-        ui.toggle({0: "Off", 1: "±1 semitone", 2: "±2 semitones"}, value=p.neighbour_round_robins,
-                  on_change=lambda e: ed.set(p, "neighbour_round_robins", e.value))
+    ui.label("Use neighbours as extra round robins:")
+    with ui.grid(columns="auto auto").classes("items-center gap-x-4 gap-y-2"):
+        for field, label in (("neighbours_below", "Notes below (pitched up)"),
+                             ("neighbours_above", "Notes above (pitched down)")):
+            ui.label(label)
+            ui.toggle({0: "Off", 1: "1 semitone", 2: "2 semitones"}, value=getattr(p, field),
+                      on_change=lambda e, f=field: ed.set(p, f, e.value))
     ui.label("Keys between recorded notes play the recorded note above them, pitched down (pitched up, a "
-             "sample soon sounds thin; only above the highest note is it pitched up). Neighbour round robins add the hits of nearby notes, pitched to fit, to each key's "
-             "rotation: more variation, slightly less faithful timbre. Stretching past the lowest and "
-             "highest notes is set in step 3.").classes("text-xs opacity-70 max-w-3xl")
+             "sample soon sounds thin; only above the highest note is it pitched up). Neighbour round robins "
+             "add the hits of nearby notes, pitched to fit, to each key's rotation: more variation, slightly "
+             "less faithful timbre. Stretching past the lowest and highest notes is set in step 3."
+             ).classes("text-xs opacity-70 max-w-3xl")
 
     ui.separator()
     ui.label("Loudness").classes("text-base font-medium")

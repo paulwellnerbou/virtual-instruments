@@ -9,7 +9,7 @@ from lxml import etree
 from vinst import bundle, defaults, preset, review, store
 from vinst.plan import layer_bounds
 from vinst.slicing import process
-from vinst.spec import InstrumentType
+from vinst.spec import InstrumentType, Preset
 from vinst.synth import Mistakes, write_takes
 from vinst.validate import validate_bundle
 
@@ -150,12 +150,30 @@ def test_older_instruments_get_a_muting_chuck():
 
 def test_neighbour_round_robins_are_valid(built):
     inst, _ = built
-    inst.preset.neighbour_round_robins = 1
+    inst.preset.neighbours_below = inst.preset.neighbours_above = 1
     result = bundle.build(inst)
     assert result.report.ok, result.report.errors
     piezo = samples(result, "Piezo")
     on_56 = [s for s in piezo if s["loNote"] == "56" and s["loVel"] == "43"]  # mf layer on G#2
     assert {s["rootNote"] for s in on_56} == {"55", "56"}  # its own hits plus G2's
+
+
+def test_neighbours_below_and_above_are_set_apart(built):
+    inst, manifest = built
+
+    def roots_on(key: int) -> set[int]:
+        return {e.root for e in preset.map_samples(inst, manifest).notes if e.lo == key}
+
+    # C3 (60) and C#3 (61) are both recorded, with nothing on the two keys below C3.
+    inst.preset.neighbours_below = 1
+    assert (roots_on(60), roots_on(61)) == ({60}, {60, 61})
+    inst.preset.neighbours_below, inst.preset.neighbours_above = 0, 1
+    assert (roots_on(60), roots_on(61)) == ({60, 61}, {61})
+
+
+def test_the_old_neighbour_setting_counts_both_ways():
+    p = Preset.model_validate({"neighbour_round_robins": 2})
+    assert (p.neighbours_below, p.neighbours_above) == (2, 2)
 
 
 def test_validator_catches_broken_presets(built, tmp_path):
@@ -377,7 +395,7 @@ def test_the_bundle_plays_quiet_samples_raised(built, monkeypatch):
 def test_a_borrowed_hit_counts_once_for_the_level(built):
     inst, manifest = built
     alone = preset.map_samples(inst, manifest).gain_db
-    inst.preset.neighbour_round_robins = 2  # every hit now plays on several keys
+    inst.preset.neighbours_below = inst.preset.neighbours_above = 2  # every hit now plays on several keys
     assert preset.map_samples(inst, manifest).gain_db == alone
 
 
