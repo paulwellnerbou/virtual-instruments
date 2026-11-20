@@ -67,6 +67,9 @@ def check_files(doc: etree._ElementTree, bundle: Path, report: Report) -> None:
         # Exact-case check: the default macOS filesystem would find a wrongly cased file anyway.
         if path.name not in listings[folder]:
             report.errors.append(f"missing sample file: {rel}")
+    for el in doc.iter("effect"):
+        if el.get("irFile") and not (bundle / el.get("irFile")).is_file():
+            report.errors.append(f"missing impulse response: {el.get('irFile')}")
     ui = doc.find("ui")
     if ui is not None and ui.get("bgImage") and not (bundle / ui.get("bgImage")).is_file():
         report.errors.append(f"missing background image: {ui.get('bgImage')}")

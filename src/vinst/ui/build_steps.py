@@ -442,6 +442,13 @@ def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
                         ed.number("Damping", p, "reverb_damping", cast=float, min=0, max=1, step=0.05) \
                             .classes("w-28").tooltip("How fast the reverb loses its highs: more is warmer, and keeps "
                                                      "a pluck's click from ringing on as a hiss")
+                if key == "reverb":
+                    ui.switch("Without the pluck's hiss", value=p.reverb_send,
+                              on_change=lambda e: ed.set(p, "reverb_send", e.value))
+                    ui.label("The dry sound stays as it is; the reverb gets less of each note's partials from about "
+                             "three times its pitch up, and none of the click's highs, which otherwise ring on as a "
+                             "hiss. The same room and damping, played as convolution reverbs on buses, one per few "
+                             "semitones; the knob works as before.").classes("text-xs opacity-70 max-w-3xl")
                 if key == "lowcut":
                     ui.label("E.g. the low resonance of a ukulele's body that rings on after the pluck; the note itself, from its pitch up, "
                              "stays as it is. A curve, not a step, as drawn: the full amount well below the share "

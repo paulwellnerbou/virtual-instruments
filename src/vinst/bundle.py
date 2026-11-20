@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from vinst import eq, level, lowcut, preset, review, sf2, store
+from vinst import eq, level, lowcut, preset, reverb_send, review, sf2, store
 from vinst.review import Manifest
 from vinst.plan import slicing_setup
 from vinst.slicing import (LOUDNESS_WINDOW_S, body_level, changed_takes, cut_in_samples, db, edited_takes,
@@ -289,6 +289,12 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
         sync_files({Path(background).name: src}, bundle / "Images")
     elif (bundle / "Images").is_dir():
         shutil.rmtree(bundle / "Images")
+
+    reverb_bands = preset.reverb_bands(inst, mapping, preset.active_controls(inst, mapping))
+    if reverb_bands:
+        reverb_send.write_irs(bundle, reverb_bands, inst.preset.reverb_room, inst.preset.reverb_damping)
+    elif (bundle / reverb_send.IR_DIR).is_dir():
+        shutil.rmtree(bundle / reverb_send.IR_DIR)
 
     for old in bundle.glob("*.dspreset"):
         old.unlink()

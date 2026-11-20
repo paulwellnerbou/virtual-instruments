@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 from lxml import etree
 
-from vinst import eq
+from vinst import eq, reverb_send
 from vinst.plan import Pass, Take, lane_bounds, note_lanes, plan_takes, recording_passes
 from vinst.review import Hit, Manifest, lane_of
 from vinst.spec import (CONTROLS, FX_TAG, LOW_TAG, NOTES_TAG, RELEASE_TAG, SUSTAINED_TYPES, Instrument, Signal,
@@ -451,15 +451,23 @@ def eq_bands(inst: Instrument) -> list[int]:
     return [i for i, b in enumerate(inst.preset.eq) if b.on]
 
 
-def effects_for(inst: Instrument, controls: list[str]) -> list[str]:
-    """The instrument's effects in order: "lowpass" (Tone), "eq<i>" per band, "chorus", "reverb"."""
+def reverb_bands(inst: Instrument, mapping: Mapping, controls: list[str]) -> list[reverb_send.Band]:
+    """The pitch bands of the reverb's send buses; empty when DecentSampler's own reverb plays it."""
+    if not (inst.preset.reverb_send and "reverb" in controls):
+        return []
+    return reverb_send.bands([e.root for e in mapping.notes])
+
+
+def effects_for(inst: Instrument, controls: list[str], on_buses: bool = False) -> list[str]:
+    """The instrument's effects in order: "lowpass" (Tone), "eq<i>" per band, "chorus", "reverb" (unless
+    the reverb plays on send buses)."""
     out = ["lowpass"] if "tone" in controls else []
     if "eq" in controls:
         out += [f"eq{i}" for i in eq_bands(inst)]
-    return out + [fx for fx in ("chorus", "reverb") if fx in controls]
+    return out + [fx for fx in ("chorus", "reverb") if fx in controls and not (fx == "reverb" and on_buses)]
 
 
-def knobs_for(inst: Instrument, controls: list[str], effects: list[str]) -> list[Knob]:
+def knobs_for(inst: Instrument, controls: list[str], effects: list[str], buses: int = 0) -> list[Knob]:
     p = inst.preset
     knobs: list[Knob] = []
     for c in controls:
@@ -502,6 +510,9 @@ def knobs_for(inst: Instrument, controls: list[str], effects: list[str]) -> list
         elif c == "release":
             knobs.append(Knob("release", CONTROLS[c], 0, 8, p.release, [
                 dict(type="amp", level="instrument", position=0, parameter="ENV_RELEASE")]))
+        elif c == "reverb" and buses:
+            knobs.append(Knob("reverb", CONTROLS[c], 0, 1, p.reverb, [
+                dict(type="amp", level="bus", position=i, parameter="BUS_VOLUME") for i in range(buses)]))
         elif c == "reverb":
             knobs.append(Knob("reverb", CONTROLS[c], 0, 1, p.reverb, [
                 dict(type="effect", level="instrument", position=effects.index("reverb"),
@@ -537,8 +548,9 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
     root.addprevious(etree.Comment(re.sub(r"-{2,}", "-", header)))
 
     controls = active_controls(inst, mapping)
-    effects = effects_for(inst, controls)
-    knobs = knobs_for(inst, controls, effects)
+    bands = reverb_bands(inst, mapping, controls)
+    effects = effects_for(inst, controls, on_buses=bool(bands))
+    knobs = knobs_for(inst, controls, effects, buses=len(bands))
 
     ui_attrs = dict(width=UI_W, height=UI_H, bgColor=p.bg_color)
     if background:
@@ -602,10 +614,12 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
         for e in entries:
             loop = dict(loopEnabled="true", loopStart=e.loop[0], loopEnd=e.loop[1], loopCrossfade=e.loop[2],
                         loopCrossfadeMode="equal_power") if e.loop else {}
+            # Besides the main output, the reverb's bus for the sample's pitch.
+            send = dict(output2Target=f"BUS_{reverb_send.band_of(e.root, bands) + 1}", output2Volume=1.0) if bands else {}
             _el(g, "sample", path=f"{SAMPLES_DIR}/{e.file}", rootNote=e.root, loNote=e.lo, hiNote=e.hi,
                 loVel=e.lo_vel, hiVel=e.hi_vel, tuning=float(e.tuning) if e.tuning else None,
                 volume=f"{e.volume_db:.2f}dB" if e.volume_db else None,
-                seqPosition=e.seq_pos, seqLength=e.seq_len, **loop)
+                seqPosition=e.seq_pos, seqLength=e.seq_len, **loop, **send)
 
     pass_of = {s.id: q for q in recording_passes(inst) for s in q.signals}
 
@@ -661,6 +675,12 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
         elif name == "reverb":
             _el(fx, "effect", type="reverb", wetLevel=float(p.reverb), roomSize=float(p.reverb_room),
                 damping=float(p.reverb_damping))
+    if bands:
+        # Their impulse responses are written by bundle.build; the Reverb knob sets their volume.
+        buses = _el(root, "buses")
+        for i, band in enumerate(bands):
+            bus = _el(buses, "bus", name=f"Reverb {i + 1}", busVolume=float(p.reverb), output1Target="MAIN_OUTPUT")
+            _el(_el(bus, "effects"), "effect", type="convolution", irFile=reverb_send.ir_path(i), mix=1.0)
 
     # Not the low cut: at rest, the wheel would bring all the low end back; nor an EQ band, cut fully at rest.
     cc_target = "tone" if "tone" in knob_index else next(
