@@ -72,7 +72,7 @@ The **Equalizer** in Sound & look draws its bands as a curve over the spectrum o
 - Record a few more hits than you need and reject the weak ones; the builder keeps your decisions when you slice again.
 - You can try the first few notes before recording everything: build, play them in DecentSampler, then carry on.
 
-More detail on every step is in [docs/builder-ui.md](docs/builder-ui.md). For working on the builder itself, see [docs/development.md](docs/development.md).
+More detail on every step is in [docs/builder-ui.md](docs/builder-ui.md); capturing a room or a reverb as an impulse response is in [docs/recording-impulse-responses.md](docs/recording-impulse-responses.md). For working on the builder itself, see [docs/development.md](docs/development.md).
 
 ## Licence
 
