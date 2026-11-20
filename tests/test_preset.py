@@ -1,3 +1,4 @@
+import os
 import zipfile
 from pathlib import Path
 
@@ -66,6 +67,76 @@ def test_build_is_valid_and_covers_the_range(built):
     # Recorded: G2 G#2 C3 C#3 E3 F3 A3 A#3; gaps between strings are covered.
     assert keys == set(range(55, 71))
     assert {s["rootNote"] for s in piezo} == {"55", "56", "60", "61", "64", "65", "69", "70"}
+
+
+@pytest.mark.parametrize("suffix", [".jpg", ".png"])
+def test_rebuild_updates_cover_art_independently_of_the_background(built, tmp_path, suffix):
+    inst, _ = built
+    background = tmp_path / "panel.png"
+    cover = tmp_path / "art.jpg"
+    jpeg_header = b"\xff\xd8\xff"
+    png_header = b"\x89PNG\r\n\x1a\n"
+    before = jpeg_header + b"cover"
+    after = (jpeg_header if suffix == ".jpg" else png_header) + b"newer"
+    panel = png_header + b"panel"
+    background.write_bytes(panel)
+    cover.write_bytes(before)
+    inst.preset.background = str(background)
+    inst.preset.cover_art = str(cover)
+
+    result = bundle.build(inst)
+    ui = etree.parse(result.preset_file).find("ui")
+    info_path = result.bundle / "DSLibraryInfo.xml"
+    library_info = etree.parse(info_path).getroot()
+    assert (result.bundle / ui.get("bgImage")).read_bytes() == panel
+    cover_path = result.bundle / library_info.get("coverArt")
+    assert cover_path.read_bytes() == before
+    installed = bundle.install(result.bundle)
+    installed_info = installed / info_path.name
+
+    replacement = tmp_path / f"replacement{suffix}"
+    replacement.write_bytes(after)
+    stamp = cover.stat()
+    os.utime(replacement, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    inst.preset.cover_art = str(replacement)
+    inst.preset.background = ""
+    result = bundle.build(inst)
+    assert etree.parse(result.preset_file).find("ui").get("bgImage") is None
+    rel_cover = f"Images/cover{suffix}"
+    assert etree.parse(info_path).getroot().get("coverArt") == rel_cover
+    cover_path = result.bundle / rel_cover
+    assert list((result.bundle / "Images").iterdir()) == [cover_path]
+    assert result.report.ok, result.report.errors
+    assert cover_path.read_bytes() == after
+    stamp = installed_info.stat()
+    os.utime(info_path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    bundle.install(result.bundle)
+    assert etree.parse(installed_info).getroot().get("coverArt") == rel_cover
+    assert (installed / rel_cover).read_bytes() == after
+
+    cover_path.unlink()
+    report = validate_bundle(result.bundle, result.preset_file)
+    assert f"missing cover image: {rel_cover}" in report.errors
+
+
+@pytest.mark.parametrize(("attr", "role"), [("background", "Background"), ("cover_art", "Cover")])
+@pytest.mark.parametrize(("contents", "error"), [(None, "image not found"),
+                                                 (b"not a JPEG", "image must be a PNG or JPG")])
+def test_unusable_artwork_is_rejected_before_recutting_samples(built, tmp_path, monkeypatch, attr, role,
+                                                               contents, error):
+    inst, _ = built
+    image = tmp_path / "art.jpg"
+    if contents is not None:
+        image.write_bytes(contents)
+    setattr(inst.preset, attr, str(image))
+
+    def unexpected_recut(*args):
+        pytest.fail("An unusable image must be reported before recutting audio")
+
+    monkeypatch.setattr(bundle, "edited_takes", lambda *args: ["edited-take"])
+    monkeypatch.setattr(bundle, "recut", unexpected_recut)
+    with pytest.raises(ValueError, match=f"{role} {error}"):
+        bundle.build(inst)
 
 
 def test_rejected_hit_is_left_out_and_round_robins_renumbered(built):

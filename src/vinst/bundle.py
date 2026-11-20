@@ -41,6 +41,8 @@ def eq_message(changed: list[str]) -> str:
 
 # Marks bundles this tool wrote, so installing never replaces someone else's library.
 MARKER = ".vinst-generated"
+IMAGES_DIR = "Images"
+IMAGE_SIGNATURES = {".png": b"\x89PNG\r\n\x1a\n", ".jpg": b"\xff\xd8\xff", ".jpeg": b"\xff\xd8\xff"}
 
 
 def build_root() -> Path:
@@ -53,6 +55,14 @@ def library_dir() -> Path:
 
 def bundle_name(inst: Instrument) -> str:
     return re.sub(r'[/\\:*?"<>|]+', "-", inst.meta.name).strip() or inst.meta.slug
+
+
+def is_artwork_image(path: Path) -> bool:
+    signature = IMAGE_SIGNATURES.get(path.suffix.lower())
+    if signature is None:
+        return False
+    with path.open("rb") as image:
+        return image.read(len(signature)) == signature
 
 
 @dataclass
@@ -68,7 +78,7 @@ class BuildResult:
     soundfont_samples: int = 0
 
 
-def sync_files(sources: dict[str, Path], dest: Path) -> None:
+def sync_files(sources: dict[str, Path], dest: Path, *, compare_contents: bool = False) -> None:
     """Make `dest` contain exactly `sources` (name -> file), copying only what changed."""
     dest.mkdir(parents=True, exist_ok=True)
     for name, src in sources.items():
@@ -76,7 +86,8 @@ def sync_files(sources: dict[str, Path], dest: Path) -> None:
         st = src.stat()
         if target.exists():
             tt = target.stat()
-            if tt.st_size == st.st_size and int(tt.st_mtime) == int(st.st_mtime):
+            same_metadata = tt.st_size == st.st_size and int(tt.st_mtime) == int(st.st_mtime)
+            if same_metadata and (not compare_contents or src.read_bytes() == target.read_bytes()):
                 continue
         shutil.copy2(src, target)
     for existing in dest.iterdir():
@@ -214,6 +225,19 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
         raise ValueError("Fix these first: " + " ".join(problems))
     if manifest.setup != slicing_setup(inst):
         raise ValueError(STALE_MESSAGE + " Slice again in the worksheet (step 5).")
+    images: dict[str, Path] = {}
+    image_paths: dict[str, str] = {}
+    for role, source in (("background", inst.preset.background), ("cover", inst.preset.cover_art)):
+        if source:
+            path = Path(source).expanduser()
+            if not path.is_file():
+                raise ValueError(f"{role.capitalize()} image not found: {path}")
+            if not is_artwork_image(path):
+                raise ValueError(f"{role.capitalize()} image must be a PNG or JPG: {path}")
+            filename = f"{role}{path.suffix.lower()}"
+            images[filename] = path
+            image_paths[role] = f"{IMAGES_DIR}/{filename}"
+
     # Recordings edited without moving a hit (e.g. an EQ) need no slicing: they're cut where they were.
     edited = edited_takes(inst, manifest)
     recut_info = []
@@ -280,21 +304,17 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
             mapping.info.append(f"Played {over:.1f} dB quieter, so the Equalizer's boosts (as its knobs start) "
                                 "stay under full scale.")
 
-    background = None
-    if inst.preset.background:
-        src = Path(inst.preset.background).expanduser()
-        if not src.is_file():
-            raise ValueError(f"Background image not found: {src}")
-        background = f"Images/background{src.suffix.lower()}"
-        sync_files({Path(background).name: src}, bundle / "Images")
-    elif (bundle / "Images").is_dir():
-        shutil.rmtree(bundle / "Images")
+    images_dir = bundle / IMAGES_DIR
+    if images:
+        sync_files(images, images_dir, compare_contents=True)
+    elif images_dir.is_dir():
+        shutil.rmtree(images_dir)
 
     for old in bundle.glob("*.dspreset"):
         old.unlink()
     preset_file = bundle / f"{name}.dspreset"
-    preset_file.write_bytes(preset.render(inst, mapping, background))
-    (bundle / "DSLibraryInfo.xml").write_bytes(preset.library_info(inst))
+    preset_file.write_bytes(preset.render(inst, mapping, image_paths.get("background")))
+    (bundle / "DSLibraryInfo.xml").write_bytes(preset.library_info(inst, image_paths.get("cover")))
     (bundle / MARKER).write_text(inst.meta.slug, encoding="utf-8")
     remove_renamed(bundle.parent, bundle)
 
@@ -349,7 +369,9 @@ def _mirror(src: Path, dest: Path) -> None:
         if p.is_file():
             sync_by_dir.setdefault(p.parent.relative_to(src), {})[p.name] = p
     for rel_dir, files in sync_by_dir.items():
-        sync_files(files, dest / rel_dir)
+        # Images and the XML files can change and keep their size and timestamp (to the second), e.g. a
+        # rebuild within a second of installing; they're small, so their contents are compared too.
+        sync_files(files, dest / rel_dir, compare_contents=rel_dir in (Path("."), Path(IMAGES_DIR)))
     for p in sorted(dest.rglob("*"), reverse=True):
         if p.relative_to(dest) not in wanted:
             p.unlink() if p.is_file() else shutil.rmtree(p)

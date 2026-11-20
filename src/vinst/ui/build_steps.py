@@ -1,6 +1,7 @@
 """Wizard steps 7 (sound & look) and 8 (build, install, package)."""
 
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
@@ -225,7 +226,11 @@ def step_sound(ed: "Editor") -> None:
 
     ui.separator()
     ui.label("Look").classes("text-base font-medium")
-    background_field(ed)
+    artwork_field(ed, "background", "background", "Background image",
+                  "812 × 375 px. DecentSampler's keyboard covers the lower part.",
+                  "The background colour fills the panel when no image is selected.")
+    artwork_field(ed, "cover_art", "cover", "Library cover",
+                  "Use a square image for DecentSampler's File Browser.", "No library cover selected.")
     with ui.row().classes("items-start gap-4 w-full"):
         colour_field(ed, "Background colour", "bg_color")
         colour_field(ed, "Text colour", "text_color")
@@ -245,56 +250,76 @@ def step_sound(ed: "Editor") -> None:
     ed.on_change_hooks.append(look_preview.refresh)
 
 
-BACKGROUND_TYPES = {".png", ".jpg", ".jpeg"}
-
-
-def background_field(ed: "Editor") -> None:
-    """The background image: dropped or chosen, it's copied into the instrument's folder."""
+def artwork_field(ed: "Editor", attr: str, stem: str, label: str, hint: str, empty: str) -> None:
+    """Upload artwork into the instrument's folder and edit its preset path."""
     inst, p = ed.inst, ed.inst.preset
+    folder = store.instrument_dir(inst.meta.slug)
+    format_message = f"Choose a PNG or JPG image for {label.lower()}."
+
+    def selected_path() -> Path | None:
+        value = getattr(p, attr)
+        return Path(value).expanduser() if value else None
+
+    def remove_copy(path: Path | None) -> None:
+        if (path and path.stem == stem and path.suffix.lower() in bundle.IMAGE_SIGNATURES
+                and path.parent.resolve() == folder.resolve()):
+            path.unlink(missing_ok=True)
 
     @ui.refreshable
     def current() -> None:
-        path = Path(p.background).expanduser() if p.background else None
+        path = selected_path()
         if path is None:
-            ui.label("No background image: the background colour fills it.").classes("text-sm opacity-70")
+            ui.label(empty).classes("text-sm opacity-70")
             return
         with ui.row().classes("items-center gap-3"):
             if path.is_file():
                 ui.label(path.name).classes("text-sm")
             else:
                 ui.label(f"{path.name} is missing.").classes("text-sm text-orange-600")
-            ui.button("Remove", icon="close", on_click=remove).props("flat dense")
+            ui.button(f"Remove {stem}", icon="close", on_click=remove).props("flat dense")
 
     def remove() -> None:
-        old = Path(p.background).expanduser() if p.background else None
-        ed.set(p, "background", "")
-        # Only our own copy goes; an image picked elsewhere before stays where it is.
-        if old and old.parent == store.instrument_dir(inst.meta.slug) and old.stem == "background":
-            old.unlink(missing_ok=True)
+        remove_copy(selected_path())
+        ed.set(p, attr, "")
         current.refresh()
 
     async def uploaded(e: Any) -> None:
         suffix = Path(e.file.name).suffix.lower()
-        if suffix not in BACKGROUND_TYPES:
-            ui.notify("A background must be a PNG or JPG image.", type="warning")
+        try:
+            if suffix not in bundle.IMAGE_SIGNATURES:
+                ui.notify(format_message, type="warning")
+                return
+            dest = folder / f"{stem}{suffix}"
+            with TemporaryDirectory(dir=folder) as staging:
+                pending = Path(staging) / dest.name
+                await e.file.save(pending)
+                if not bundle.is_artwork_image(pending):
+                    ui.notify(format_message, type="warning")
+                    return
+                pending.replace(dest)
+        except OSError as err:
+            ui.notify(f"Could not save {label.lower()}: {err}", type="negative")
             return
-        folder = store.instrument_dir(inst.meta.slug)
-        for old in folder.glob("background.*"):
-            old.unlink()
-        dest = folder / f"background{suffix}"
-        await e.file.save(dest)
-        ed.set(p, "background", str(dest))
-        upload.reset()
+        finally:
+            upload.reset()
+        old = selected_path()
+        if getattr(p, attr) == str(dest):
+            ed.refresh()  # The file changed at the same path.
+        else:
+            ed.set(p, attr, str(dest))
+        if old and old.name.casefold() != dest.name.casefold():
+            remove_copy(old)
         current.refresh()
 
-    ui.label("Background image").classes("text-sm font-medium")
+    ui.label(label).classes("text-sm font-medium")
     with ui.row().classes("items-start gap-4 w-full"):
         upload = ui.upload(on_upload=uploaded, auto_upload=True, max_files=1,
+                           on_rejected=lambda: ui.notify(format_message, type="warning"),
                            label="Drop a PNG or JPG here, or click +") \
-            .props('accept=".png,.jpg,.jpeg" flat bordered color=grey-8').classes("w-80")
+            .props(f'accept="{",".join(bundle.IMAGE_SIGNATURES)}" flat bordered color=grey-8').classes("w-80 max-w-full")
         with ui.column().classes("gap-1 pt-2"):
             current()
-            ui.label("812 × 375 px; DecentSampler's keyboard covers its lower part.").classes("text-xs opacity-70")
+            ui.label(hint).classes("text-xs opacity-70")
 
 
 def cut_curve_svg(below: float, reduction_db: float, accent: str) -> str:
