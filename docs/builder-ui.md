@@ -96,7 +96,8 @@ For sustained sounds (on by default for sustained and single-sample instruments)
 
 To take a noise out of some recordings completely: mains hum or buzz on a pickup, the ring of a click. Only the sliced samples change; your takes stay as they are.
 
-- **Beside Denoise**, **+ EQ** makes a clean-up EQ. Give it a name ("Mains hum"), the signals it is for (none chosen: all of them), and its filters: peak, notch, low and high shelf, highpass, lowpass, and **Hum + harmonics**, which cuts a frequency and its multiples (mains hum is 50 Hz in Europe, 60 Hz in the Americas).
+- **Beside Denoise**, **+ EQ** makes a clean-up EQ. **Mains hum, 50 Hz** (Europe and most of the world) or **60 Hz** (the Americas and parts of Asia) makes a ready one for every take: Hum + harmonics at that frequency. If your noise-floor recording has mains hum, the menu marks its frequency "in your noise floor", and the EQ is only for the signals it was heard on. The dialog's **+ Filter** offers the same two, beside any other filter.
+- **Empty EQ** is one to fill yourself. Give it a name ("Mains hum"), the signals it is for (none chosen: all of them), and its filters: peak, notch, low and high shelf, highpass, lowpass, and **Hum + harmonics**, which cuts a frequency and its multiples (mains hum is 50 Hz in Europe, 60 Hz in the Americas).
 - An EQ is for **the takes you pick**, or for **every take**. Pick it for a take in a hit's dialog: **Clean-up EQ**, below the recording, lists your EQs. Ticking one slices that recording again at once, and the dialog opens on the same hit, so you can listen to it.
 - Hits whose samples went through a clean-up EQ show a small EQ mark in the corner of their waveform; hover a hit to see which.
 - Change an EQ's filters later and the worksheet lists the takes that use it; **Slice them** applies it. The build waits until then. Your decisions and cuts are kept: hits are found in the takes as recorded, so the EQ never moves a cut.

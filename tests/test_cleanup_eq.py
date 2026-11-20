@@ -91,6 +91,36 @@ def test_a_removed_signal_is_skipped_without_blocking_slicing():
     assert cleanup_eq.filters_for(inst, "a", "mic") == [band] and cleanup_eq.filters_for(inst, "a", "piezo") == []
 
 
+def hummy(hz, seconds=8, level=0.003):
+    """A noise floor: hiss with, if `hz`, mains hum and its third harmonic well below it."""
+    t = np.arange(seconds * SR) / SR
+    noise = np.random.default_rng(3).normal(0, 0.01, len(t))
+    return noise + (level * (np.sin(2 * np.pi * hz * t) + 0.5 * np.sin(2 * np.pi * 3 * hz * t)) if hz else 0)
+
+
+def test_the_mains_frequency_is_found_in_a_noise_floor():
+    assert cleanup_eq.mains_in(hummy(50), SR) == 50
+    assert cleanup_eq.mains_in(hummy(60), SR) == 60
+    assert cleanup_eq.mains_in(hummy(None), SR) is None
+    assert cleanup_eq.mains_in(hummy(50)[: SR // 2], SR) is None  # too short to tell
+
+
+def test_a_mains_eq_is_for_the_signals_that_hum(tmp_path):
+    inst = piezo_and_mic(defaults.new_instrument("Two", InstrumentType.PLUCKED))
+    inst.recording.takes_dir = str(tmp_path)
+    assert cleanup_eq.found_mains(inst) == {}  # no noise floor recorded
+    sf.write(tmp_path / "noisefloor_piezo.wav", hummy(50), SR)
+    sf.write(tmp_path / "noisefloor_mic.wav", hummy(None), SR)
+    found = cleanup_eq.found_mains(inst)
+    assert found == {"piezo": 50}
+    eq = cleanup_eq.mains_eq(inst, 50, found)
+    assert (eq.name, eq.signals, eq.every_take) == ("Mains hum", ["piezo"], True)
+    assert eq.filters == [cleanup_eq.mains_filter(50)] and eq.filters[0].kind == "hum"
+    inst.processing.cleanup_eqs = [eq]
+    other = cleanup_eq.mains_eq(inst, 60, found)  # heard on neither: for all of them
+    assert (other.name, other.signals, other.filters[0].hz) == ("Mains hum 2", [], 60)
+
+
 def test_a_half_typed_band_is_no_filter_rather_than_nan():
     for bad in (EqFilter.model_construct(kind="peak", hz=1000.0, gain_db=-12.0, q=0.0, harmonics=1),
                 EqFilter.model_construct(kind="highpass", hz=0.0, gain_db=0.0, q=0.707, harmonics=1)):
