@@ -1,5 +1,6 @@
 """Clean-up EQ: its filters, and slicing the takes that use one again when it changes."""
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -8,7 +9,7 @@ import soundfile as sf
 from conftest import piezo_and_mic
 from test_rerecord import lane, result, take_audio, uke, write  # noqa: F401  (uke is a fixture)
 
-from vinst import cleanup_eq, defaults, relocate
+from vinst import bundle, cleanup_eq, defaults, relocate, review, slicing, store
 from vinst.slicing import eq_changed_takes, process, process_one
 from vinst.spec import CleanupEq, EqFilter, InstrumentType
 
@@ -75,9 +76,42 @@ def test_which_takes_and_signals_an_eq_is_for():
     assert cleanup_eq.filters_for(inst, "a", "mic") == [] and cleanup_eq.filters_for(inst, "b", "piezo") == []
     assert '"piezo"' in cleanup_eq.take_setup(inst, "a", ["piezo", "mic"])
     assert cleanup_eq.take_setup(inst, "b", ["piezo", "mic"]) == ""
-    assert cleanup_eq.describe(inst, "a", ["piezo", "mic"]) == "Hum (piezo)"
-    inst.processing.cleanup_eqs[0].signals = ["gone"]
-    assert any("Hum" in p and "gone" in p for p in inst.problems())
+    assert cleanup_eq.describe(inst, "a", ["piezo", "mic"]) == "Hum (Piezo)"  # as the signal is called
+
+
+def test_a_removed_signal_is_skipped_without_blocking_slicing():
+    inst = piezo_and_mic(defaults.new_instrument("Two", InstrumentType.PLUCKED))
+    band = EqFilter(kind="hum", hz=50)
+    eq = CleanupEq(name="Hum", signals=["gone"], takes=["a"], filters=[band])
+    inst.processing.cleanup_eqs = [eq]
+    assert not any("Hum" in p for p in inst.problems())
+    assert cleanup_eq.missing_signals(inst, eq) == ["gone"]
+    assert cleanup_eq.filters_for(inst, "a", "piezo") == []  # not all signals: it was for another one
+    eq.signals = ["gone", "mic"]
+    assert cleanup_eq.filters_for(inst, "a", "mic") == [band] and cleanup_eq.filters_for(inst, "a", "piezo") == []
+
+
+def test_a_half_typed_band_is_no_filter_rather_than_nan():
+    for bad in (EqFilter.model_construct(kind="peak", hz=1000.0, gain_db=-12.0, q=0.0, harmonics=1),
+                EqFilter.model_construct(kind="highpass", hz=0.0, gain_db=0.0, q=0.707, harmonics=1)):
+        assert len(cleanup_eq.sections([bad], SR)) == 0
+        audio = np.random.default_rng(1).normal(0, 0.1, SR)
+        assert np.array_equal(cleanup_eq.apply(audio, SR, [bad]), audio)
+
+
+def test_bands_the_sample_rate_cant_hold_are_named():
+    assert cleanup_eq.left_out(EqFilter(kind="lowpass", hz=22000), 44100).startswith("Above 21609 Hz")
+    assert cleanup_eq.left_out(EqFilter(kind="lowpass", hz=16000), 44100) == ""
+    assert cleanup_eq.left_out(EqFilter(kind="hum", hz=5000, harmonics=10), SR).startswith("Only 4 of the 10")
+    assert cleanup_eq.left_out(EqFilter(kind="hum", hz=50, harmonics=10), SR) == ""
+
+
+def test_picks_of_recordings_that_are_gone_are_forgotten():
+    inst = defaults.new_instrument("One", InstrumentType.PLUCKED)
+    inst.processing.cleanup_eqs = [CleanupEq(name="Hum", takes=["a", "b-more1"], filters=[EqFilter(kind="hum")])]
+    assert cleanup_eq.forget_missing(inst, {"a", "c"})
+    assert inst.processing.cleanup_eqs[0].takes == ["a"]
+    assert not cleanup_eq.forget_missing(inst, {"a"})
 
 
 def hum_db(path):
@@ -131,3 +165,57 @@ def test_a_moved_recording_takes_its_eq_along(uke):
     key = relocate.move_recording(uke, Path(uke.recording.takes_dir),
                                   p.key, other.note_base, "p")
     assert uke.processing.cleanup_eqs[0].takes == [key] and key == other.key
+
+
+def hummed_take(inst, name="p"):
+    take = lane(inst, name)
+    t = np.arange(int(6.5 * SR)) / SR
+    path = write(inst, take.files[0], take_audio(take, (0.3, 0.32)) + 0.01 * np.sin(2 * np.pi * 50 * t),
+                 grid=[0.5, 3.5])
+    return take, path
+
+
+HUM = EqFilter(kind="hum", hz=50, gain_db=-40, q=20)
+
+
+def test_denoising_works_on_what_the_eq_leaves(uke):
+    take, _ = hummed_take(uke)
+    floor = 0.01 * np.sin(2 * np.pi * 50 * np.arange(5 * SR) / SR) \
+        + np.random.default_rng(2).normal(0, 10 ** (-75 / 20), 5 * SR)
+    write(uke, f"noisefloor_{uke.signals[0].id}.wav", floor)
+    uke.recording.noise_floor_seconds = 5
+    uke.processing.denoise = True
+    plain = process(uke)
+    sample = f"{plain.samples_dir}/{result(plain, take.key).hits[0].files[uke.signals[0].id]}"
+    denoised_only = hum_db(sample)
+    uke.processing.cleanup_eqs = [CleanupEq(name="Hum", takes=[take.key], filters=[HUM])]
+    m = process(uke, plain)
+    audio, _ = sf.read(sample)
+    assert np.all(np.isfinite(audio)) and result(m, take.key).cleanup_eq
+    assert hum_db(sample) < denoised_only - 15
+
+
+def test_the_build_waits_for_takes_whose_eq_changed(uke):
+    take, _ = hummed_take(uke)
+    review.save(process(uke), store.manifest_path(uke.meta.slug))
+    uke.processing.cleanup_eqs = [CleanupEq(name="Hum", takes=[take.key], filters=[HUM])]
+    with pytest.raises(ValueError, match="clean-up EQ changed since slicing"):
+        bundle.build(uke)
+
+
+def test_a_take_edited_elsewhere_is_cut_again_with_the_eq_set_now(uke):
+    from scipy.signal import butter, sosfiltfilt
+
+    take, path = hummed_take(uke)
+    eq = CleanupEq(name="Hum", takes=[take.key], filters=[HUM.model_copy()])
+    uke.processing.cleanup_eqs = [eq]
+    review.save(process(uke), store.manifest_path(uke.meta.slug))
+    eq.filters[0].harmonics = 3  # changed, and the take edited in an audio editor, before building
+    audio, _ = sf.read(path)
+    sf.write(path, 0.8 * sosfiltfilt(butter(2, 3000, "lowpass", fs=SR, output="sos"), audio), SR, subtype="PCM_24")
+    os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 10**9))
+    assert slicing.edited_takes(uke, review.load(store.manifest_path(uke.meta.slug))) == [take.key]
+    bundle.build(uke)  # cuts it again, with the EQ as it is now: nothing left to slice
+    after = review.load(store.manifest_path(uke.meta.slug))
+    assert result(after, take.key).cleanup_eq == cleanup_eq.take_setup(uke, take.key, take.signals)
+    assert eq_changed_takes(uke, after) == []

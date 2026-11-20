@@ -101,7 +101,8 @@ To take a noise out of some recordings completely: mains hum or buzz on a pickup
 - Hits whose samples went through a clean-up EQ show a small EQ mark in the corner of their waveform; hover a hit to see which.
 - Change an EQ's filters later and the worksheet lists the takes that use it; **Slice them** applies it. The build waits until then. Your decisions and cuts are kept: hits are found in the takes as recorded, so the EQ never moves a cut.
 - Tuning and loudness are measured after the EQ, as that's what plays. Peaks count the take too, so a clipped take is still flagged. Filters work forwards and backwards, so nothing moves in time; a notch can also lower a note's own overtone that lies close to it.
-- Moving a recording to another note takes its EQs along.
+- Moving a recording to another note takes its EQs along; deleting a recording forgets that it was picked, so a new one made under its name starts without.
+- The editor tells you when a filter lies above what the sample rate can hold (it is left out then), and when an EQ is for a signal you removed (it skips that signal).
 
 ## Importing existing samples
 

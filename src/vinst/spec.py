@@ -322,12 +322,6 @@ class Instrument(BaseModel):
                 out.append(f"Signal id “{sig.id}” is reserved; choose another.")
         if self.processing.denoise and not self.recording.noise_floor_seconds:
             out.append("Denoising needs a noise-floor recording (set its length in step 4).")
-        _dupes(out, "clean-up EQ name", [e.name for e in self.processing.cleanup_eqs])
-        signal_ids = {s.id for s in self.signals}
-        for eq in self.processing.cleanup_eqs:
-            for sig in eq.signals:
-                if sig not in signal_ids:
-                    out.append(f"Clean-up EQ “{eq.name}” is for the signal “{sig}”, which isn't there any more.")
         lanes = self.dynamics.layers + [lane for own in self.note_lanes.values() for lane in own.layers]
         for what, values in (("Signal id", [s.id for s in self.signals]), ("Velocity name", list(dict.fromkeys(lanes)))):
             for v in values:

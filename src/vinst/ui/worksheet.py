@@ -35,7 +35,7 @@ from vinst.plan import (
 )
 from vinst.slicing import SUBTYPES
 from vinst.review import FLAGS, Hit, Manifest, TakeResult, check_lanes, lane_of, settle
-from vinst.spec import SAFE_NAME as SAFE_LANE, CleanupEq, EqFilter, NoteLanes
+from vinst.spec import SAFE_NAME as SAFE_LANE, CleanupEq, EqFilter, Instrument, NoteLanes
 from vinst.ui import form, open_with, recording
 from vinst.ui.anim import Collapse
 from vinst.ui.finder import can_choose_folder, choose_folder, ensure_folder, reveal
@@ -506,8 +506,8 @@ def settings_cards(ed: "Editor") -> None:
                           suffix="ms crossfade").props("dense outlined").classes("w-40")
 
 
-def eq_summary(eq: CleanupEq) -> str:
-    sigs = ", ".join(eq.signals) if eq.signals else "all signals"
+def eq_summary(inst: Instrument, eq: CleanupEq) -> str:
+    sigs = cleanup_eq.signal_names(inst, eq.signals) or "no signal" if eq.signals else "all signals"
     if not eq.filters:
         return f"{sigs} · no filters yet"
     takes = "every take" if eq.every_take else \
@@ -527,7 +527,7 @@ def cleanup_eqs(ed: "Editor") -> None:
             for i, eq in enumerate(proc.cleanup_eqs):
                 with ui.row().classes("items-center gap-2 no-wrap w-full"):
                     ui.label(eq.name).classes("text-sm truncate shrink-0 max-w-[45%]")
-                    ui.label(eq_summary(eq)).classes("text-xs opacity-60 truncate grow min-w-0")
+                    ui.label(eq_summary(inst, eq)).classes("text-xs opacity-60 truncate grow min-w-0")
                     ui.button(icon="tune", on_click=lambda i=i: edit(i)).props("flat dense round size=sm") \
                         .tooltip("Change it")
             ui.button("EQ", icon="add", on_click=add).props("flat dense no-caps size=sm") \
@@ -554,15 +554,34 @@ def cleanup_eqs(ed: "Editor") -> None:
             ui.label("Takes a noise out of the sliced samples, e.g. hum, buzz or a click's ring; your takes stay "
                      "as they are. Pick it for a take in a hit's dialog, or use it for every take.") \
                 .classes("text-xs opacity-70")
-            ed.text("Name", eq, "name").props("dense outlined").classes("w-full")
+            # Set once typed, not per key: the worksheet redraws to show the new name on the hits.
+            name = ui.input("Name", value=eq.name).props("dense outlined").classes("w-full")
+
+            def rename() -> None:
+                new = (name.value or "").strip()
+                if new.lower() in {e.name.lower() for e in proc.cleanup_eqs if e is not eq} or not new:
+                    ui.notify("Give it a name no other clean-up EQ has.", type="warning")
+                    name.value = eq.name
+                    return
+                ed.set(eq, "name", new)
+
+            name.on("blur", rename)
+            name.on("keydown.enter", rename)
             with ui.row().classes("w-full items-center gap-4 no-wrap"):
-                if len(inst.signals) > 1:
-                    ui.select({s.id: s.name for s in inst.signals}, value=list(eq.signals), multiple=True,
-                              label="Signals (none: all)",
-                              on_change=lambda e: ed.set(eq, "signals", list(e.value or []))) \
+                ids = {s.id for s in inst.signals}
+                if len(inst.signals) > 1 or eq.signals:
+                    ui.select({s.id: s.name for s in inst.signals}, value=[s for s in eq.signals if s in ids],
+                              multiple=True, label="Signals (none: all)",
+                              on_change=lambda e: (ed.set(eq, "signals", list(e.value or [])), gone.set_visibility(False))) \
                         .props("dense outlined use-chips").classes("grow min-w-0")
                 ui.toggle({False: "Takes I pick", True: "Every take"}, value=eq.every_take,
                           on_change=lambda e: ed.set(eq, "every_take", bool(e.value))).props("dense no-caps")
+            missing = cleanup_eq.missing_signals(inst, eq)
+            gone = ui.label(f"It was also for {', '.join(f'“{m}”' for m in missing)}, which this instrument no "
+                            "longer has. " + ("It works on the signals chosen above." if len(missing) < len(eq.signals)
+                                              else "It works on no signal until you choose one.")) \
+                .classes("text-xs text-warning")
+            gone.set_visibility(bool(missing))
 
             @ui.refreshable
             def bands() -> None:
@@ -571,8 +590,8 @@ def cleanup_eqs(ed: "Editor") -> None:
                         ui.select(cleanup_eq.KIND_LABELS, value=f.kind,
                                   on_change=lambda e, f=f: kind(f, e.value)).props("dense outlined") \
                             .classes("w-48 shrink-0")
-                        ed.number("", f, "hz", cast=float, min=10, max=40000, step=1, suffix="Hz") \
-                            .props("dense outlined").classes("w-28")
+                        watched = [ed.number("", f, "hz", cast=float, min=10, max=40000, step=1, suffix="Hz")
+                                   .props("dense outlined").classes("w-28")]
                         if f.kind in cleanup_eq.HAS_GAIN:
                             ed.number("", f, "gain_db", cast=float, min=-60, max=24, step=1, suffix="dB") \
                                 .props("dense outlined").classes("w-24")
@@ -581,12 +600,23 @@ def cleanup_eqs(ed: "Editor") -> None:
                                 .props("dense outlined").classes("w-24") \
                                 .tooltip("Higher is narrower")
                         if f.kind == "hum":
-                            ed.number("", f, "harmonics", min=1, max=40, step=1, suffix="×") \
-                                .props("dense outlined").classes("w-20") \
-                                .tooltip("How many: the frequency and its multiples (100, 150, … Hz for 50 Hz)")
+                            watched.append(ed.number("", f, "harmonics", min=1, max=40, step=1, suffix="×")
+                                           .props("dense outlined").classes("w-20")
+                                           .tooltip("How many: the frequency and its multiples (100, 150, … Hz "
+                                                    "for 50 Hz)"))
                         ui.space()
                         ui.button(icon="close", on_click=lambda f=f: drop(f)).props("flat dense round size=sm") \
                             .tooltip("Remove this filter")
+                    note = ui.label().classes("text-xs text-warning -mt-1")
+
+                    def out_of_range(f: EqFilter = f, note: ui.label = note) -> None:
+                        text = cleanup_eq.left_out(f, inst.recording.sample_rate)
+                        note.set_text(text)
+                        note.set_visibility(bool(text))
+
+                    out_of_range()
+                    for w in watched:  # after the field's own handler, so `f` holds the new value
+                        w.on_value_change(lambda _e, check=out_of_range: check())
                 if not eq.filters:
                     ui.label("No filters yet. Mains hum is 50 Hz in Europe, 60 Hz in the Americas.") \
                         .classes("text-sm opacity-70")
@@ -678,6 +708,8 @@ def step_worksheet(ed: "Editor") -> None:
             review.save(manifest, path)
             state["manifest"] = manifest
             state["stale"] = None
+            if cleanup_eq.forget_missing(inst, {t.key for t in manifest.takes if t.status != "missing"}):
+                ed.changed()
             results.refresh()
             ed.refresh()  # the summary shows what was recorded or imported
             if not only:
@@ -1080,8 +1112,10 @@ def step_worksheet(ed: "Editor") -> None:
         lane_dialog.open()
 
     def eq_tip(take: TakeResult) -> str:
-        names = cleanup_eq.describe(inst, take.key, take.signals) if take.cleanup_eq else ""
-        return f"clean-up EQ: {names}" if names else "clean-up EQ" if take.cleanup_eq else ""
+        """For a hit whose samples went through a clean-up EQ: which ones the take uses now."""
+        names = cleanup_eq.describe(inst, take.key, take.signals)
+        changed = take.cleanup_eq != cleanup_eq.take_setup(inst, take.key, take.signals)
+        return "clean-up EQ" + (f": {names}" if names else "") + (", changed since slicing" if changed else "")
 
     def hit_text(h: Hit) -> tuple[str, list[str]]:
         """A hit's short label (its tuning, its loop) and what's worth knowing about it."""
@@ -1544,7 +1578,7 @@ def step_worksheet(ed: "Editor") -> None:
         """What the worksheet depends on in the spec; other edits (a name, a colour) don't redraw it."""
         return repr((rec.takes_dir, rec.samples_dir, rec.source, inst.note_lanes, inst.preset.velocity_splits,
                      slicing_setup(inst), slicing.cleanup_setup(inst),
-                     [e.model_dump(exclude={"name"}) for e in inst.processing.cleanup_eqs],
+                     [e.model_dump() for e in inst.processing.cleanup_eqs],
                      [(t.key, t.files, t.hits, t.title) for t in plan_takes(inst)]))
 
     state["shown"] = shown()

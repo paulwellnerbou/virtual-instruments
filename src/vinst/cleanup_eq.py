@@ -57,10 +57,27 @@ def _biquad(kind: str, hz: float, gain_db: float, q: float, sr: int) -> list[flo
     return [b[0] / den[0], b[1] / den[0], b[2] / den[0], 1.0, den[1] / den[0], den[2] / den[0]]
 
 
+def fits(f: EqFilter, sr: int) -> int:
+    """How many of a band's frequencies lie low enough for `sr`: 0 or 1, for hum up to its harmonics."""
+    if f.kind == "hum":
+        return sum(f.hz * k < NYQUIST_SHARE * sr for k in range(1, f.harmonics + 1))
+    return int(f.hz < NYQUIST_SHARE * sr)
+
+
+def left_out(f: EqFilter, sr: int) -> str:
+    """What of a band the sample rate can't hold, in words; "" if all of it fits."""
+    n, top = fits(f, sr), round(NYQUIST_SHARE * sr)
+    if f.kind == "hum" and 0 < n < f.harmonics:
+        return f"Only {n} of the {f.harmonics} lie below {top} Hz; the others are left out."
+    return "" if n else f"Above {top} Hz, which {sr / 1000:g} kHz can't hold; left out."
+
+
 def sections(filters: list[EqFilter], sr: int) -> np.ndarray:
     """All bands as second-order sections, for filtering forwards and backwards."""
     rows = []
     for f in filters:
+        if not (f.hz > 0 and f.q > 0 and np.isfinite(f.gain_db)):  # e.g. half typed: no filter, not NaN
+            continue
         # Half the gain: filtering twice doubles it.
         if f.kind == "hum":
             rows += [_biquad("peak", f.hz * k, f.gain_db / 2, f.q, sr) for k in range(1, f.harmonics + 1)
@@ -114,14 +131,36 @@ def take_setup(inst: Instrument, take_key: str, signal_ids: list[str]) -> str:
     return json.dumps(used, sort_keys=True) if used else ""
 
 
+def signal_names(inst: Instrument, ids: list[str]) -> str:
+    names = {s.id: s.name for s in inst.signals}
+    return ", ".join(names[i] for i in ids if i in names)
+
+
+def missing_signals(inst: Instrument, eq: CleanupEq) -> list[str]:
+    """Signals an EQ is for that the instrument no longer has (removed or renamed): it skips them."""
+    ids = {s.id for s in inst.signals}
+    return [s for s in eq.signals if s not in ids]
+
+
 def describe(inst: Instrument, take_key: str, signal_ids: list[str]) -> str:
-    """E.g. "Mains hum (piezo), Click 3 kHz", for the take's hits."""
+    """E.g. "Mains hum (Piezo), Click 3 kHz", for the take's hits."""
     out = []
     for eq in applying(inst, take_key):
         sigs = [s for s in signal_ids if not eq.signals or s in eq.signals]
         if sigs:
-            out.append(eq.name + (f" ({', '.join(sigs)})" if eq.signals and len(signal_ids) > 1 else ""))
+            out.append(eq.name + (f" ({signal_names(inst, sigs)})" if eq.signals and len(signal_ids) > 1 else ""))
     return ", ".join(out)
+
+
+def forget_missing(inst: Instrument, recorded: set[str]) -> bool:
+    """Drops picks of recordings that are gone, so one made later under the same name doesn't get the
+    EQ unasked. Whether any were dropped."""
+    dropped = False
+    for eq in inst.processing.cleanup_eqs:
+        kept = [k for k in eq.takes if k in recorded]
+        if kept != eq.takes:
+            eq.takes, dropped = kept, True
+    return dropped
 
 
 def move_take(inst: Instrument, old_key: str, new_key: str) -> bool:
