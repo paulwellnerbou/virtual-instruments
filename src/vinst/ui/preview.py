@@ -1,9 +1,10 @@
 """The instrument as DecentSampler shows it, drawn as SVG for the builder: title, knobs in the
 preset's own knob style at their starting values, and DecentSampler's keyboard with its tints.
 
-Measured from DecentSampler 1.43: its keyboard covers the interface from about y = 233, about 98
-high, behind two wheels and two scroll arrows; an octave is 99 wide, centred on the keyboard's
-centerNote; DecentSampler names MIDI note 60 C3.
+Measured from DecentSampler 1.43 at its smallest window, which shows the interface down to y = 325:
+the keyboard covers it from y = 215, 100 high, beside two wheels; it doesn't scale with the
+interface, so an octave is 112 wide, and it starts at MIDI note 0 whatever the centerNote, with a
+scroll arrow on the right only. DecentSampler names MIDI note 60 C3.
 """
 
 import math
@@ -12,10 +13,10 @@ from html import escape
 from vinst import preset
 from vinst.spec import CONTROLS, Instrument
 
-KB_Y, KB_H = 233, 98
-VIEW_H = KB_Y + KB_H  # what DecentSampler's window shows of the interface
-KEYS_X0, KEYS_X1 = 64, 794
-WHITE_W = 99 / 7
+KB_Y, KB_H = 215, 100
+VIEW_H = 325  # what DecentSampler's window shows of the interface
+KEYS_X0, KEYS_X1 = 61, 790.5
+WHITE_W = 112.3 / 7
 BLACK_W, BLACK_H = WHITE_W * 0.62, KB_H * 0.7
 WHITE_STEPS = [0, 2, 4, 5, 7, 9, 11]  # the white keys of an octave, in semitones from its C
 FONT = "'Work Sans', 'Helvetica Neue', Arial, sans-serif"
@@ -62,16 +63,16 @@ def _arc(cx: float, cy: float, r: float, start: float, end: float) -> str:
 
 
 def knob(x: float, y: float, size: float, k: preset.Knob, accent: str, text: str) -> str:
-    """A labelled knob as preset.knob_style draws it: label on top, the dial in the square below."""
-    dial = size - 17
-    cx, cy, u = x + size / 2, y + 17 + dial / 2, dial / 100  # u: the style's percent of the square
+    """A labelled knob as preset.knob_style draws it: a small label on top, the dial below it."""
+    dial = size - 15.5
+    cx, cy, u = x + size / 2, y + 11 + dial / 2, dial / 100  # u: the style's percent of the square
     share = (k.value - k.lo) / (k.hi - k.lo) if k.hi > k.lo else 0
     angle = -135 + 270 * min(max(share, 0), 1)
     px0, py0 = _point(cx, cy, 14 * u, angle)
     px1, py1 = _point(cx, cy, 30 * u, angle)
     lit = (f"<path d='{_arc(cx, cy, 46 * u, -135, angle)}' stroke='{accent}' stroke-width='{6 * u:.2f}' "
            f"fill='none' stroke-linecap='round' filter='url(#glow)'/>") if share > 0.005 else ""
-    return (f"<text x='{cx:.1f}' y='{y + 15:.1f}' text-anchor='middle' font-size='13' fill='{text}' "
+    return (f"<text x='{cx:.1f}' y='{y + 9:.1f}' text-anchor='middle' font-size='7.5' fill='{text}' "
             f"opacity='.8'>{escape(k.label)}</text>"
             f"<path d='{_arc(cx, cy, 46 * u, -135, 135)}' stroke='rgba(255,255,255,.13)' "
             f"stroke-width='{6 * u:.2f}' fill='none' stroke-linecap='round'/>{lit}"
@@ -80,44 +81,39 @@ def knob(x: float, y: float, size: float, k: preset.Knob, accent: str, text: str
             f"stroke-width='{5 * u:.2f}' stroke-linecap='round'/>")
 
 
-def keyboard(center: int, tints: dict[int, str]) -> str:
-    """DecentSampler's keyboard: its wheels, arrows and keys, `center` in the middle, `tints` by key."""
-    def white_index(n: int) -> int:
-        return (n // 12) * 7 + sum(1 for s in WHITE_STEPS if s < n % 12)
+def white_index(n: int) -> int:
+    """How many white keys lie below MIDI note `n`."""
+    return (n // 12) * 7 + sum(1 for s in WHITE_STEPS if s < n % 12)
 
-    def is_white(n: int) -> bool:
-        return n % 12 in WHITE_STEPS
 
-    mid = (KEYS_X0 + KEYS_X1) / 2
-    centre_x = white_index(center) * WHITE_W + (WHITE_W / 2 if is_white(center) else 0)
-    shift = mid - centre_x
+def keyboard(tints: dict[int, str]) -> str:
+    """DecentSampler's keyboard: its wheels, its keys from MIDI note 0 and its arrow, `tints` by key."""
     whites, blacks = [], []
     for n in range(128):
-        if is_white(n):
-            x = shift + white_index(n) * WHITE_W
-            if x + WHITE_W < KEYS_X0 or x > KEYS_X1:
-                continue
+        if n % 12 in WHITE_STEPS:
+            x = KEYS_X0 + white_index(n) * WHITE_W
+            if x > KEYS_X1:
+                break
             whites.append(f"<rect x='{x:.2f}' y='{KB_Y}' width='{WHITE_W:.2f}' height='{KB_H}' "
                           f"fill='{tints.get(n, '#fafafa')}' stroke='#9a9a9a' stroke-width='.7'/>")
             if n % 12 == 0:
-                whites.append(f"<text x='{x + WHITE_W / 2:.2f}' y='{KB_Y + KB_H - 6}' text-anchor='middle' "
-                              f"font-size='8.5' fill='#222'>C{n // 12 - 2}</text>")
+                # Too narrow a key for the minus octaves' digit, DecentSampler cuts it off.
+                name = "C-" if n < 24 else f"C{n // 12 - 2}"
+                whites.append(f"<text x='{x + WHITE_W / 2:.2f}' y='{KB_Y + KB_H - 5}' text-anchor='middle' "
+                              f"font-size='9' fill='#222'>{name}</text>")
         else:
-            x = shift + white_index(n) * WHITE_W - BLACK_W / 2
-            if x + BLACK_W < KEYS_X0 or x > KEYS_X1:
-                continue
-            blacks.append(f"<rect x='{x:.2f}' y='{KB_Y}' width='{BLACK_W:.2f}' height='{BLACK_H:.1f}' "
-                          f"fill='url(#black)'/>")
-    wheels = (f"<rect x='0' y='{KB_Y}' width='812' height='{KB_H}' fill='#2b2e33'/>"
-              f"<rect x='9' y='{KB_Y + 2}' width='18' height='{KB_H - 4}' fill='#d8d8d8' stroke='#999'/>"
-              f"<line x1='11' y1='{KB_Y + KB_H / 2}' x2='25' y2='{KB_Y + KB_H / 2}' stroke='#888' stroke-width='2'/>"
-              f"<rect x='33' y='{KB_Y + 2}' width='18' height='{KB_H - 4}' fill='#d8d8d8' stroke='#999'/>"
-              f"<rect x='33' y='{KB_Y + KB_H * 0.45}' width='18' height='{KB_H * 0.55 - 2}' fill='#8c8c8c'/>"
-              f"<rect x='{KEYS_X0 - 10}' y='{KB_Y + 2}' width='10' height='{KB_H - 4}' fill='#d0d0d0'/>"
-              f"<rect x='{KEYS_X1}' y='{KB_Y + 2}' width='10' height='{KB_H - 4}' fill='#d0d0d0'/>"
-              f"<text x='{KEYS_X0 - 5}' y='{KB_Y + KB_H / 2 + 3}' text-anchor='middle' font-size='8' fill='#777'>◀</text>"
-              f"<text x='{KEYS_X1 + 5}' y='{KB_Y + KB_H / 2 + 3}' text-anchor='middle' font-size='8' fill='#777'>▶</text>")
-    return (f"{wheels}<svg x='{KEYS_X0}' y='{KB_Y}' width='{KEYS_X1 - KEYS_X0}' height='{KB_H}' "
+            x = KEYS_X0 + white_index(n) * WHITE_W - BLACK_W / 2
+            if x < KEYS_X1:
+                blacks.append(f"<rect x='{x:.2f}' y='{KB_Y}' width='{BLACK_W:.2f}' height='{BLACK_H:.1f}' "
+                              f"fill='url(#black)'/>")
+    mid = KB_Y + KB_H / 2
+    controls = (f"<rect x='10' y='{KB_Y}' width='19' height='{KB_H}' fill='#d9d9d9'/>"
+                f"<rect x='10' y='{mid - 1.5}' width='19' height='1.5' fill='#828282'/>"
+                f"<rect x='36' y='{KB_Y}' width='18.5' height='{KB_H}' fill='#d9d9d9'/>"
+                f"<rect x='36' y='{KB_Y + KB_H * 0.55}' width='18.5' height='{KB_H * 0.45}' fill='#828282'/>"
+                f"<rect x='{KEYS_X1}' y='{KB_Y}' width='11' height='{KB_H}' fill='#d9d9d9'/>"
+                f"<text x='{KEYS_X1 + 5.5}' y='{mid + 3}' text-anchor='middle' font-size='9' fill='#828282'>▶</text>")
+    return (f"{controls}<svg x='{KEYS_X0}' y='{KB_Y}' width='{KEYS_X1 - KEYS_X0}' height='{KB_H}' "
             f"viewBox='{KEYS_X0} {KB_Y} {KEYS_X1 - KEYS_X0} {KB_H}'>{''.join(whites)}{''.join(blacks)}</svg>")
 
 
@@ -158,17 +154,15 @@ def render(inst: Instrument, cutting: bool, background_url: str | None = None, m
         extra_keys = [k for x in inst.extras if x.use == "key"
                       for k in ([x.key, x.down_key, x.up_key] if x.stroke_keys else [x.key])]
     tints: dict[int, str] = {}
-    center = 60
     if span:
-        center = (span[0] + span[1]) // 2  # as preset.render's centerNote
         tints.update({n: css(preset.pale(p.accent_color, 0.4)) for n in range(span[0], span[1] + 1)})
     for key in extra_keys:
         tints[key] = css(preset.pale(f"FF{preset.EXTRA_KEY_RGB}", 0.6))
-    parts.append(keyboard(center, tints))
+    parts.append(keyboard(tints))
     defs = ("<defs><linearGradient id='cap' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='#353a42'/>"
             "<stop offset='1' stop-color='#1b1e23'/></linearGradient>"
-            "<linearGradient id='black' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='#6e6e6e'/>"
-            "<stop offset='.8' stop-color='#555'/><stop offset='1' stop-color='#2e2e2e'/></linearGradient>"
+            "<linearGradient id='black' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='#858585'/>"
+            "<stop offset='.87' stop-color='#858585'/><stop offset='.87' stop-color='#555'/></linearGradient>"
             "<filter id='shadow' x='-30%' y='-30%' width='160%' height='160%'>"
             "<feDropShadow dx='0' dy='2' stdDeviation='2' flood-color='#000' flood-opacity='.65'/></filter>"
             "<filter id='glow' x='-30%' y='-30%' width='160%' height='160%'>"
