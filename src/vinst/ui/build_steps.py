@@ -440,16 +440,21 @@ def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
                         ed.number("Room size", p, "reverb_room", cast=float, min=0, max=1, step=0.05) \
                             .classes("w-28").tooltip("Bigger rooms ring longer")
                         ed.number("Damping", p, "reverb_damping", cast=float, min=0, max=1, step=0.05) \
-                            .classes("w-28").tooltip("How fast the reverb loses its highs: more is warmer, and keeps "
-                                                     "a pluck's click from ringing on as a hiss")
+                            .classes("w-28").tooltip("How fast the reverb loses its highs: more is warmer, and softens "
+                                                     "a pluck's click ringing on as a hiss. To take the click out of "
+                                                     "the reverb altogether: Without the attack's hiss, below")
                 if key == "reverb":
-                    ui.switch("Without the pluck's hiss", value=p.reverb_send,
-                              on_change=lambda e: ed.set(p, "reverb_send", e.value))
-                    ui.label("The dry sound stays as it is; the reverb gets less of each note's partials from about "
-                             "three times its pitch up, and none of the click's highs, which otherwise ring on as a "
-                             "hiss. The same room and damping, played as convolution reverbs on buses, one per few "
-                             "semitones. The knob still sets how much, though at the same setting the reverb is a "
-                             "little quieter, its highs gone.").classes("text-xs opacity-70 max-w-3xl")
+                    ui.switch("Without the attack's hiss", value=p.reverb_send,
+                              on_change=lambda e: ed.set(p, "reverb_send", e.value)) \
+                        .tooltip("Each sample also feeds a reverb for its few semitones: a convolution reverb on a "
+                                 "bus of its own, made when building from DecentSampler's reverb with this room and "
+                                 "damping, turned down from about three times the pitch up")
+                    ui.label("For plucked and struck strings: the click at the start of each note no longer rings "
+                             "on in the reverb as a hiss, and the bright first moment of a note doesn't linger in "
+                             "it, so the reverb sounds warmer. The dry sound stays exactly as recorded. Notes "
+                             "without a click (bowed, blown, sung) gain little. At the same knob setting the "
+                             "reverb is a little quieter, its highs gone, so you may turn it up a bit. MuseScore's "
+                             "soundfont has no reverb; nothing changes there.").classes("text-xs opacity-70 max-w-3xl")
                 if key == "lowcut":
                     ui.label("E.g. the low resonance of a ukulele's body that rings on after the pluck; the note itself, from its pitch up, "
                              "stays as it is. A curve, not a step, as drawn: the full amount well below the share "

@@ -18,6 +18,7 @@ def test_off_builds_the_preset_as_before(built):
     assert doc.find("buses") is None and not any(s.get("output2Target") for s in doc.iter("sample"))
     assert [e.get("type") for e in doc.find("effects")][-1] == "reverb"
     assert not (first.bundle / reverb_send.IR_DIR).exists()
+    assert not any("attack's hiss" in line for line in first.info)
     before = first.preset_file.read_bytes()
 
     inst.preset.reverb_send = True
@@ -36,6 +37,7 @@ def test_on_sends_every_sample_to_a_reverb_bus_of_its_pitch(built):
     doc = _preset(result)
     assert "reverb" not in [e.get("type") for e in doc.find("effects")]
     buses = doc.find("buses").findall("bus")
+    assert any(line.startswith(f"Reverb without the attack's hiss: {len(buses)} reverbs") for line in result.info)
     assert buses and all(float(b.get("busVolume")) == inst.preset.reverb for b in buses)
     for b in buses:
         conv = b.find("effects/effect")

@@ -292,7 +292,10 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
 
     reverb_bands = preset.reverb_bands(inst, mapping, preset.active_controls(inst, mapping))
     if reverb_bands:
-        reverb_send.write_irs(bundle, reverb_bands, inst.preset.reverb_room, inst.preset.reverb_damping)
+        irs = reverb_send.write_irs(bundle, reverb_bands, inst.preset.reverb_room, inst.preset.reverb_damping)
+        size = sum((bundle / p).stat().st_size for p in irs) / 1e6
+        mapping.info.append(f"Reverb without the attack's hiss: {len(irs)} reverbs, one per few semitones "
+                            f"({size:.1f} MB).")
     elif (bundle / reverb_send.IR_DIR).is_dir():
         shutil.rmtree(bundle / reverb_send.IR_DIR)
 
