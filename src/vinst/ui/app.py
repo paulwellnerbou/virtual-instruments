@@ -88,7 +88,36 @@ STEPS_CSS = """
 /* Chrome anchors the scroll position to the focused element (a chip being dragged, the button just
    clicked); a redraw replaces it and the page jumps. The steps redraw in place, so no anchoring. */
 .vi-steps .q-stepper__step-inner { overflow-anchor: none; }
-"""  # seven steps: four on the first line, then the worksheet starts the second
+/* Too narrow for the side column beside the steps, and for seven step titles. */
+@media (max-width: 1023px) {
+  .vi-editor.vi-editor { flex-direction: column; flex-wrap: nowrap; align-items: stretch; }
+  .vi-side.vi-side { width: 100%; position: static; }
+  .vi-steps .q-stepper__header { flex-wrap: nowrap; }
+  .vi-steps .q-stepper__tab { flex: 0 0 auto; max-width: none; min-width: 0; padding: 12px 4px; }
+  /* Hidden from view only: the title is still the step button's name for screen readers. */
+  .vi-steps .q-stepper__tab:not(.q-stepper__tab--active) .q-stepper__label {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .vi-steps .q-stepper__tab:not(.q-stepper__tab--active) .q-stepper__dot { margin-right: 0; }
+  .vi-steps .q-stepper__tab--active { flex: 1 1 auto; }
+  .vi-steps .q-stepper__tab--active .q-stepper__label { min-width: 0; }
+  .vi-steps .q-stepper__step-inner { padding: 16px 12px; }
+}
+@media (max-width: 599px) {
+  /* Name, id and hits on one line, the instructions and the delete button on the next. */
+  .vi-extra.vi-extra { flex-wrap: wrap; }
+  .vi-extra > .q-field { flex: 1 1 4rem; width: auto; }
+  .vi-extra > .q-field:first-child { flex-grow: 3; }
+  .vi-extra > .vi-extra-text { flex-basis: calc(100% - 4rem); }
+  .vi-extra-map > .row { flex-wrap: wrap; }
+  .vi-extra-map .vi-collapse-inner { padding-left: 0; }
+  .vi-build-progress.vi-build-progress { min-width: 0; }
+}
+@media (max-width: 479px) {
+  .vi-setting.vi-setting { flex-wrap: wrap; row-gap: 0; }
+  .vi-setting > .row:first-child { width: auto; }
+  .vi-setting > .row:last-child { flex-basis: 100%; }
+}
+"""  # wide screens: seven steps, four on the first line, then the worksheet starts the second
 
 
 def header() -> None:
@@ -338,7 +367,7 @@ def editor_page(slug: str) -> None:
     inst = ed.inst
     ui.timer(0.8, ed.autosave)
 
-    with ui.row().classes("w-full max-w-7xl mx-auto no-wrap items-start gap-6"):
+    with ui.row().classes("vi-editor w-full max-w-7xl mx-auto no-wrap items-start gap-6"):
         with ui.column().classes("grow min-w-0"):
             with ui.row().classes("items-baseline gap-4"):
                 title = ui.label(inst.meta.name).classes("text-2xl")
@@ -601,9 +630,9 @@ def step_range(ed: Editor) -> None:
     def strings_editor() -> None:
         ui.markdown("List the strings **as they sit on the instrument** (e.g. G C E A). Each note is recorded "
                     "once, on the string where it's played at the lowest fret.").classes("max-w-2xl")
-        with ui.row().classes("items-end"):
+        with ui.row().classes("items-end max-w-full"):
             preset = ui.select(list(defaults.TUNINGS), label="Tuning preset",
-                               value=None).classes("w-80")
+                               value=None).classes("w-80 max-w-full")
             frets = ui.number("Frets", value=rng.strings[0].frets if rng.strings else 12, min=0, max=36,
                               precision=0).classes("w-24")
 
@@ -739,11 +768,11 @@ def step_dynamics(ed: Editor) -> None:
     @ui.refreshable
     def extras() -> None:
         for x in inst.extras:
-            with ui.row().classes("items-start w-full no-wrap"):
+            with ui.row().classes("vi-extra items-start w-full no-wrap"):
                 ed.text("Name", x, "name").classes("w-48")
                 ed.text("Id", x, "id").classes("w-28")
                 ed.number("Hits", x, "hits", min=1, max=200, precision=0).classes("w-20")
-                ed.text("Instructions", x, "instructions").classes("grow")
+                ed.text("Instructions", x, "instructions").classes("vi-extra-text grow")
 
                 def remove(item: Extra = x) -> None:
                     inst.extras.remove(item)

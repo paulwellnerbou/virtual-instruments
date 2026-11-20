@@ -449,7 +449,7 @@ def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
 
 
 def extra_row(ed: "Editor", x: Extra) -> None:
-    with ui.column().classes("gap-0"):
+    with ui.column().classes("vi-extra-map gap-0"):
         with ui.row().classes("items-center gap-4 no-wrap"):
             ui.label(x.name).classes("w-48")
 
@@ -493,7 +493,7 @@ def step_build(ed: "Editor") -> None:
             with Collapse(False, axis="x", inner_classes="flex flex-col gap-1 min-w-0") as progress_box:
                 progress = ui.linear_progress(value=0, show_value=False).classes("w-full")
                 progress_label = ui.label().classes("text-xs opacity-70 truncate h-4 leading-4 w-0 min-w-full")
-            progress_box.outer.classes("grow min-w-48 max-w-xl")
+            progress_box.outer.classes("vi-build-progress grow min-w-48 max-w-xl")
 
         def tick() -> None:
             if state["busy"]:
