@@ -533,12 +533,14 @@ def settings_cards(ed: "Editor") -> None:
 
 
 def eq_summary(inst: Instrument, eq: CleanupEq) -> str:
-    sigs = cleanup_eq.signal_names(inst, eq.signals) or "no signal" if eq.signals else "all signals"
+    sigs = cleanup_eq.signal_names(inst, eq.signals) or "no signal" if eq.signals else \
+        "all signals" if len(inst.signals) > 1 else ""
     if not eq.filters:
-        return f"{sigs} · no filters yet"
-    takes = "every take" if eq.every_take else \
-        f"{len(eq.takes)} take{'' if len(eq.takes) == 1 else 's'}" if eq.takes else "no takes picked yet"
-    return f"{sigs} · {takes}"
+        what = "no filters yet"
+    else:
+        what = "every take" if eq.every_take else \
+            f"{len(eq.takes)} take{'' if len(eq.takes) == 1 else 's'}" if eq.takes else "no takes picked yet"
+    return f"{sigs} · {what}" if sigs else what
 
 
 def cleanup_eqs(ed: "Editor") -> None:
