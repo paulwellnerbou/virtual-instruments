@@ -2,8 +2,9 @@
 
 DecentSampler's own reverb turns a pluck's click into a hiss and keeps the bright start of a note
 ringing. Instead, every sample also goes to a bus for its pitch band; the bus holds a convolution
-reverb whose impulse response is DecentSampler's reverb (same room and damping) with a high shelf
-above about three times the band's pitch and a low-pass. The Reverb knob sets the buses' volume.
+reverb whose impulse response is DecentSampler's reverb (same room and damping), or one of your own,
+with a high shelf above about three times the band's pitch and a low-pass. The Reverb knob sets the
+buses' volume.
 """
 
 import math
@@ -12,9 +13,10 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-from scipy.signal import butter, lfilter, sosfilt
+from scipy.signal import butter, lfilter, resample_poly, sosfilt
 
 IR_DIR = "IRs"
+IR_TYPES = (".wav", ".aif", ".aiff", ".flac")  # what an impulse response of your own may be
 IR_RATE = 48000
 IR_MAX_S = 10.0
 IR_FLOOR_DB = -70.0  # the tail is cut where what's left is this far below the whole
@@ -132,14 +134,39 @@ def band_ir(base: np.ndarray, band: Band, rate: int = IR_RATE) -> np.ndarray:
     return (_trimmed(ir) / CONVOLUTION_SCALE).T.astype(np.float32)
 
 
-def write_irs(bundle: Path, bands: list[Band], room: float, damping: float) -> list[str]:
-    """Writes one impulse response per band into the bundle; returns their paths inside it."""
+def own_ir(path: Path) -> np.ndarray:
+    """(2, frames): an impulse response file, stereo at IR_RATE."""
+    try:
+        data, rate = sf.read(str(path), always_2d=True, dtype="float64")
+    except (RuntimeError, sf.LibsndfileError) as err:
+        raise ValueError(f"Can't read the impulse response {path.name}: {err}") from err
+    data = (np.repeat(data, 2, axis=1) if data.shape[1] == 1 else data[:, :2]).T
+    if rate != IR_RATE:
+        g = math.gcd(int(rate), IR_RATE)
+        data = resample_poly(data, IR_RATE // g, int(rate) // g, axis=-1)
+    if not np.any(data):
+        raise ValueError(f"The impulse response {path.name} is silent.")
+    return data
+
+
+def _energy(ir: np.ndarray) -> float:
+    return float(np.sum(ir.astype(np.float64) ** 2))
+
+
+def write_irs(bundle: Path, bands: list[Band], room: float, damping: float, own: Path | None = None) -> list[str]:
+    """Writes one impulse response per band into the bundle, from DecentSampler's reverb with this room and
+    damping or from an own impulse response; returns their paths inside it. An own one is made as loud as
+    DecentSampler's after the band's filtering, so the knob sets the same amount whichever plays."""
     folder = bundle / IR_DIR
     folder.mkdir(parents=True, exist_ok=True)
-    base = builtin_reverb_ir(room, damping, IR_MAX_S)
+    builtin = builtin_reverb_ir(room, damping, IR_MAX_S)
+    base = own_ir(own) if own else builtin
     paths = [ir_path(i) for i in range(len(bands))]
     for path, band in zip(paths, bands):
-        sf.write(bundle / path, band_ir(base, band), IR_RATE, subtype="PCM_24")
+        ir = band_ir(base, band)
+        if own:
+            ir *= math.sqrt(_energy(band_ir(builtin, band)) / _energy(ir))
+        sf.write(bundle / path, ir, IR_RATE, subtype="PCM_24")
     for old in folder.glob("reverb-*.wav"):
         if f"{IR_DIR}/{old.name}" not in paths:
             old.unlink()

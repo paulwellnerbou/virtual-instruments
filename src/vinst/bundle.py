@@ -292,10 +292,14 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
 
     reverb_bands = preset.reverb_bands(inst, mapping, preset.active_controls(inst, mapping))
     if reverb_bands:
-        irs = reverb_send.write_irs(bundle, reverb_bands, inst.preset.reverb_room, inst.preset.reverb_damping)
+        own = Path(inst.preset.reverb_ir).expanduser() if inst.preset.reverb_ir else None
+        if own and not own.is_file():
+            raise ValueError(f"Impulse response not found: {own}")
+        irs = reverb_send.write_irs(bundle, reverb_bands, inst.preset.reverb_room, inst.preset.reverb_damping, own)
         size = sum((bundle / p).stat().st_size for p in irs) / 1e6
-        mapping.info.append(f"Reverb without the attack's hiss: {len(irs)} reverbs, one per few semitones "
-                            f"({size:.1f} MB).")
+        source = own.name if own else "DecentSampler's reverb"
+        mapping.info.append(f"Reverb without the attack's hiss: {len(irs)} reverbs from {source}, one per few "
+                            f"semitones ({size:.1f} MB).")
     elif (bundle / reverb_send.IR_DIR).is_dir():
         shutil.rmtree(bundle / reverb_send.IR_DIR)
 

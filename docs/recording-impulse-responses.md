@@ -7,9 +7,9 @@ This guide covers two ways to get one:
 - **[Capturing a reverb plug-in](#capturing-a-reverb-plug-in)**, e.g. a Valhalla reverb. Quick, and always clean.
 - **[Recording a real room](#recording-a-real-room)**, e.g. your living room, a hall or a church. More work, and the result is only as good as the recording.
 
-Then **[preparing the file](#preparing-the-file)**, which matters in both cases, and **[trying it out](#trying-it-out)**.
+Then **[preparing the file](#preparing-the-file)**, which matters in both cases, and **[using it](#using-it)**.
 
-> **What the builder does with it today:** nothing yet. *Without the attack's hiss* (Sound & look → Reverb) makes its impulse responses from DecentSampler's own reverb. An option to use your own IR file instead, with the same pitch-following shelf, is planned. Until then, you can [use your IR directly in DecentSampler](#in-decentsampler) or in your DAW.
+> **In the builder,** an impulse response of your own plays the reverb of *Without the attack's hiss* (Sound & look → Reverb), in place of DecentSampler's own reverb, with the same pitch-following filtering.
 
 ## Capturing a reverb plug-in
 
@@ -85,25 +85,28 @@ So: **remove the direct sound.** Cut the IR just after it, or fade it in over a 
 
 ### Level and format
 
-- **Normalize** to about −1 dBFS; the level is set in the instrument (the builder will scale it; DecentSampler itself plays every IR at a quarter of its level).
+- **Normalize** to about −1 dBFS. The builder sets the level anyway: it makes the IR as loud as DecentSampler's reverb with the instrument's room size and damping.
 - **WAV, 48 kHz, 24-bit** (or 32-bit float), **stereo** if you recorded or rendered stereo, otherwise mono.
 - **Name** it for what it is, e.g. `living-room-3m.wav`, `valhalla-supermassive-hall.wav`.
 
-## Trying it out
+## Using it
 
-### In DecentSampler
+### In the builder
 
-Until the builder can take your IR, you can try it in a built instrument by hand. Build with **Without the attack's hiss** on, then, in the built bundle (`build/<instrument>/<name>.dsbundle`):
+1. **Sound & look → Reverb:** switch on **Without the attack's hiss**.
+2. Under **Impulse response of your own**, drop your file (WAV, AIFF or FLAC) or click + to choose it. It's copied into the instrument's folder; **Remove** goes back to DecentSampler's reverb.
+3. **Build** and play it. The build summary names the IR the reverbs were made from.
 
-1. Copy your IR into the bundle's `IRs` folder.
-2. In the `.dspreset`, under `<buses>`, change each convolution's `irFile` to `IRs/your-file.wav`.
-3. Open the preset in DecentSampler, **with the Reverb knob turned down first**: a normalized IR is much louder than the builder's own, so start near 0 and turn it up.
+When building, the IR is:
+- **made stereo** if it's mono, and converted to 48 kHz if it isn't;
+- **filtered per few semitones** like DecentSampler's reverb is: a high shelf from about three times the pitch up and a low-pass at 5 kHz;
+- **made as loud, after that filtering, as DecentSampler's reverb** with the instrument's room size and damping, so the Reverb knob sets about the same amount either way (room size and damping don't otherwise change your IR). An IR with a different colour still sounds different in level on some notes: one with fewer lows than DecentSampler's reverb is quieter on low notes. Set the knob by ear.
 
-This drops the builder's pitch-following shelf (your IR is used as it is), and the next build overwrites it. Keep a copy of the IR outside the bundle.
+With the switch off, the IR is ignored and the instrument plays DecentSampler's own reverb, as before.
 
-### In your DAW
+### Listening for faults
 
-Any convolution reverb that loads WAV files will play it, e.g. REVerence in Cubase Pro. Play a few notes of the instrument dry and through the IR, at low and high pitches, and listen for:
+Play a few notes, low and high, with the Reverb knob turned up, or try the IR in your DAW first (any convolution reverb that loads WAV files, e.g. REVerence in Cubase Pro). Listen for:
 
 - **a second, early copy of the note:** the direct sound is still in the IR;
 - **hiss at the end of the tail:** cut it earlier, or fade out sooner;

@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import soundfile as sf
 from lxml import etree
 from test_preset import built  # noqa: F401  (fixture)
@@ -110,3 +111,50 @@ def test_the_band_ir_keeps_the_fundamental_and_tames_the_partials_above():
 
     change = [level(ir[:, 0], hz) - level(base[0], hz) for hz in (311, 1245, 8000)]
     assert abs(change[0]) < 0.5 and -10 < change[1] < -7 and change[2] < -20
+
+
+def _decaying_noise(path, rate=44100, seconds=1.5, channels=1):
+    rng = np.random.default_rng(1)
+    t = np.arange(int(rate * seconds)) / rate
+    data = rng.normal(0, 0.5, (t.size, channels)) * np.exp(-4 * t)[:, None]
+    sf.write(str(path), data, rate, subtype="PCM_24")
+    return path
+
+
+def test_an_own_ir_is_resampled_and_made_stereo(tmp_path):
+    own = reverb_send.own_ir(_decaying_noise(tmp_path / "room.wav"))
+    assert own.shape[0] == 2 and abs(own.shape[1] - int(1.5 * reverb_send.IR_RATE)) <= 1
+    assert np.allclose(own[0], own[1])
+    sf.write(str(tmp_path / "silent.wav"), np.zeros(4800), 48000)
+    with pytest.raises(ValueError, match="silent"):
+        reverb_send.own_ir(tmp_path / "silent.wav")
+
+
+def test_an_own_ir_is_as_loud_as_decentsampler_s_after_each_band_s_filtering(tmp_path):
+    bands = reverb_send.bands([50, 62, 81])
+    reverb_send.write_irs(tmp_path / "own", bands, 0.6, 0.7, _decaying_noise(tmp_path / "room.wav"))
+    reverb_send.write_irs(tmp_path / "ds", bands, 0.6, 0.7)
+    for i in range(len(bands)):
+        own = sf.read(str(tmp_path / "own" / reverb_send.ir_path(i)))[0]
+        ds = sf.read(str(tmp_path / "ds" / reverb_send.ir_path(i)))[0]
+        assert np.sum(own ** 2) == pytest.approx(np.sum(ds ** 2), rel=1e-3)
+
+
+def test_the_build_uses_an_own_ir_only_with_the_switch_on(built, tmp_path):
+    inst, _ = built
+    before = bundle.build(inst).preset_file.read_bytes()
+    inst.preset.reverb_ir = str(_decaying_noise(tmp_path / "hall.wav", channels=2))
+    off = bundle.build(inst)
+    assert off.preset_file.read_bytes() == before and not (off.bundle / reverb_send.IR_DIR).exists()
+
+    inst.preset.reverb_send = True
+    on = bundle.build(inst)
+    assert on.report.ok, on.report.errors
+    assert any("from hall.wav" in line for line in on.info)
+    ir, rate = sf.read(str(on.bundle / reverb_send.ir_path(0)))
+    # The hall's own decay, not DecentSampler's reverb (which starts only after its first comb's delay).
+    assert rate == reverb_send.IR_RATE and np.abs(ir[:100]).max() > 0
+
+    inst.preset.reverb_ir = str(tmp_path / "gone.wav")
+    with pytest.raises(ValueError, match="Impulse response not found"):
+        bundle.build(inst)

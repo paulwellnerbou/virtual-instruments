@@ -1,5 +1,6 @@
 """Wizard steps 7 (sound & look) and 8 (build, install, package)."""
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -7,7 +8,7 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from nicegui import app, run, ui
 
-from vinst import bundle, lowcut, preset, review, sf2, store
+from vinst import bundle, lowcut, preset, reverb_send, review, sf2, store
 from vinst.plan import layer_bounds, recording_passes
 from vinst.preset import mixable_signals
 from vinst.spec import CONTROLS, Extra
@@ -291,6 +292,64 @@ def background_field(ed: "Editor") -> None:
             ui.label("812 × 375 px; DecentSampler's keyboard covers its lower part.").classes("text-xs opacity-70")
 
 
+IR_COPY = "reverb-ir"  # the start of the name of an impulse response's copy in the instrument's folder
+
+
+def reverb_ir_field(ed: "Editor") -> None:
+    """An impulse response of your own for the reverb: dropped or chosen, it's copied into the instrument's folder."""
+    inst, p = ed.inst, ed.inst.preset
+
+    @ui.refreshable
+    def current() -> None:
+        path = Path(p.reverb_ir).expanduser() if p.reverb_ir else None
+        if path is None:
+            ui.label("None: DecentSampler's reverb, with the room size and damping above.").classes("text-sm opacity-70")
+            return
+        with ui.row().classes("items-center gap-3"):
+            if path.is_file():
+                ui.label(path.name).classes("text-sm")
+            else:
+                ui.label(f"{path.name} is missing.").classes("text-sm text-orange-600")
+            ui.button("Remove", icon="close", on_click=remove).props("flat dense")
+
+    def remove() -> None:
+        old = Path(p.reverb_ir).expanduser() if p.reverb_ir else None
+        ed.set(p, "reverb_ir", "")
+        # Only our own copy goes; a file picked elsewhere before stays where it is.
+        if old and old.parent == store.instrument_dir(inst.meta.slug) and old.stem.startswith(IR_COPY):
+            old.unlink(missing_ok=True)
+        current.refresh()
+
+    async def uploaded(e: Any) -> None:
+        suffix = Path(e.file.name).suffix.lower()
+        if suffix not in reverb_send.IR_TYPES:
+            ui.notify("An impulse response must be a WAV, AIFF or FLAC file.", type="warning")
+            return
+        folder = store.instrument_dir(inst.meta.slug)
+        for old in folder.glob(f"{IR_COPY}*"):
+            old.unlink()
+        # Its own name kept in the copy, so the field and the build say which room or reverb it is.
+        dest = folder / f"{IR_COPY}-{re.sub(r'[^A-Za-z0-9_.-]+', '-', Path(e.file.name).stem).strip('-')}{suffix}"
+        await e.file.save(dest)
+        ed.set(p, "reverb_ir", str(dest))
+        upload.reset()
+        current.refresh()
+
+    ui.label("Impulse response of your own (optional)").classes("text-sm font-medium")
+    with ui.row().classes("items-start gap-4 w-full"):
+        upload = ui.upload(on_upload=uploaded, auto_upload=True, max_files=1,
+                           label="Drop a WAV, AIFF or FLAC here, or click +") \
+            .props(f'accept="{",".join(reverb_send.IR_TYPES)}" flat bordered color=grey-8').classes("w-80")
+        with ui.column().classes("gap-1 pt-2 max-w-xl"):
+            current()
+            ui.label("A room or a reverb you captured, instead of DecentSampler's reverb; the pitch-following "
+                     "filtering is the same. Remove its direct sound first, or the reverb plays every note a "
+                     "second time. It's made about as loud as DecentSampler's reverb with this room size and "
+                     "damping, which otherwise don't change it; set the knob by ear. How to record one: "
+                     "docs/recording-impulse-responses.md.") \
+                .classes("text-xs opacity-70")
+
+
 def cut_curve_svg(below: float, reduction_db: float, accent: str) -> str:
     """The low cut over the frequencies around a note: how much quieter, against the share of its pitch."""
     w, h, left, top, right, bottom = 240, 90, 40, 8, 8, 18
@@ -444,17 +503,23 @@ def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
                                                      "a pluck's click ringing on as a hiss. To take the click out of "
                                                      "the reverb altogether: Without the attack's hiss, below")
                 if key == "reverb":
-                    ui.switch("Without the attack's hiss", value=p.reverb_send,
-                              on_change=lambda e: ed.set(p, "reverb_send", e.value)) \
+                    def send_switched(e: Any) -> None:
+                        ed.set(p, "reverb_send", e.value)
+                        own_ir.set_open(e.value)
+
+                    ui.switch("Without the attack's hiss", value=p.reverb_send, on_change=send_switched) \
                         .tooltip("Each sample also feeds a reverb for its few semitones: a convolution reverb on a "
                                  "bus of its own, made when building from DecentSampler's reverb with this room and "
-                                 "damping, turned down from about three times the pitch up")
+                                 "damping (or your own impulse response), turned down from about three times the "
+                                 "pitch up")
                     ui.label("For plucked and struck strings: the click at the start of each note no longer rings "
                              "on in the reverb as a hiss, and the bright first moment of a note doesn't linger in "
                              "it, so the reverb sounds warmer. The dry sound stays exactly as recorded. Notes "
                              "without a click (bowed, blown, sung) gain little. At the same knob setting the "
                              "reverb is a little quieter, its highs gone, so you may turn it up a bit. MuseScore's "
                              "soundfont has no reverb; nothing changes there.").classes("text-xs opacity-70 max-w-3xl")
+                    with Collapse(p.reverb_send, inner_classes="flex flex-col gap-1 pt-2") as own_ir:
+                        reverb_ir_field(ed)
                 if key == "lowcut":
                     ui.label("E.g. the low resonance of a ukulele's body that rings on after the pluck; the note itself, from its pitch up, "
                              "stays as it is. A curve, not a step, as drawn: the full amount well below the share "

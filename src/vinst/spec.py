@@ -287,6 +287,7 @@ class Preset(BaseModel):
     reverb_damping: float = Field(default=0.6, ge=0, le=1)
     # The reverb on buses fed per pitch band, without a pluck's click and bright start (see vinst.reverb_send).
     reverb_send: bool = False
+    reverb_ir: str = ""  # with reverb_send: an impulse response file of your own; empty: DecentSampler's reverb
     chorus: float = Field(default=0.0, ge=0, le=1)
     background: str = ""  # image file; empty means a plain colour
     bg_color: str = "FF1F2328"
