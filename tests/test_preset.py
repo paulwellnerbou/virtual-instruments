@@ -78,7 +78,8 @@ def test_rebuild_updates_cover_art_independently_of_the_background(built, tmp_pa
     png_header = b"\x89PNG\r\n\x1a\n"
     before = jpeg_header + b"cover"
     after = (jpeg_header if suffix == ".jpg" else png_header) + b"newer"
-    background.write_bytes(b"panel")
+    panel = png_header + b"panel"
+    background.write_bytes(panel)
     cover.write_bytes(before)
     inst.preset.background = str(background)
     inst.preset.cover_art = str(cover)
@@ -87,7 +88,7 @@ def test_rebuild_updates_cover_art_independently_of_the_background(built, tmp_pa
     ui = etree.parse(result.preset_file).find("ui")
     info_path = result.bundle / "DSLibraryInfo.xml"
     library_info = etree.parse(info_path).getroot()
-    assert (result.bundle / ui.get("bgImage")).read_bytes() == b"panel"
+    assert (result.bundle / ui.get("bgImage")).read_bytes() == panel
     cover_path = result.bundle / library_info.get("coverArt")
     assert cover_path.read_bytes() == before
     installed = bundle.install(result.bundle)
@@ -118,21 +119,23 @@ def test_rebuild_updates_cover_art_independently_of_the_background(built, tmp_pa
     assert f"missing cover image: {rel_cover}" in report.errors
 
 
-@pytest.mark.parametrize(("contents", "error"), [(None, "Cover image not found"),
-                                                 (b"not a JPEG", "Cover image must be a PNG or JPG")])
-def test_unusable_cover_art_is_rejected_before_recutting_samples(built, tmp_path, monkeypatch, contents, error):
+@pytest.mark.parametrize(("attr", "role"), [("background", "Background"), ("cover_art", "Cover")])
+@pytest.mark.parametrize(("contents", "error"), [(None, "image not found"),
+                                                 (b"not a JPEG", "image must be a PNG or JPG")])
+def test_unusable_artwork_is_rejected_before_recutting_samples(built, tmp_path, monkeypatch, attr, role,
+                                                               contents, error):
     inst, _ = built
-    cover = tmp_path / "cover.jpg"
+    image = tmp_path / "art.jpg"
     if contents is not None:
-        cover.write_bytes(contents)
-    inst.preset.cover_art = str(cover)
+        image.write_bytes(contents)
+    setattr(inst.preset, attr, str(image))
 
     def unexpected_recut(*args):
-        pytest.fail("An invalid cover path must be reported before recutting audio")
+        pytest.fail("An unusable image must be reported before recutting audio")
 
     monkeypatch.setattr(bundle, "edited_takes", lambda *args: ["edited-take"])
     monkeypatch.setattr(bundle, "recut", unexpected_recut)
-    with pytest.raises(ValueError, match=error):
+    with pytest.raises(ValueError, match=f"{role} {error}"):
         bundle.build(inst)
 
 

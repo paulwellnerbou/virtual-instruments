@@ -289,7 +289,7 @@ class Preset(BaseModel):
     reverb_damping: float = Field(default=0.6, ge=0, le=1)
     chorus: float = Field(default=0.0, ge=0, le=1)
     background: str = ""  # image file; empty means a plain colour
-    cover_art: str = ""  # cover image for the Decent Sampler file browser
+    cover_art: str = ""  # square image for DecentSampler's File Browser
     bg_color: str = "FF1F2328"
     text_color: str = "FFFFFFFF"
     accent_color: str = "FFE0A458"  # the knobs' lit arc and the playable keys

@@ -232,8 +232,8 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
             path = Path(source).expanduser()
             if not path.is_file():
                 raise ValueError(f"{role.capitalize()} image not found: {path}")
-            if role == "cover" and not is_artwork_image(path):
-                raise ValueError(f"Cover image must be a PNG or JPG: {path}")
+            if not is_artwork_image(path):
+                raise ValueError(f"{role.capitalize()} image must be a PNG or JPG: {path}")
             filename = f"{role}{path.suffix.lower()}"
             images[filename] = path
             image_paths[role] = f"{IMAGES_DIR}/{filename}"
@@ -369,7 +369,8 @@ def _mirror(src: Path, dest: Path) -> None:
         if p.is_file():
             sync_by_dir.setdefault(p.parent.relative_to(src), {})[p.name] = p
     for rel_dir, files in sync_by_dir.items():
-        # A new cover can keep both the size and timestamp of the old image or its XML reference.
+        # Images and the XML files can change and keep their size and timestamp (to the second), e.g. a
+        # rebuild within a second of installing; they're small, so their contents are compared too.
         sync_files(files, dest / rel_dir, compare_contents=rel_dir in (Path("."), Path(IMAGES_DIR)))
     for p in sorted(dest.rglob("*"), reverse=True):
         if p.relative_to(dest) not in wanted:
