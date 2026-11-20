@@ -92,6 +92,7 @@ Supported sample formats: WAV, AIFF, FLAC, and REX (1.39+).
   - Filters: `lowpass`, `lowpass_1pl`, `highpass`, `bandpass`, `notch`, `peak`, `low_shelf`, `high_shelf`
   - Gain and dynamics: `gain`, `compressor`
   - Time-based: `reverb`, `delay`, `convolution` (IR file)
+  - Measured in the plug-in: `reverb` always passes its input at full level and adds the reverb (so it can't sit on a send bus alone); `convolution` scales every IR by a fixed 0.25 and `mix` crossfades input and convolution; samples route to buses with `output2Target="BUS_n"` (sample, group and tag volumes scale that send as they do the main output), and a knob sets a bus's level with `type="amp" level="bus" parameter="BUS_VOLUME"`. The round-robin position carries over between state loads.
   - Modulation: `chorus`, `phaser`
   - Other: `pitch_shift`, `wave_folder`, `wave_shaper`, `stereo_simulator`, `bit_crusher`, `stutter`
 

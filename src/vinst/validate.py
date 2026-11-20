@@ -56,17 +56,24 @@ def check_xml(doc: etree._ElementTree, report: Report) -> None:
 
 def check_files(doc: etree._ElementTree, bundle: Path, report: Report) -> None:
     listings: dict[Path, set[str]] = {}
-    for el in doc.iter("sample"):
-        rel = el.get("path", "")
-        if "\\" in rel:
-            report.errors.append(f"sample path uses backslashes: {rel}")
+
+    def present(rel: str) -> bool:
         path = bundle / rel
         folder = path.parent
         if folder not in listings:
             listings[folder] = {p.name for p in folder.iterdir()} if folder.is_dir() else set()
         # Exact-case check: the default macOS filesystem would find a wrongly cased file anyway.
-        if path.name not in listings[folder]:
+        return path.name in listings[folder]
+
+    for el in doc.iter("sample"):
+        rel = el.get("path", "")
+        if "\\" in rel:
+            report.errors.append(f"sample path uses backslashes: {rel}")
+        if not present(rel):
             report.errors.append(f"missing sample file: {rel}")
+    for el in doc.iter("effect"):
+        if el.get("irFile") and not present(el.get("irFile")):
+            report.errors.append(f"missing impulse response: {el.get('irFile')}")
     ui = doc.find("ui")
     if ui is not None and ui.get("bgImage") and not (bundle / ui.get("bgImage")).is_file():
         report.errors.append(f"missing background image: {ui.get('bgImage')}")

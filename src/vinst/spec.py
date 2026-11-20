@@ -287,6 +287,9 @@ class Preset(BaseModel):
     # How fast the reverb's tail loses its highs. DecentSampler's own 0.3 lets a pluck's click ring on
     # as a hiss; 0.6 sounds like a furnished room.
     reverb_damping: float = Field(default=0.6, ge=0, le=1)
+    # The reverb on buses fed per pitch band, without a pluck's click and bright start (see vinst.reverb_send).
+    reverb_send: bool = False
+    reverb_ir: str = ""  # with reverb_send: an impulse response file of your own; empty: DecentSampler's reverb
     chorus: float = Field(default=0.0, ge=0, le=1)
     background: str = ""  # image file; empty means a plain colour
     cover_art: str = ""  # square image for DecentSampler's File Browser

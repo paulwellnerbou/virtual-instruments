@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from vinst import eq, level, lowcut, preset, review, sf2, store
+from vinst import eq, level, lowcut, preset, reverb_send, review, sf2, store
 from vinst.review import Manifest
 from vinst.plan import slicing_setup
 from vinst.slicing import (LOUDNESS_WINDOW_S, body_level, changed_takes, cut_in_samples, db, edited_takes,
@@ -309,6 +309,20 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
         sync_files(images, images_dir, compare_contents=True)
     elif images_dir.is_dir():
         shutil.rmtree(images_dir)
+
+    reverb_bands = preset.reverb_bands(inst, mapping, preset.active_controls(inst, mapping))
+    if reverb_bands:
+        own = Path(inst.preset.reverb_ir).expanduser() if inst.preset.reverb_ir else None
+        if own and not own.is_file():
+            raise ValueError(f"Impulse response not found: {own}")
+        irs = reverb_send.write_irs(bundle, reverb_bands, inst.preset.reverb_room, inst.preset.reverb_damping, own)
+        size = sum((bundle / p).stat().st_size for p in irs) / 1e6
+        source = "DecentSampler's reverb" if own is None else (
+            f"{own.name}, cut to {reverb_send.IR_MAX_S:g} s" if reverb_send.too_long(own) else own.name)
+        mapping.info.append(f"Reverb without the attack's hiss: {len(irs)} reverbs from {source}, one per few "
+                            f"semitones ({size:.1f} MB).")
+    elif (bundle / reverb_send.IR_DIR).is_dir():
+        shutil.rmtree(bundle / reverb_send.IR_DIR)
 
     for old in bundle.glob("*.dspreset"):
         old.unlink()

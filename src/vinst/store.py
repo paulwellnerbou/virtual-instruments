@@ -2,6 +2,7 @@
 
 import os
 import re
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -99,7 +100,16 @@ def duplicate(slug: str, new_name: str) -> Instrument:
     copy.meta.name = new_name
     copy.recording.takes_dir = ""
     copy.recording.samples_dir = ""
-    return create(copy)
+    create(copy)
+    # The reverb's impulse response, if copied into the original's folder, gets a copy of its own: uploading
+    # another one there replaces (deletes) the file.
+    own = Path(copy.preset.reverb_ir).expanduser() if copy.preset.reverb_ir else None
+    if own and own.parent == instrument_dir(slug) and own.is_file():
+        dest = instrument_dir(copy.meta.slug) / own.name
+        shutil.copy2(own, dest)
+        copy.preset.reverb_ir = str(dest)
+        save(copy)
+    return copy
 
 
 def exists(slug: str) -> bool:
