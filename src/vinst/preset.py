@@ -262,7 +262,7 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
     if not notes:
         return m
 
-    n = inst.preset.neighbour_round_robins
+    below, above = inst.preset.neighbours_below, inst.preset.neighbours_above
     spans = []
     # Per velocity and hit (each once, however many keys borrow it): its loudness as played.
     played: dict[str, dict[str, float]] = defaultdict(dict)
@@ -290,13 +290,13 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
             slots = velocity_slots(bounds, set(pass_notes[root]) & lanes)
             # Without neighbour borrowing one entry covers the whole zone; with it every key gets
             # its own entries, because each key has a different set of candidates.
-            key_ranges = [(lo, hi)] if n == 0 else [(k, k) for k in range(lo, hi + 1)]
+            key_ranges = [(lo, hi)] if not (below or above) else [(k, k) for k in range(lo, hi + 1)]
             for k_lo, k_hi in key_ranges:
                 for layer, v_lo, v_hi in slots:
                     candidates = [(root, h) for h in pass_notes[root][layer]]
-                    if n:
+                    if below or above:
                         for other in roots:
-                            if other != root and abs(other - k_lo) <= n:
+                            if other != root and -below <= other - k_lo <= above:
                                 candidates += [(other, h) for h in pass_notes[other].get(layer, [])]
                     for pos, (h_root, h) in enumerate(candidates, 1):
                         played[layer][h.id] = loudness(h, sustained) + corrections.get(h.id, 0.0)

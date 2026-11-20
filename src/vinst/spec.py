@@ -251,8 +251,19 @@ class Preset(BaseModel):
     tuning_amount: float = Field(default=0.5, ge=0, le=1, description="share corrected when partial")
     extend_below: int = Field(default=0, ge=0, le=24, description="stretch the lowest sample down")
     extend_above: int = Field(default=0, ge=0, le=24, description="stretch the highest sample up")
-    neighbour_round_robins: int = Field(
-        default=0, ge=0, le=2, description="also use hits of notes this many semitones away, pitched to fit")
+    # Also use hits of recorded notes up to this many semitones below / above each key, pitched to fit.
+    neighbours_below: int = Field(default=0, ge=0, le=2)
+    neighbours_above: int = Field(default=0, ge=0, le=2)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _neighbours_both_ways(cls, data: Any) -> Any:
+        # Instruments from before the split had one setting for both directions.
+        if isinstance(data, dict) and "neighbour_round_robins" in data:
+            n = data["neighbour_round_robins"]
+            data = {k: v for k, v in data.items() if k != "neighbour_round_robins"}
+            return {"neighbours_below": n, "neighbours_above": n, **data}
+        return data
     # Signals recorded in separate passes are different performances: "switch" plays one pass at
     # a time (a menu in the instrument), "layer" plays them together like two players in unison.
     pass_mode: Literal["switch", "layer"] = "switch"
