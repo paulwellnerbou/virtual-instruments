@@ -4,7 +4,7 @@ import soundfile as sf
 from lxml import etree
 
 from vinst import bundle, defaults, loops, review, store
-from vinst.preset import BALANCE_MAX_DB, balance_corrections
+from vinst.preset import BALANCE_MAX_DB, balance_corrections, keyboard_line
 from vinst.preset import map_samples as preset_map
 from vinst.review import Hit
 from vinst.slicing import process
@@ -98,35 +98,46 @@ def _hit(rms: float, id: str = "x") -> Hit:
     return Hit(id=id, index=0, start=0, end=1, files={}, rms_db=rms, peak_db={})
 
 
-def test_at_zero_tolerance_every_sample_is_brought_to_its_neighbours_median():
+def test_at_zero_tolerance_every_sample_is_brought_onto_the_line():
     levels = {60: [-20, -30], 61: [-21], 62: [-26, -22], 63: [-14]}
     notes = {r: {"mf": [_hit(v, f"mf{r}_{i}") for i, v in enumerate(vs)],
                  "f": [_hit(v + 10, f"f{r}_{i}") for i, v in enumerate(vs)]} for r, vs in levels.items()}
     corr = balance_corrections(notes, ["mf", "f"], tolerance_db=0)
-    median = -21.5  # of -20, -30, -21, -26, -22, -14: four notes all lie within each other's neighbours
-    assert corr["mf60_1"] == pytest.approx(median + 30)  # the quiet hit of a note, not just the note
-    assert corr["mf63_0"] == pytest.approx(median + 14)
-    assert corr["f60_1"] == pytest.approx(corr["mf60_1"])  # each velocity to its own median: f stays louder
+    slope, at_zero = keyboard_line({60: -25.0, 61: -21.0, 62: -24.0, 63: -14.0})  # each note's median
+    line = {r: at_zero + slope * r for r in levels}
+    assert corr["mf60_1"] == pytest.approx(line[60] + 30, abs=0.01)  # the quiet hit of a note, not just the note
+    assert corr["mf63_0"] == pytest.approx(line[63] + 14, abs=0.01)
+    assert corr["f60_1"] == pytest.approx(corr["mf60_1"])  # each velocity to its own line: f stays louder
 
 
 def test_differences_within_the_tolerance_stay_and_larger_ones_are_brought_back_to_it():
     levels = {60: -20, 61: -21.5, 62: -19, 63: -32, 64: -20.5, 65: -12, 66: -20}
     notes = {r: {"mf": [_hit(v, f"h{r}")]} for r, v in levels.items()}
     corr = balance_corrections(notes, ["mf"], tolerance_db=3)
-    median = -20.0
+    slope, at_zero = keyboard_line(dict(levels))
+    assert abs(slope) < 0.5  # two notes far off don't tilt it
     assert corr["h61"] == corr["h62"] == corr["h64"] == 0  # natural variation stays
-    assert corr["h63"] == pytest.approx(median - 3 + 32)  # to the band's edge, not to the median
-    assert corr["h65"] == pytest.approx(median + 3 + 12)
+    assert corr["h63"] == pytest.approx(at_zero + slope * 63 - 3 + 32, abs=0.01)  # to the band's edge
+    assert corr["h65"] == pytest.approx(at_zero + slope * 65 + 3 + 12, abs=0.01)
 
 
-def test_a_register_trend_is_kept_and_only_notes_off_their_neighbours_move():
-    # 1 dB softer per note up the keyboard, with one note 8 dB off its neighbours.
+def test_a_register_trend_is_kept_and_only_notes_off_it_move():
+    # 1 dB softer per note up the keyboard, with one note 8 dB off.
     levels = {60 + i: -10.0 - i for i in range(20)}
     levels[70] -= 8
     notes = {r: {"mf": [_hit(v, f"h{r}")]} for r, v in levels.items()}
     corr = balance_corrections(notes, ["mf"], tolerance_db=2)
-    assert corr["h70"] == pytest.approx(5.0)  # -28 against -21 (the median of notes 67 to 73): back to 2 off
+    assert corr["h70"] == pytest.approx(6.0)  # back to 2 dB off the trend
     assert all(c == 0 for h, c in corr.items() if h != "h70")
+
+
+def test_a_quieter_string_is_brought_up_to_the_others():
+    # Four strings of four notes; the third is 6 dB quieter, as a piezo pickup can make it.
+    levels = {60 + i: -20.0 - (6.0 if 8 <= i < 12 else 0.0) for i in range(16)}
+    notes = {r: {"mf": [_hit(v, f"h{r}")]} for r, v in levels.items()}
+    corr = balance_corrections(notes, ["mf"], tolerance_db=1.5)
+    assert all(corr[f"h{r}"] == pytest.approx(4.5) for r in range(68, 72))  # a neighbours' median would follow it
+    assert all(corr[f"h{r}"] == 0 for r in levels if not 68 <= r < 72)
 
 
 def test_corrections_are_capped():

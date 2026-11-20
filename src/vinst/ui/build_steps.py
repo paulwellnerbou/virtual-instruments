@@ -209,10 +209,12 @@ def step_sound(ed: "Editor") -> None:
         with Collapse(p.balance, axis="x") as tolerance:
             ed.number("Allowed difference", p, "balance_tolerance_db", cast=float, min=0, max=12, step=0.5,
                       prefix="±", suffix="dB").classes("w-36")
-    ui.label("A sample louder or softer than the same velocity on the notes around it by more than the "
-             "allowed difference is brought back to it; smaller differences stay as played. At 0 every "
-             "sample is brought to its neighbours' loudness. Soft velocities stay softer than loud ones. "
-             "Only the instrument's copies of the samples change.").classes("text-xs opacity-70 max-w-3xl")
+    ui.label("Each velocity's loudness over the keyboard is drawn as a straight line, so a trend from low to "
+             "high notes stays, but a note or a whole string that is louder or softer doesn't tilt it. A "
+             "sample further from the line than the allowed difference is brought back to it; smaller "
+             "differences stay as played. At 0 every sample is brought onto the line. Soft velocities stay "
+             "softer than loud ones. Only the instrument's copies of the samples change.") \
+        .classes("text-xs opacity-70 max-w-3xl")
     remembered = {"range": p.loudness_range_db or 36.0}
 
     def follow(on: bool) -> None:

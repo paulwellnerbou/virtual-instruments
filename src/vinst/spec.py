@@ -281,8 +281,8 @@ class Preset(BaseModel):
     # The lowest velocity of each layer after the first, e.g. [80] for "f from 80". Empty, or not
     # fitting the layers (e.g. after adding one), means an even split.
     velocity_splits: list[int] = []
-    # Keep every sample within this of its velocity's loudness on the notes around it (see
-    # preset.balance_corrections).
+    # Keep every sample within this of a straight line through its velocity's loudness over the
+    # keyboard (see preset.balance_corrections).
     balance: bool = False
     balance_tolerance_db: float = Field(default=3.0, ge=0, le=12)
     controls: list[str] = ["mix", "tone", "release", "reverb", "noise"]  # the low cut's: see Processing.low_cut
