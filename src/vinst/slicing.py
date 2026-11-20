@@ -532,7 +532,8 @@ def check_all_lanes(inst: Instrument, manifest: Manifest) -> None:
         if t.kind == "note" and t.note:
             groups.setdefault((t.pass_id, t.note), []).append(t)
     for (pass_id, note), results in groups.items():
-        check_lanes(results, note_lanes(inst, note), *targets.of(pass_id, note), sustained=sustained)
+        check_lanes(results, note_lanes(inst, note), *targets.of(pass_id, note), sustained=sustained,
+                    evened_out=inst.preset.loudness_range_db is not None)
 
 
 def process_one(inst: Instrument, previous: Manifest, key: str) -> Manifest:

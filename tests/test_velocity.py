@@ -54,14 +54,26 @@ def test_hits_off_their_aim_and_uneven_variations_are_flagged():
     take = TakeResult(number=1, base="n", title="C4", kind="note", status="ok", expected_hits=5, hits=[
         _hit(-23.0, "f1", "f"), _hit(-23.5, "f2", "f"), _hit(-29.0, "f3", "f"),
         _hit(-44.0, "p1", "p"), _hit(-46.0, "p2", "p")])
-    check_lanes([take], ["p", "f"], {"p": -36.0, "f": -23.0}, "f")
+    check_lanes([take], ["p", "f"], {"p": -36.0, "f": -23.0}, "f", evened_out=True)
     flags = {h.id: h.flags for h in take.hits}
     assert flags["f3"] == ["uneven"]  # 5.5 dB under its velocity's others
     assert flags["p1"] == flags["p2"] == ["off_aim"]
     assert flags["f1"] == flags["f2"] == []
-    assert "p is 9 dB softer than its aim of -36 dB next to f" in take.message
-    check_lanes([take], ["p", "f"], {"p": -36.0, "f": -23.0}, "f")
-    assert take.message.count("softer than its aim") == 1  # checking again replaces it
+    assert take.message == ("p was played softer than on the other notes, next to f (9 dB under its aim of -36 dB), "
+                            "so it may sound duller. Its loudness is evened out in the instrument, so record it "
+                            "again only if it sounds out of place")
+    check_lanes([take], ["p", "f"], {"p": -36.0, "f": -23.0}, "f")  # loudness as recorded
+    assert take.message.endswith("The step to f is also larger than on the other notes")
+    assert take.message.count("than on the other notes,") == 1  # checking again replaces it
+
+
+def test_an_older_off_aim_message_is_replaced():
+    take = TakeResult(number=1, base="n", title="C4", kind="note", status="ok", expected_hits=2,
+                      hits=[_hit(-23.0, "f1", "f"), _hit(-30.0, "p1", "p")],
+                      message="p is 6 dB louder than its aim of -36 dB next to f, so it sounds like a different "
+                              "dynamic than on the other notes")
+    check_lanes([take], ["p", "f"], {"p": -36.0, "f": -23.0}, "f", evened_out=True)
+    assert take.message.startswith("p was played harder than on the other notes") and "different dynamic" not in take.message
 
 
 def test_velocities_meet_where_one_hands_over_to_the_next():

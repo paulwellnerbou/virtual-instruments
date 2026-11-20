@@ -222,7 +222,7 @@ CONTROLS = {
     "mix": "Signal mix",
     "tone": "Tone",
     "eq": "Equalizer",
-    "lowcut": "Low cut",
+    "lowcut": "Pitch-relative low cut",
     "attack": "Attack",
     "release": "Release",
     "reverb": "Reverb",

@@ -565,7 +565,8 @@ def knobs_for(inst: Instrument, controls: list[str], effects: list[str], buses: 
                     tooltip=f"{eq.TYPES[band.type]} at {eq.where(band)}: boost or cut, in dB"))
         elif c == "lowcut":
             # 0 %: as recorded, 100 %: the cut set when building; between, a blend of the two.
-            knobs.append(Knob("lowcut", f"{CONTROLS[c]} %", 0, 100, 100, [  # a knob shows a bare number
+            # A knob shows a bare number; its label has room for about 10 characters.
+            knobs.append(Knob("lowcut", "Low cut %", 0, 100, 100, [
                 dict(type="amp", level="tag", identifier=LOW_TAG, parameter="AMP_VOLUME", translation="table",
                      translationTable="0,1;100,0;100.001,0")],
                 tooltip=f"The low resonance below each note's pitch, e.g. of the body after a pluck: 0 % as "
