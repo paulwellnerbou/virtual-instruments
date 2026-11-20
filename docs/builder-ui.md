@@ -45,7 +45,7 @@ Note names follow DecentSampler: middle C is C3 (MIDI 60).
 
 Record, check and fix everything in one place.
 
-**Beside the notes** are the settings for recording: the takes folder, sample rate and bit depth, your audio interface and which input each signal is plugged into ("Detect" finds it while you play), and where the sliced samples go, with optional denoising and loops.
+**Beside the notes** are the settings for recording: the takes folder, sample rate and bit depth, your audio interface and which input each signal is plugged into ("Detect" finds it while you play), and where the sliced samples go, with optional denoising, clean-up EQs and loops.
 
 **The noise floor** comes first: 30 seconds of silence, which tells the builder what is noise and what is your instrument. Below it is a card for each note and one row for each **extra**.
 
@@ -91,6 +91,17 @@ Your decisions are kept when you slice again, as long as the recording hasn't ch
 ### Loops
 
 For sustained sounds (on by default for sustained and single-sample instruments): notes keep playing while the key is held. Loop markers saved in the file (e.g. by WaveLab) are used as they are; otherwise the builder searches each note for a loop. Weak loops are flagged, the hit dialog lets you hear the loop repeat, and "Use loop" turns it off for one hit.
+
+### Clean-up EQ
+
+To take a noise out of some recordings completely: mains hum or buzz on a pickup, the ring of a click. Only the sliced samples change; your takes stay as they are.
+
+- **Beside Denoise**, **+ EQ** makes a clean-up EQ. Give it a name ("Mains hum"), the signals it is for (none chosen: all of them), and its filters: peak, notch, low and high shelf, highpass, lowpass, and **Hum + harmonics**, which cuts a frequency and its multiples (mains hum is 50 Hz in Europe, 60 Hz in the Americas).
+- An EQ is for **the takes you pick**, or for **every take**. Pick it for a take in a hit's dialog: **Clean-up EQ**, below the recording, lists your EQs. Ticking one slices that recording again at once, and the dialog opens on the same hit, so you can listen to it.
+- Hits whose samples went through a clean-up EQ show a small EQ mark in the corner of their waveform; hover a hit to see which.
+- Change an EQ's filters later and the worksheet lists the takes that use it; **Slice them** applies it. The build waits until then. Your decisions and cuts are kept: hits are found in the takes as recorded, so the EQ never moves a cut.
+- Tuning and loudness are measured after the EQ, as that's what plays. Peaks count the take too, so a clipped take is still flagged. Filters work forwards and backwards, so nothing moves in time; a notch can also lower a note's own overtone that lies close to it.
+- Moving a recording to another note takes its EQs along.
 
 ## Importing existing samples
 

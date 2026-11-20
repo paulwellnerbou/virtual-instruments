@@ -171,6 +171,29 @@ class Recording(BaseModel):
         default=30, ge=0, validation_alias=AliasChoices("noise_floor_seconds", "room_tone_seconds"))
 
 
+EqKind = Literal["peak", "notch", "low_shelf", "high_shelf", "highpass", "lowpass", "hum"]
+
+
+class EqFilter(BaseModel):
+    """One band of a clean-up EQ (see vinst.cleanup_eq)."""
+
+    kind: EqKind = "peak"
+    hz: float = Field(default=1000.0, ge=10, le=40000)
+    gain_db: float = Field(default=-12.0, ge=-60, le=24, description="peak, shelves and hum")
+    q: float = Field(default=1.0, ge=0.1, le=100)
+    harmonics: int = Field(default=6, ge=1, le=40, description="hum: also at 2×, 3×, … the frequency")
+
+
+class CleanupEq(BaseModel):
+    """Filters that take a noise out of the sliced samples of chosen takes, e.g. mains hum on a pickup."""
+
+    name: str
+    signals: list[str] = []  # empty: all signals
+    every_take: bool = False
+    takes: list[str] = []  # take keys, when not every take
+    filters: list[EqFilter] = []
+
+
 class Processing(BaseModel):
     """Optional clean-up applied to the sliced samples (the takes themselves are never changed)."""
 
@@ -184,6 +207,8 @@ class Processing(BaseModel):
     low_cut: bool = False
     low_cut_below: float = Field(default=0.75, ge=0.3, le=1.0, description="share of the note's pitch")
     low_cut_db: float = Field(default=12.0, ge=1, le=40)
+    # Applied when slicing, to the takes each is for (see vinst.cleanup_eq).
+    cleanup_eqs: list[CleanupEq] = []
 
 
 CONTROLS = {
@@ -296,6 +321,12 @@ class Instrument(BaseModel):
                 out.append(f"Signal id “{sig.id}” is reserved; choose another.")
         if self.processing.denoise and not self.recording.noise_floor_seconds:
             out.append("Denoising needs a noise-floor recording (set its length in step 4).")
+        _dupes(out, "clean-up EQ name", [e.name for e in self.processing.cleanup_eqs])
+        signal_ids = {s.id for s in self.signals}
+        for eq in self.processing.cleanup_eqs:
+            for sig in eq.signals:
+                if sig not in signal_ids:
+                    out.append(f"Clean-up EQ “{eq.name}” is for the signal “{sig}”, which isn't there any more.")
         lanes = self.dynamics.layers + [lane for own in self.note_lanes.values() for lane in own.layers]
         for what, values in (("Signal id", [s.id for s in self.signals]), ("Velocity name", list(dict.fromkeys(lanes)))):
             for v in values:

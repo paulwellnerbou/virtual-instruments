@@ -12,7 +12,7 @@ from pathlib import Path
 from vinst import level, lowcut, preset, review, sf2, store
 from vinst.review import Manifest
 from vinst.plan import slicing_setup
-from vinst.slicing import changed_takes, cut_in_samples, edited_takes, recut
+from vinst.slicing import changed_takes, cut_in_samples, edited_takes, eq_changed_takes, recut
 from vinst.spec import Instrument
 from vinst.validate import Report, validate_bundle
 
@@ -23,9 +23,16 @@ CLEANUP_MESSAGE = ("The clean-up of the sliced samples (low cut, denoise) change
                    "Slicing again applies it to all of them; your decisions are kept.")
 STALE_MESSAGE = ("Signals, recording passes or the loop setting changed since the takes were sliced; "
                  "slicing again keeps your decisions.")
+def _names(titles: list[str]) -> str:
+    return ", ".join(titles[:3]) + (f" and {len(titles) - 3} more" if len(titles) > 3 else "")
+
+
 def changed_message(changed: list[str]) -> str:
-    names = ", ".join(changed[:3]) + (f" and {len(changed) - 3} more" if len(changed) > 3 else "")
-    return f"Recorded or changed since slicing: {names}."
+    return f"Recorded or changed since slicing: {_names(changed)}."
+
+
+def eq_message(changed: list[str]) -> str:
+    return f"The clean-up EQ changed since slicing for {_names(changed)}. Slicing again applies it; your decisions are kept."
 
 
 # Marks bundles this tool wrote, so installing never replaces someone else's library.
@@ -186,6 +193,9 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
     changed = changed_takes(inst, manifest)
     if changed:
         raise ValueError(changed_message(changed) + " Slice them in the worksheet (step 5) to use them.")
+    eq_changed = eq_changed_takes(inst, manifest)
+    if eq_changed:
+        raise ValueError(eq_message(eq_changed) + " Slice them in the worksheet (step 5).")
     cutting = low_cut_now(inst, manifest)
     # The cut changes how loud a note is (its low resonance goes), so evening out and the level work with the
     # loudness after it: measured here, as the cut is applied here.

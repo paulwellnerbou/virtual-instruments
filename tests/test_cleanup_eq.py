@@ -1,0 +1,133 @@
+"""Clean-up EQ: its filters, and slicing the takes that use one again when it changes."""
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+import soundfile as sf
+from conftest import piezo_and_mic
+from test_rerecord import lane, result, take_audio, uke, write  # noqa: F401  (uke is a fixture)
+
+from vinst import cleanup_eq, defaults, relocate
+from vinst.slicing import eq_changed_takes, process, process_one
+from vinst.spec import CleanupEq, EqFilter, InstrumentType
+
+SR = 48000
+
+
+def at(filters, hz):
+    return float(cleanup_eq.response_db(filters, SR, np.array([hz]))[0])
+
+
+def test_bands_do_what_they_say_filtered_both_ways():
+    peak = [EqFilter(kind="peak", hz=1000, gain_db=-12, q=4)]
+    assert at(peak, 1000) == pytest.approx(-12, abs=0.05)  # not -24: designed with half the gain
+    assert at(peak, 100) == pytest.approx(0, abs=0.1) and at(peak, 10000) == pytest.approx(0, abs=0.1)
+    low = [EqFilter(kind="low_shelf", hz=200, gain_db=-6, q=0.707)]
+    assert at(low, 20) == pytest.approx(-6, abs=0.1) and at(low, 5000) == pytest.approx(0, abs=0.1)
+    high = [EqFilter(kind="high_shelf", hz=5000, gain_db=4, q=0.707)]
+    assert at(high, 20000) == pytest.approx(4, abs=0.2) and at(high, 100) == pytest.approx(0, abs=0.1)
+    hp = [EqFilter(kind="highpass", hz=80, q=0.707)]
+    assert at(hp, 80) == pytest.approx(-6, abs=0.1) and at(hp, 20) < -40 and at(hp, 1000) > -0.1
+    lp = [EqFilter(kind="lowpass", hz=8000, q=0.707)]
+    assert at(lp, 8000) == pytest.approx(-6, abs=0.1) and at(lp, 200) > -0.1
+    assert at([EqFilter(kind="notch", hz=3200, q=10)], 3200) < -60
+
+
+def test_hum_goes_with_its_harmonics_and_nothing_beside_it():
+    hum = [EqFilter(kind="hum", hz=50, gain_db=-30, q=20, harmonics=6)]
+    for k in range(1, 7):
+        assert -32 < at(hum, 50 * k) <= -29.9  # the neighbouring notches add a little
+    assert at(hum, 400) > -1 and at(hum, 1000) > -0.1  # above the last harmonic
+    many = [EqFilter(kind="hum", hz=5000, gain_db=-30, q=20, harmonics=10)]
+    assert len(cleanup_eq.sections(many, SR)) == 4  # none at or above half the sample rate
+
+
+def test_hum_is_taken_out_and_the_note_stays_where_it_was():
+    t = np.arange(3 * SR) / SR
+    note = 0.5 * np.sin(2 * np.pi * 440 * t)
+    out = cleanup_eq.apply(note + 0.05 * np.sin(2 * np.pi * 50 * t + 0.7), SR,
+                           [EqFilter(kind="hum", hz=50, gain_db=-40, q=20, harmonics=4)])
+    mid = slice(SR // 2, 5 * SR // 2)  # once the notches have rung in
+
+    def amplitude(x, hz):
+        return 2 * abs(np.mean(x[mid] * np.exp(-2j * np.pi * hz * t[mid])))
+
+    assert 20 * np.log10(amplitude(out, 50) / 0.05) == pytest.approx(-40, abs=0.5)
+    assert amplitude(out, 440) == pytest.approx(0.5, rel=0.02)
+    # Zero phase: the note isn't shifted in time.
+    lags = range(-5, 6)
+    assert max(lags, key=lambda k: float(np.dot(out[mid], np.roll(note, k)[mid]))) == 0
+
+
+def test_noise_profile_follows_the_eq():
+    profile = np.ones(1025)
+    shaped = cleanup_eq.shape_profile(profile, SR, [EqFilter(kind="notch", hz=1500, q=4)], 2048)
+    assert shaped[64] < 1e-3 and shaped[640] == pytest.approx(1, abs=1e-3)  # bin 64 is 1500 Hz
+
+
+def test_which_takes_and_signals_an_eq_is_for():
+    inst = piezo_and_mic(defaults.new_instrument("Two", InstrumentType.PLUCKED))
+    band = EqFilter(kind="hum", hz=50)
+    inst.processing.cleanup_eqs = [CleanupEq(name="Hum", signals=["piezo"], takes=["a"], filters=[band]),
+                                   CleanupEq(name="Empty", every_take=True)]  # no filters: changes nothing
+    assert cleanup_eq.filters_for(inst, "a", "piezo") == [band]
+    assert cleanup_eq.filters_for(inst, "a", "mic") == [] and cleanup_eq.filters_for(inst, "b", "piezo") == []
+    assert '"piezo"' in cleanup_eq.take_setup(inst, "a", ["piezo", "mic"])
+    assert cleanup_eq.take_setup(inst, "b", ["piezo", "mic"]) == ""
+    assert cleanup_eq.describe(inst, "a", ["piezo", "mic"]) == "Hum (piezo)"
+    inst.processing.cleanup_eqs[0].signals = ["gone"]
+    assert any("Hum" in p and "gone" in p for p in inst.problems())
+
+
+def hum_db(path):
+    audio, sr = sf.read(path)
+    spec = np.abs(np.fft.rfft(audio * np.hanning(len(audio))))
+    k = int(round(50 * len(audio) / sr))
+    return 20 * np.log10(spec[k - 2: k + 3].max())
+
+
+def test_a_take_with_an_eq_is_sliced_again_when_it_changes(uke):
+    p, f = lane(uke, "p"), lane(uke, "f")
+    t = np.arange(int(6.5 * SR)) / SR
+    hummed = take_audio(p, (0.3, 0.32)) + 0.01 * np.sin(2 * np.pi * 50 * t)
+    write(uke, p.files[0], hummed, grid=[0.5, 3.5])
+    write(uke, f.files[0], take_audio(f, (0.6, 0.62)), grid=[0.5, 3.5])
+    m = process(uke)
+    before = result(m, p.key)
+    assert before.cleanup_eq == "" and eq_changed_takes(uke, m) == []
+    folder = m.samples_dir
+    sample = f"{folder}/{before.hits[0].files[uke.signals[0].id]}"
+    loud_hum = hum_db(sample)
+
+    eq = CleanupEq(name="Mains hum", takes=[p.key], filters=[EqFilter(kind="hum", hz=50, gain_db=-40, q=20)])
+    uke.processing.cleanup_eqs = [eq]
+    assert eq_changed_takes(uke, m) == [p.title]  # only the take that uses it
+    m = process_one(uke, m, p.key)
+    after = result(m, p.key)
+    assert after.cleanup_eq and eq_changed_takes(uke, m) == []
+    assert [h.start for h in after.hits] == [h.start for h in before.hits]  # cut where they were
+    assert hum_db(sample) < loud_hum - 25
+    assert result(m, f.key).cleanup_eq == ""
+
+    eq.name = "Hum"
+    assert eq_changed_takes(uke, m) == []  # a name changes no sample
+    eq.filters[0].hz = 60
+    assert eq_changed_takes(uke, m) == [p.title]
+    eq.filters[0].hz = 50
+    eq.every_take = True
+    assert eq_changed_takes(uke, m) == [f.title]
+    m = process(uke, m)
+    assert eq_changed_takes(uke, m) == [] and result(m, f.key).cleanup_eq
+    uke.processing.cleanup_eqs = []
+    assert sorted(eq_changed_takes(uke, m)) == sorted([p.title, f.title])
+
+
+def test_a_moved_recording_takes_its_eq_along(uke):
+    p = lane(uke, "p")
+    write(uke, p.files[0], take_audio(p, (0.3, 0.32)), grid=[0.5, 3.5])
+    uke.processing.cleanup_eqs = [CleanupEq(name="Hum", takes=[p.key], filters=[EqFilter(kind="hum")])]
+    other = lane(uke, "p", note=1)
+    key = relocate.move_recording(uke, Path(uke.recording.takes_dir),
+                                  p.key, other.note_base, "p")
+    assert uke.processing.cleanup_eqs[0].takes == [key] and key == other.key

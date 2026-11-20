@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from vinst import takes_meta
+from vinst import cleanup_eq, takes_meta
 from vinst.plan import Take, more_base, more_file, plan_takes, take_key
 from vinst.slicing import more_numbers, recordings
 from vinst.spec import Instrument
@@ -11,7 +11,8 @@ from vinst.spec import Instrument
 def move_recording(inst: Instrument, takes_dir: Path, source_key: str, note_base: str, lane: str) -> str:
     """Renames the recording's files to those of `lane` of the note `note_base`, in the same pass, and
     returns the recording's new key. A lane that's recorded already gets it as more variations, so
-    nothing is overwritten. Its hits are sliced afresh there: decisions about them don't come along."""
+    nothing is overwritten. Its hits are sliced afresh there: decisions about them don't come along, the
+    clean-up EQs it uses do (`inst` changes then)."""
     source = next((t for t in recordings(inst, takes_dir) if t.key == source_key), None)
     if source is None or source.kind != "note":
         raise ValueError("That recording isn't there any more.")
@@ -30,6 +31,7 @@ def move_recording(inst: Instrument, takes_dir: Path, source_key: str, note_base
     for old, new in moves:
         old.rename(new)  # keeps size and modification time, so the click grid still applies
         takes_meta.rename(inst.meta.slug, old.name, new.name)
+    cleanup_eq.move_take(inst, source_key, key)
     return key
 
 

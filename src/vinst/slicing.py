@@ -14,7 +14,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 
-from vinst import denoise, loops, takes_meta
+from vinst import cleanup_eq, denoise, loops, takes_meta
 from vinst.plan import (
     Take,
     combined_base,
@@ -389,6 +389,7 @@ def process_take(inst: Instrument, take: Take, takes_dir: Path, out_dir: Path,
     except Exception as e:  # unreadable file: report it on the take, keep going with the rest
         result.status, result.message = "error", str(e)
         return result
+    # Hits are found in the takes as recorded, so changing the EQ doesn't move a cut.
     ref = mix(signals)
     result.sample_rate, result.length = sr, len(ref)
     if take.kind == "noise_floor":
@@ -410,14 +411,24 @@ def process_take(inst: Instrument, take: Take, takes_dir: Path, out_dir: Path,
     result.cut_by_hand = takes_meta.cuts(inst.meta.slug, paths[0]) is not None  # with `fixed`, see keep_cuts
     markers = next((m for m in (loops.read_wav_loops(p) for p in paths) if m), []) \
         if inst.processing.loops and take.kind == "note" else []
-    analyse_cuts(inst, take, result, take_signals, signals, sr, cuts, out_dir, profiles, markers)
+    # Measured on the EQ'd audio: unlike denoising, the EQ is meant to change how a hit sounds, and a
+    # hum or click it takes out shouldn't count towards its loudness or tuning.
+    result.cleanup_eq = cleanup_eq.take_setup(inst, take.key, take.signals)
+    bands = {sig: cleanup_eq.filters_for(inst, take.key, sig) for sig in take.signals}
+    cleaned = [cleanup_eq.apply(audio, sr, bands[sig]) for sig, audio in zip(take.signals, signals)]
+    if profiles:
+        profiles = {sig: cleanup_eq.shape_profile(profile, sr, bands.get(sig, []), denoise.N_FFT)
+                    for sig, profile in profiles.items()}
+    analyse_cuts(inst, take, result, take_signals, cleaned, sr, cuts, out_dir, profiles, markers, raw=signals)
     return result
 
 
 def analyse_cuts(inst: Instrument, take: Take, result: TakeResult, take_signals: list, signals: list[np.ndarray],
                  sr: int, cuts: list[tuple[int, int, bool]], out_dir: Path,
-                 profiles: dict[str, np.ndarray] | None, markers: list[tuple[int, int]]) -> None:
-    """Write and analyse the hits of one recording; cut positions are frames in `signals`.
+                 profiles: dict[str, np.ndarray] | None, markers: list[tuple[int, int]],
+                 raw: list[np.ndarray] | None = None) -> None:
+    """Write and analyse the hits of one recording; cut positions are frames in `signals`. `raw`: the
+    signals as recorded, if `signals` were EQ'd: clipping in the take counts too.
 
     Every hit of a lane take is a variation of that lane, however many there are; the planned
     count is only a guide.
@@ -431,10 +442,13 @@ def analyse_cuts(inst: Instrument, take: Take, result: TakeResult, take_signals:
     for i, (start, end, cut_off) in enumerate(cuts):
         hit_id = f"{id_base}_{i + 1:02d}"
         files, peaks, played = {}, {}, []
-        for sig, audio in zip(take_signals, signals):
+        for k, (sig, audio) in enumerate(zip(take_signals, signals)):
             seg = audio[start:end]
             played.append(seg)
-            peaks[sig.id] = round(float(db(np.max(np.abs(seg)))), 2)
+            peak = np.max(np.abs(seg))
+            if raw is not None:
+                peak = max(peak, np.max(np.abs(raw[k][start:end])))
+            peaks[sig.id] = round(float(db(peak)), 2)
             name = f"{hit_id}_{sig.id}.wav"
             # Pitch and loudness are measured without denoising; only the written sample is cleaned.
             out = (denoise.reduce(seg, profiles[sig.id], p.denoise_reduction_db) if profiles else seg.copy())
@@ -657,6 +671,14 @@ def changed_takes(inst: Instrument, manifest: Manifest) -> list[str]:
     keys = {t.key for t in current}
     changed += [r.title for r in manifest.takes if r.origin != "plan" and r.key not in keys]
     return changed
+
+
+def eq_changed_takes(inst: Instrument, manifest: Manifest) -> list[str]:
+    """Sliced recordings whose clean-up EQ changed since: their samples don't have the one set now."""
+    if inst.recording.source == "samples":
+        return []
+    return [r.title for r in manifest.takes if r.hits and r.kind != "noise_floor"
+            and r.cleanup_eq != cleanup_eq.take_setup(inst, r.key, r.signals)]
 
 
 def remove_stale_files(previous: Manifest, current: Manifest) -> int:
