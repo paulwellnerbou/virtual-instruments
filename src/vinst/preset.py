@@ -8,9 +8,9 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 from lxml import etree
 
-from vinst import eq, reverb_send
+from vinst import aims, eq, reverb_send, velocity
 from vinst.plan import Pass, Take, lane_bounds, note_lanes, plan_takes, recording_passes
-from vinst.review import Hit, Manifest, lane_of
+from vinst.review import Hit, Manifest, lane_of, loudness
 from vinst.spec import (CONTROLS, FX_TAG, LOW_TAG, NOTES_TAG, RELEASE_TAG, SUSTAINED_TYPES, Instrument, Signal,
                         file_token)
 
@@ -64,6 +64,9 @@ class Mapping:
     warnings: list[str] = field(default_factory=list)
     info: list[str] = field(default_factory=list)
     gain_db: float = 0.0  # for all samples: the recordings keep their level, the instrument is made louder
+    # Loudness follows velocity over this range (see vinst.velocity): a note entry's volume_db is then its
+    # level at its highest velocity, and it plays softer below by the line. None: velocity tracking.
+    loudness_range_db: float | None = None
 
     @property
     def files(self) -> set[str]:
@@ -126,11 +129,6 @@ def loop_for(inst: Instrument, hit: Hit, sample_rate: int | None) -> tuple[int, 
     return hit.loop_start, hit.loop_end, crossfade
 
 
-def loudness(hit: Hit, sustained: bool) -> float:
-    """What makes notes sound equally loud: the held part for sustained sounds, the attack otherwise."""
-    return hit.body_db if sustained and hit.body_db is not None else hit.rms_db
-
-
 # The instrument is made as loud as this: the median loudness (see loudness(): the attack, or the held
 # part of sustained sounds) of its loudest velocity. Peaks are then held under level.CEILING_DB when
 # the samples are written.
@@ -167,6 +165,34 @@ def balance_corrections(pass_notes: dict[int, dict[str, list[Hit]]], layers: lis
                 off = loudness(h, sustained) - median
                 excess = off - float(np.clip(off, -tolerance_db, tolerance_db))
                 out[h.id] = round(float(np.clip(-excess, -BALANCE_MAX_DB, BALANCE_MAX_DB)), 2)
+    return out
+
+
+def curve_offsets(pass_notes: dict[int, dict[str, list[Hit]]], bounds: dict[int, list[tuple[str, int, int]]],
+                  corrections: dict[str, float], range_db: float, tolerance_db: float,
+                  sustained: bool = False) -> dict[str, float]:
+    """dB per hit (by id) that sets it to its note's level at velocity 127, the velocity curve's top.
+
+    That level comes from the note's loudest recorded velocity, as evened out across the notes
+    (`corrections`): it sounds as recorded at the middle of its velocity range. The softer velocities'
+    own level doesn't count, only their sound: they are lifted or lowered to the line. A hit keeps how
+    much louder or softer it is than the other hits of its velocity on the note, by up to
+    `tolerance_db`."""
+    out: dict[str, float] = {}
+    for root, by_lane in pass_notes.items():
+        level = {h.id: loudness(h, sustained) + corrections.get(h.id, 0.0) for hs in by_lane.values() for h in hs}
+        levels = {lane: [level[h.id] for h in hs] for lane, hs in by_lane.items()}
+        lanes = bounds[root]
+        ref = aims.reference(levels, lanes)
+        if ref is None:  # its hits are in velocities it no longer has: none is played
+            continue
+        _, lo, hi = next(b for b in lanes if b[0] == ref)
+        top = float(np.median(levels[ref])) - velocity.curve_db(aims.middle(lo, hi), range_db)
+        for lane, hs in by_lane.items():
+            middle = float(np.median(levels[lane]))
+            for h in hs:
+                off = float(np.clip(level[h.id] - middle, -tolerance_db, tolerance_db))
+                out[h.id] = round(top + off - loudness(h, sustained), 2)
     return out
 
 
@@ -264,6 +290,8 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
         return m
 
     below, above = inst.preset.neighbours_below, inst.preset.neighbours_above
+    curve = inst.preset.loudness_range_db
+    m.loudness_range_db = curve
     spans = []
     # Per velocity and hit (each once, however many keys borrow it): its loudness as played.
     played: dict[str, dict[str, float]] = defaultdict(dict)
@@ -282,6 +310,9 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
                    if abs(corrections.get(h.id, 0.0)) >= BALANCE_MAX_DB]
         zones = key_zones(roots, inst.preset.extend_below, inst.preset.extend_above)
         spans.append((zones[roots[0]][0], zones[roots[-1]][1]))
+        on_curve = curve_offsets(pass_notes, {r: lane_bounds(inst, note_of.get((pass_id, r), "")) for r in roots},
+                                 corrections, curve, inst.preset.balance_tolerance_db / 2 if inst.preset.balance
+                                 else math.inf, sustained) if curve is not None else {}
         for root in roots:
             lo, hi = zones[root]
             bounds = lane_bounds(inst, note_of.get((pass_id, root), ""))
@@ -299,12 +330,19 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
                         for other in roots:
                             if other != root and -below <= other - k_lo <= above:
                                 candidates += [(other, h) for h in pass_notes[other].get(layer, [])]
+                    if curve is not None:  # a neighbour's hits in a velocity it no longer has
+                        candidates = [(r, h) for r, h in candidates if h.id in on_curve]
                     for pos, (h_root, h) in enumerate(candidates, 1):
-                        played[layer][h.id] = loudness(h, sustained) + corrections.get(h.id, 0.0)
+                        if curve is not None:
+                            # Its level at velocity 127 is what the instrument is made as loud by.
+                            volume = on_curve[h.id] + velocity.curve_db(v_hi, curve)
+                            played[layer][h.id] = loudness(h, sustained) + on_curve[h.id]
+                        else:
+                            volume = corrections.get(h.id, 0.0)
+                            played[layer][h.id] = loudness(h, sustained) + volume
                         for sig in pass_signals[pass_id]:
                             m.notes.append(Entry(sig, h.files[sig], h_root, k_lo, k_hi, v_lo, v_hi,
-                                                 tuning_for(inst, h), pos, len(candidates),
-                                                 corrections.get(h.id, 0.0),
+                                                 tuning_for(inst, h), pos, len(candidates), round(volume, 2),
                                                  loop_for(inst, h, hit_rate.get(h.id)), hit_rate.get(h.id)))
     m.span = (min(lo for lo, _ in spans), max(hi for _, hi in spans))
     if played:
@@ -312,6 +350,10 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
         # louder, as loud as its notes need rather than as its loudest click allows.
         loudest = max(float(np.median(list(v.values()))) for v in played.values())
         m.gain_db = round(min(MAX_GAIN_DB, TARGET_LOUDNESS_DB - loudest), 1)
+    if curve is not None:
+        m.info.append(f"Loudness follows velocity: {curve:g} dB from velocity 1 to 127. Each velocity's samples "
+                      "are lifted or lowered to it, so moving between velocities changes the sound, not the "
+                      "loudness.")
     if inst.preset.balance:
         m.info.append(f"Loudness evened out: {len(balanced)} samples corrected"
                       + (f", largest {max(balanced, key=abs):+.1f} dB." if balanced else "."))
@@ -636,7 +678,8 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
                  ampVelTrack=float(vel_track),
                  volume=f"{mapping.gain_db:.1f}dB" if abs(mapping.gain_db) >= 0.1 else None)
 
-    def add_group(name: str, tags: str, entries: list[Entry], **attrs: object) -> None:
+    def add_group(name: str, tags: str, entries: list[Entry], curve: float | None = None, **attrs: object) -> None:
+        """With `curve`, each entry plays in velocity slices along it (see vinst.velocity)."""
         if not entries:
             return
         g = _el(groups, "group", name=name, tags=tags, **attrs)
@@ -646,10 +689,15 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
             # Output 2 feeds only the reverb, so its band's filtering never touches the dry sound.
             band = reverb_send.band_of(reverb_send.sample_pitch(e.lo, e.hi), bands) if bands else None
             send = dict(output2Target=f"BUS_{band + 1}", output2Volume=1.0) if band is not None else {}
-            _el(g, "sample", path=f"{SAMPLES_DIR}/{e.file}", rootNote=e.root, loNote=e.lo, hiNote=e.hi,
-                loVel=e.lo_vel, hiVel=e.hi_vel, tuning=float(e.tuning) if e.tuning else None,
-                volume=f"{e.volume_db:.2f}dB" if e.volume_db else None,
-                seqPosition=e.seq_pos, seqLength=e.seq_len, **loop, **send)
+            parts = [(e.lo_vel, e.hi_vel, 0.0, None)] if curve is None else \
+                velocity.slices(e.lo_vel, e.hi_vel, curve)
+            for lo_vel, hi_vel, rel_db, track in reversed(parts):
+                volume = round(e.volume_db + rel_db, 2)
+                _el(g, "sample", path=f"{SAMPLES_DIR}/{e.file}", rootNote=e.root, loNote=e.lo, hiNote=e.hi,
+                    loVel=lo_vel, hiVel=hi_vel, tuning=float(e.tuning) if e.tuning else None,
+                    volume=f"{volume:.2f}dB" if volume else None,
+                    ampVelTrack=round(track, 4) if track is not None else None,
+                    seqPosition=e.seq_pos, seqLength=e.seq_len, **loop, **send)
 
     pass_of = {s.id: q for q in recording_passes(inst) for s in q.signals}
 
@@ -664,13 +712,13 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
     muting = {"silencedByTags": MUTE_TAG, "silencingDecay": MUTE_FADE_S} if any(e.mutes for e in mapping.keys) else {}
     for sig in inst.signals:
         add_group(sig.name, tags(sig, NOTES_TAG), [e for e in mapping.notes if e.signal == sig.id],
-                  enabled=enabled(sig), seqMode="round_robin", **muting)
+                  mapping.loudness_range_db, enabled=enabled(sig), seqMode="round_robin", **muting)
     # What the low cut took out, a layer of its own that the Low cut knob turns up: in step with the
     # notes, as their groups are, so the two add up to the uncut sample.
     for sig in inst.signals:
         add_group(f"{sig.name} low part", tags(sig, LOW_TAG),
                   [replace(e, file=e.removed) for e in mapping.notes if e.signal == sig.id and e.removed],
-                  enabled=enabled(sig), seqMode="round_robin", **muting)
+                  mapping.loudness_range_db, enabled=enabled(sig), seqMode="round_robin", **muting)
     for sig in inst.signals:
         add_group(f"{sig.name} release noise", tags(sig, RELEASE_TAG),
                   [e for e in mapping.release if e.signal == sig.id], enabled=enabled(sig),

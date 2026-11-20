@@ -20,7 +20,7 @@ import soundfile as sf
 from nicegui import ui
 
 from vinst import guide as guides
-from vinst import recorder, store, takes_meta
+from vinst import aims, recorder, review, store, takes_meta
 from vinst.plan import Take, more_base, more_file, note_lanes, plan_takes, recording_passes
 from vinst.plan import take_key as take_key_of
 from vinst.spec import Signal
@@ -175,7 +175,7 @@ def record_take(ed: "Editor", number: int, on_saved: Saved | None = None) -> Non
                 lambda n: guides.take_guide(ed.inst, take, n), count,
                 (lambda: record_take(ed, following.number, on_saved)) if following else None,
                 f"Next: {following.title}" if following else "",
-                (lambda: on_saved(take.key)) if on_saved else None, loudest_velocity(ed, take))
+                (lambda: on_saved(take.key)) if on_saved else None, loudest_velocity(ed, take), aim_for(ed, take))
 
 
 def record_more(ed: "Editor", take_key: str, count: int, on_saved: Saved | None = None) -> None:
@@ -191,7 +191,7 @@ def record_more(ed: "Editor", take_key: str, count: int, on_saved: Saved | None 
     key = take_key_of(more_base(take, number), take.pass_id)
     open_dialog(ed, f"{take.title} · more hits", signals_of(ed, take.signals), paths,
                 lambda n: guides.more_guide(ed.inst, take, n or count), count, None, "",
-                (lambda: on_saved(key)) if on_saved else None, loudest_velocity(ed, take))
+                (lambda: on_saved(key)) if on_saved else None, loudest_velocity(ed, take), aim_for(ed, take))
 
 
 def peak_dbfs(path: Path) -> float:
@@ -204,6 +204,18 @@ def loudest_velocity(ed: "Editor", take: Take) -> bool:
     return take.kind == "note" and take.lane == note_lanes(ed.inst, take.note_base)[-1]
 
 
+def aim_for(ed: "Editor", take: Take) -> str | None:
+    """How loud to play a take of a soft velocity, next to its note's loudest recorded one."""
+    if take.kind != "note" or not take.lane:
+        return None
+    try:
+        manifest = review.load(store.manifest_path(ed.inst.meta.slug))
+    except Exception:  # e.g. written by an older version: the worksheet says so
+        return None
+    return aims.advice(aims.aims(ed.inst, manifest), take.pass_id, take.note_base, take.lane,
+                       ed.inst.preset.loudness_range_db is not None)
+
+
 def current_device(rescan: bool = False) -> tuple[recorder.Device | None, list[recorder.Device], str]:
     """The chosen interface (None if it isn't connected), all inputs, and the chosen name."""
     devices = recorder.input_devices(rescan)
@@ -214,10 +226,11 @@ def current_device(rescan: bool = False) -> tuple[recorder.Device | None, list[r
 def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str, Path],
                 guide_for: Callable[[int | None], guides.Guide], count: int | None,
                 on_next: Callable[[], None] | None, next_label: str,
-                on_saved: Callable[[], None] | None = None, judge_level: bool = False) -> None:
+                on_saved: Callable[[], None] | None = None, judge_level: bool = False,
+                aim: str | None = None) -> None:
     """`count`: how many hits to ask for, which the player can change before recording; None for
     takes recorded as planned. `judge_level`: a take of the loudest velocity, whose level says how
-    to set the input gain."""
+    to set the input gain. `aim`: how loud to play a soft velocity."""
     inst = ed.inst
     # Re-read the devices: the interface's sample rate may have changed since the app started.
     device, _, name = current_device(rescan=True)
@@ -269,6 +282,8 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
         if any(path.exists() for path in paths.values()):
             ui.label("Already recorded: a finished recording replaces it, a cancelled one keeps it.") \
                 .classes("text-sm opacity-70")
+        if aim:
+            ui.label(aim).classes("text-sm opacity-70")
         outcome = ui.column().classes("w-full gap-0 text-sm")
         click = ui.checkbox("Click sound (use headphones, so the click isn't recorded)", value=False)
         with ui.row().classes("w-full items-center justify-end"):

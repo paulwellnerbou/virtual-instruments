@@ -8,6 +8,7 @@ import pytest
 import soundfile as sf
 from lxml import etree
 
+from conftest import lane_ranges
 from vinst import bundle, defaults, review, slicing, store, takes_meta
 from vinst.plan import combined_base, more_file, plan_takes
 from vinst.slicing import changed_takes, cut_points, on_grid, process, process_one
@@ -153,8 +154,8 @@ def test_a_combined_take_starts_in_the_first_lane_and_hits_can_be_moved(uke):
     assert [h.layer for h in again.hits] == ["p", "p", "f", "f"]  # the move survives slicing again
     review.save(process(uke, previous=m), store.manifest_path(uke.meta.slug))
     built = bundle.build(uke)
-    vels = {(s.get("loVel"), s.get("hiVel")) for s in etree.parse(str(built.preset_file)).iter("sample")
-            if s.get("rootNote") == str(p.note.midi)}
+    vels = lane_ranges(s for s in etree.parse(str(built.preset_file)).iter("sample")
+                       if s.get("rootNote") == str(p.note.midi))
     assert vels == {("1", "64"), ("65", "127")}
 
 
@@ -169,8 +170,8 @@ def test_hits_of_a_removed_lane_are_left_out(uke):
     assert kept.origin == "unplanned" and all(h.layer is None for h in kept.hits)
     review.save(m, store.manifest_path(uke.meta.slug))
     built = bundle.build(uke)
-    vels = {(s.get("loVel"), s.get("hiVel")) for s in etree.parse(str(built.preset_file)).iter("sample")
-            if s.get("rootNote") == str(take.note.midi)}
+    vels = lane_ranges(s for s in etree.parse(str(built.preset_file)).iter("sample")
+                       if s.get("rootNote") == str(take.note.midi))
     assert built.report.ok and vels == {("1", "127")}  # its p lane plays all velocities
 
 
@@ -192,8 +193,8 @@ def test_a_note_with_its_own_lanes_builds_its_ranges(uke):
     review.save(process(uke), store.manifest_path(uke.meta.slug))
     built = bundle.build(uke)
     midi = lane(uke, "p").note.midi
-    vels = {(s.get("loVel"), s.get("hiVel")) for s in etree.parse(str(built.preset_file)).iter("sample")
-            if s.get("rootNote") == str(midi)}
+    vels = lane_ranges(s for s in etree.parse(str(built.preset_file)).iter("sample")
+                       if s.get("rootNote") == str(midi))
     assert vels == {("1", "49"), ("50", "109"), ("110", "127")}
 
 

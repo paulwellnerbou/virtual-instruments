@@ -1,6 +1,7 @@
 """Write the .dsbundle, install it into the DecentSampler library folder, package a .dslibrary."""
 
 import json
+import math
 import os
 import re
 import shutil
@@ -275,9 +276,13 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
     if missing:
         raise ValueError(f"{len(missing)} sliced samples are missing in {samples_src}; slice again.")
     # The level goes into the samples themselves, with each sample's evening-out correction, so their clicks
-    # can be limited; the preset then plays them as they are.
+    # can be limited; the preset then plays them as they are, or (with loudness following velocity) at
+    # most as loud as that, softer below their loudest velocity.
     gains = {e.file: mapping.gain_db for e in mapping.release + mapping.keys}
-    gains.update({e.file: mapping.gain_db + e.volume_db for e in mapping.notes})
+    loudest: dict[str, float] = {}
+    for e in mapping.notes:
+        loudest[e.file] = max(loudest.get(e.file, -math.inf), e.volume_db)
+    gains.update({f: mapping.gain_db + v for f, v in loudest.items()})
     p = inst.processing
     low_cuts = {e.file: (float(e.root), p.low_cut_below, p.low_cut_db) for e in mapping.notes} if cutting else {}
     if cutting:  # with the knob, which blends back to the uncut samples
@@ -292,7 +297,7 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
             + (f"; the peaks of {len(limited)} samples were held under {level.CEILING_DB:.0f} dBFS, by up to "
                f"{max(limited):.1f} dB." if limited else "."))
     for e in mapping.notes:
-        e.volume_db = 0.0
+        e.volume_db = round(e.volume_db - loudest[e.file], 2)
     mapping.gain_db = 0.0
     if bands:
         # Boosts run after the limiter (an effect in DecentSampler), so they get their room as a volume

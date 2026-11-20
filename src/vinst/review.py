@@ -17,6 +17,11 @@ FLAGS: dict[str, tuple[str, str]] = {
     "clipped": ("error", "the signal reached full scale"),
     "no_pitch": ("warning", "no stable pitch found"),
     "layer_mismatch": ("warning", "loudness fits a different velocity of this note better"),
+    "off_aim": ("warning", "played harder or softer than this velocity on the other notes, next to this note's "
+                           "loudest velocity (see the row's aim); with loudness following velocity the "
+                           "instrument evens out the loudness, but not the sound"),
+    "uneven": ("info", "more than 3 dB louder or softer than this velocity's other hits on the note; even out "
+                       "loudness brings it closer"),
     "cut_off": ("warning", "still ringing when the next hit (or the file) started"),
     "out_of_tune": ("info", "more than 20 cents off; the instrument will correct it"),
     "loop_poor": ("warning", "the automatic loop may click or pulse; listen to it"),
@@ -116,33 +121,62 @@ def lane_of(hit: Hit, take: "TakeResult", lanes: list[str]) -> str | None:
     return hit.layer_set if hit.layer_set in lanes else take.lane if take.lane in lanes else None
 
 
-def check_lanes(results: list["TakeResult"], lanes: list[str]) -> None:
-    """Loudness across one note's lanes: hits that fit another lane better, lanes out of order."""
+def loudness(hit: Hit, sustained: bool) -> float:
+    """What makes notes sound equally loud: the held part for sustained sounds, the attack otherwise."""
+    return hit.body_db if sustained and hit.body_db is not None else hit.rms_db
+
+
+LANE_FLAGS = ("layer_mismatch", "off_aim", "uneven")
+AIM_TOLERANCE_DB = 3.0  # how far a hit may be from its aim, or from its lane's others on the note
+
+
+def check_lanes(results: list["TakeResult"], lanes: list[str], aims: dict[str, float] | None = None,
+                reference: str | None = None, sustained: bool = False) -> None:
+    """Loudness across one note's lanes: hits that fit another lane better, lanes out of order; with
+    `aims` (see vinst.aims), lanes and hits off their aim next to `reference`, and hits off their
+    lane's others."""
     hits = [h for t in results for h in t.hits if not h.rejected and h.layer in lanes]
     for t in results:
         for h in t.hits:
-            if "layer_mismatch" in h.flags:
-                h.flags.remove("layer_mismatch")
+            h.flags = [f for f in h.flags if f not in LANE_FLAGS]
         t.message = "; ".join(m for m in t.message.split("; ") if m and not m.endswith(LANES_OUT_OF_ORDER)
+                              and not m.endswith(STEP_OFF)
                               and m != "this note's velocities don't get louder in order")  # in older manifests
-    medians = {lane: float(np.median([h.rms_db for h in hits if h.layer == lane]))
+    level = {h.id: loudness(h, sustained) for h in hits}
+    medians = {lane: float(np.median([level[h.id] for h in hits if h.layer == lane]))
                for lane in lanes if any(h.layer == lane for h in hits)}
-    if len(medians) < 2:
-        return
+    messages = []
+    if len(medians) >= 2:
+        for h in hits:
+            if min(medians, key=lambda lane: abs(medians[lane] - level[h.id])) != h.layer:
+                h.flags.append("layer_mismatch")
+        ordered = [lane for lane in lanes if lane in medians]
+        softer = next(((a, b) for a, b in zip(ordered, ordered[1:]) if medians[b] <= medians[a]), None)
+        if softer:
+            a, b = softer
+            messages.append(f"{b} ({medians[b]:.0f} dBFS) is no louder than {a} ({medians[a]:.0f} dBFS), so "
+                            f"{LANES_OUT_OF_ORDER}")
     for h in hits:
-        if min(medians, key=lambda lane: abs(medians[lane] - h.rms_db)) != h.layer:
-            h.flags.append("layer_mismatch")
-    ordered = [lane for lane in lanes if lane in medians]
-    softer = next(((a, b) for a, b in zip(ordered, ordered[1:]) if medians[b] <= medians[a]), None)
-    if softer:
-        a, b = softer
-        first = next(t for t in results if t.hits)
-        text = (f"{b} ({medians[b]:.0f} dBFS) is no louder than {a} ({medians[a]:.0f} dBFS), so "
-                f"{LANES_OUT_OF_ORDER}")
-        first.message = "; ".join(filter(None, [first.message, text]))
+        if "layer_mismatch" in h.flags:
+            continue
+        aim = (aims or {}).get(h.layer) if h.layer != reference else None
+        if aim is not None and abs(level[h.id] - aim) > AIM_TOLERANCE_DB:
+            h.flags.append("off_aim")
+        elif sum(o.layer == h.layer for o in hits) > 1 and abs(level[h.id] - medians[h.layer]) > AIM_TOLERANCE_DB:
+            h.flags.append("uneven")
+    for lane, m in medians.items():
+        aim = (aims or {}).get(lane)
+        if lane != reference and aim is not None and abs(m - aim) > AIM_TOLERANCE_DB:
+            messages.append(f"{lane} is {abs(m - aim):.0f} dB {'louder' if m > aim else 'softer'} than its aim "
+                            f"of {aim:.0f} dB next to {reference}, so {STEP_OFF}")
+    if messages:
+        first = next((t for t in results if t.hits), None)
+        if first is not None:
+            first.message = "; ".join(filter(None, [first.message, *messages]))
 
 
 LANES_OUT_OF_ORDER = "playing harder wouldn't sound louder"
+STEP_OFF = "it sounds like a different dynamic than on the other notes"
 
 
 class Manifest(BaseModel):

@@ -14,7 +14,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 
-from vinst import cleanup_eq, denoise, loops, takes_meta
+from vinst import aims, cleanup_eq, denoise, loops, takes_meta
 from vinst.plan import (
     Take,
     combined_base,
@@ -26,7 +26,7 @@ from vinst.plan import (
     slicing_setup,
 )
 from vinst.review import Hit, Manifest, TakeResult, check_lanes, samples_dir, settle
-from vinst.spec import Instrument
+from vinst.spec import SUSTAINED_TYPES, Instrument
 
 # Raised whenever hits are found differently, so older results are offered for slicing again.
 # 1: attack judged over ATTACK_S, starts moved to the main rise.
@@ -523,13 +523,16 @@ def carry_over(inst: Instrument, result: TakeResult, earlier: TakeResult | None,
 
 
 def check_all_lanes(inst: Instrument, manifest: Manifest) -> None:
-    """Loudness checks across each note's lanes (the hits of one note come from several takes)."""
+    """Loudness checks across each note's lanes (the hits of one note come from several takes), and
+    against their aims, which depend on all notes."""
+    targets = aims.aims(inst, manifest)
+    sustained = inst.meta.type in SUSTAINED_TYPES
     groups: dict[tuple[str, str], list[TakeResult]] = {}
     for t in manifest.takes:
         if t.kind == "note" and t.note:
             groups.setdefault((t.pass_id, t.note), []).append(t)
-    for (_, note), results in groups.items():
-        check_lanes(results, note_lanes(inst, note))
+    for (pass_id, note), results in groups.items():
+        check_lanes(results, note_lanes(inst, note), *targets.of(pass_id, note), sustained=sustained)
 
 
 def process_one(inst: Instrument, previous: Manifest, key: str) -> Manifest:
