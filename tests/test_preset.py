@@ -610,3 +610,149 @@ def test_the_preview_marks_the_keys_that_really_play(built):
     tint = preview.css(preset.pale(inst.preset.accent_color, 0.4))
     assert preview.render(inst, False, mapping=mapping).count(f"fill='{tint}'") == sum(
         1 for n in range(mapping.span[0], mapping.span[1] + 1) if n % 12 in preview.WHITE_STEPS)
+
+
+def _smpl(data: bytes) -> np.ndarray:
+    import struct
+
+    at = data.index(b"smpl") + 8
+    return np.frombuffer(data[at: at + struct.unpack("<I", data[at - 4:at])[0]], "<i2").astype(float)
+
+
+def test_the_equalizer_takes_the_tone_knob_s_place(built):
+    from vinst.spec import EqBand
+
+    inst, _ = built
+    inst.preset.controls = ["mix", "tone", "eq", "reverb"]
+    inst.preset.eq[1] = EqBand(type="peak", freq=300, q=2, gain_db=-4.5, name="Box")
+    inst.preset.eq.append(EqBand(type="highpass", freq=60, q=0.7))
+    inst.preset.eq.append(EqBand(type="notch", freq=3000, q=8, on=False))
+    assert any("either the Tone knob or the Equalizer" in m for m in inst.problems())
+    inst.preset.controls = ["mix", "eq", "reverb"]
+    result = bundle.build(inst)
+    assert result.report.ok, result.report.errors
+    doc = etree.parse(str(result.preset_file))
+    effects = list(doc.find("effects"))
+    assert [e.get("type") for e in effects] == ["low_shelf", "peak", "high_shelf", "highpass", "reverb"]
+    assert float(effects[1].get("frequency")) == 300 and float(effects[1].get("q")) == 2
+    assert float(effects[1].get("gain")) == pytest.approx(10 ** (-4.5 / 20), abs=1e-4)
+    assert float(effects[3].get("resonance")) == 0.7 and effects[3].get("gain") is None
+    knobs = {k.get("label"): k for k in doc.iter("labeled-knob")}
+    assert {"Low", "Box", "High"} <= set(knobs) and "60 Hz" not in knobs  # a cut has no knob
+    box = knobs["Box"]
+    assert [float(box.get(a)) for a in ("minValue", "maxValue", "value")] == [-12, 12, -4.5]
+    binding = box.find("binding")
+    assert binding.get("parameter") == "FX_FILTER_GAIN" and effects[int(binding.get("position"))] is effects[1]
+    # The knob's dB turn into the filter's linear gain: flat in the middle, the band's gain where it starts.
+    table = binding.get("translationTable")
+    assert preset.table_value(table, 0) == pytest.approx(1.0)
+    assert preset.table_value(table, -4.5) == pytest.approx(10 ** (-4.5 / 20), rel=0.02)
+
+
+def test_a_band_s_knob_reaches_its_gain():
+    from vinst import eq
+    from vinst.spec import EqBand
+
+    assert eq.knob_range(EqBand(gain_db=3)) == 12 and eq.knob_range(EqBand(gain_db=-17)) == 18
+    assert eq.label(EqBand(freq=1250)) == "1.25 kHz" and eq.label(EqBand(freq=80, name=" Air ")) == "Air"
+
+
+def test_the_equalizer_s_curve_is_what_its_filters_do():
+    from vinst import eq
+    from vinst.spec import EqBand
+
+    sr = 48000
+    bands = [EqBand(type="peak", freq=1000, q=1, gain_db=6), EqBand(type="high_shelf", freq=8000, gain_db=-6),
+             EqBand(type="highpass", freq=50, q=0.707), EqBand(type="notch", freq=3000, q=4)]
+    at = eq.response_db(bands, np.array([50.0, 1000, 3000, 20000]), sr)
+    assert at[0] == pytest.approx(-3, abs=0.3) and at[1] == pytest.approx(6, abs=0.3)
+    assert at[2] < -60 and at[3] == pytest.approx(-6, abs=0.5)
+    # Played through the filters, a 1 kHz tone comes out 6 dB louder.
+    t = np.arange(sr) / sr
+    out = eq.apply(np.sin(2 * np.pi * 1000 * t), sr, bands[:1])
+    assert 20 * np.log10(np.abs(out[sr // 2:]).max()) == pytest.approx(6, abs=0.2)
+    assert eq.response_db([EqBand(on=False, gain_db=6)], np.array([1000.0])) == pytest.approx([0])
+
+
+def test_the_soundfont_gets_the_equalizer_built_in(built):
+    from vinst.spec import EqBand
+
+    inst, _ = built
+    plain = _smpl(bundle.build(inst).soundfont.read_bytes())
+    inst.preset.controls = ["mix", "eq"]
+    inst.preset.eq = [EqBand(type="lowpass", freq=60, q=0.7)]
+    darker = _smpl(bundle.build(inst).soundfont.read_bytes())
+    assert len(darker) == len(plain)
+    assert np.sqrt(np.mean(darker ** 2)) < 0.7 * np.sqrt(np.mean(plain ** 2))
+
+
+def test_the_equalizer_shows_the_samples_and_plays_them(built):
+    import io
+    import json
+
+    import soundfile as sf
+
+    from vinst.ui import equalizer
+
+    inst, _ = built
+    spectrum = json.loads(equalizer.eq_spectrum(inst.meta.slug).body)
+    assert len(spectrum) > 100 and max(d for _, d in spectrum) == 0
+    assert all(20 <= f <= 20000 for f, _ in spectrum)
+    audio, sr = sf.read(io.BytesIO(equalizer.eq_demo(inst.meta.slug).body))
+    assert sr == 48000 and len(audio) > 5 * equalizer.DEMO_EVERY_S * sr  # six notes
+    assert np.abs(audio).max() == pytest.approx(0.5, abs=1e-3)
+
+
+def test_the_equalizer_s_boosts_get_room_below_full_scale(built):
+    import soundfile as sf
+
+    from vinst import eq, level
+    from vinst.spec import EqBand
+
+    inst, _ = built
+    inst.preset.controls = ["mix", "eq"]
+    inst.preset.eq = [EqBand(type="high_shelf", freq=3000, q=0.7, gain_db=18)]  # the attack's click gets louder
+    result = bundle.build(inst)
+    line = next(line for line in result.info if "so the Equalizer's boosts" in line)
+    volume = float(etree.parse(str(result.preset_file)).find("groups").get("volume").removesuffix("dB"))
+    assert f"Played {-volume:.1f} dB quieter" in line
+    # As DecentSampler plays them: at that volume through the EQ, the loudest reaches the ceiling, no further
+    # and not much below.
+    worst = max(float(np.max(np.abs(eq.apply(a, sr, inst.preset.eq))))
+                for a, sr in (sf.read(str(f), always_2d=True) for f in (result.bundle / "Samples").glob("*.wav")))
+    assert 20 * np.log10(worst) + volume == pytest.approx(level.CEILING_DB, abs=0.05)
+    # The soundfont takes the volume into its samples, so it doesn't clip either.
+    assert np.abs(_smpl(result.soundfont.read_bytes())).max() < 2 ** 15 - 1
+
+
+def test_a_cut_needs_no_room(built):
+    from vinst.spec import EqBand
+
+    inst, _ = built
+    inst.preset.controls = ["mix", "eq"]
+    inst.preset.eq = [EqBand(type="peak", freq=400, q=0.7, gain_db=-6)]
+    result = bundle.build(inst)
+    assert etree.parse(str(result.preset_file)).find("groups").get("volume") is None
+    assert not any("Equalizer" in line for line in result.info)
+
+
+def test_evening_out_hears_the_equalizer(built):
+    from vinst.spec import EqBand
+
+    inst, manifest = built
+    boost = [EqBand(type="peak", freq=400, q=0.7, gain_db=12)]
+    after = bundle.measured(inst, manifest, False, boost)
+    before = [h.rms_db for t in manifest.takes if t.kind == "note" for h in t.hits if not h.rejected]
+    now = [h.rms_db for t in after.takes if t.kind == "note" for h in t.hits if not h.rejected]
+    assert all(b < n for b, n in zip(before, now))
+    flat = bundle.measured(inst, manifest, False, [EqBand(gain_db=0)])
+    assert [h.rms_db for t in flat.takes for h in t.hits] == pytest.approx(
+        [h.rms_db for t in manifest.takes for h in t.hits], abs=0.01)
+
+
+def test_the_mod_wheel_leaves_the_equalizer_alone(built):
+    inst, _ = built
+    inst.preset.controls = ["eq", "reverb"]  # the EQ's knobs come first
+    xml = etree.parse(str(bundle.build(inst).preset_file))
+    tag = xml.find("midi/cc/binding").get("controlTags")
+    assert [k.get("label") for k in xml.iter("labeled-knob") if k.get("tags") == tag] == ["Reverb"]

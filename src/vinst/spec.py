@@ -214,6 +214,7 @@ class Processing(BaseModel):
 CONTROLS = {
     "mix": "Signal mix",
     "tone": "Tone",
+    "eq": "Equalizer",
     "lowcut": "Low cut",
     "attack": "Attack",
     "release": "Release",
@@ -221,6 +222,22 @@ CONTROLS = {
     "chorus": "Chorus",
     "noise": "Release noise",
 }
+
+
+class EqBand(BaseModel):
+    """One band of the instrument's equalizer (see vinst.eq)."""
+
+    type: Literal["low_shelf", "peak", "high_shelf", "highpass", "lowpass", "notch"] = "peak"
+    freq: float = Field(default=1000.0, ge=20, le=20000)
+    q: float = Field(default=0.7, ge=0.1, le=18)
+    gain_db: float = Field(default=0.0, ge=-24, le=24)
+    name: str = ""  # the knob's label; empty: its frequency
+    on: bool = True
+
+
+def default_eq() -> list[EqBand]:
+    return [EqBand(type="low_shelf", freq=150, name="Low"), EqBand(type="peak", freq=1000, name="Mid"),
+            EqBand(type="high_shelf", freq=5000, name="High")]
 
 
 class Preset(BaseModel):
@@ -247,6 +264,7 @@ class Preset(BaseModel):
     balance_tolerance_db: float = Field(default=3.0, ge=0, le=12)
     controls: list[str] = ["mix", "tone", "release", "reverb", "noise"]  # the low cut's: see Processing.low_cut
     tone: float = Field(default=1.0, ge=0, le=1)
+    eq: list[EqBand] = Field(default_factory=default_eq, max_length=8)
     reverb: float = Field(default=0.15, ge=0, le=1)
     reverb_room: float = Field(default=0.7, ge=0, le=1)
     # How fast the reverb's tail loses its highs. DecentSampler's own 0.3 lets a pluck's click ring on
@@ -299,6 +317,8 @@ class Instrument(BaseModel):
         for c in self.preset.controls:
             if c not in CONTROLS:
                 out.append(f"Unknown control “{c}”.")
+        if {"tone", "eq"} <= set(self.preset.controls):
+            out.append("Choose either the Tone knob or the Equalizer, not both.")
         for color in (self.preset.bg_color, self.preset.text_color, self.preset.accent_color):
             if not re.fullmatch(r"[0-9A-Fa-f]{8}", color):
                 out.append(f"Colour “{color}” must be 8 hex digits (AARRGGBB).")

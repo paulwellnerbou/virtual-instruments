@@ -11,6 +11,7 @@ import json
 import numpy as np
 from scipy.signal import sosfiltfilt, sosfreqz
 
+from vinst.eq import biquad
 from vinst.spec import CleanupEq, EqFilter, Instrument
 
 NYQUIST_SHARE = 0.49  # bands this close to half the sample rate are left out: they'd be unstable
@@ -30,31 +31,6 @@ KIND_LABELS = {
     "highpass": "Highpass", "lowpass": "Lowpass", "hum": "Hum + harmonics",
 }
 HAS_GAIN = {"peak", "low_shelf", "high_shelf", "hum"}
-
-
-def _biquad(kind: str, hz: float, gain_db: float, q: float, sr: int) -> list[float]:
-    """One second-order section (b0, b1, b2, 1, a1, a2), from the Audio EQ Cookbook."""
-    w0 = 2 * np.pi * hz / sr
-    cos, alpha = np.cos(w0), np.sin(w0) / (2 * q)
-    a = 10 ** (gain_db / 40)
-    if kind == "peak":
-        b, den = [1 + alpha * a, -2 * cos, 1 - alpha * a], [1 + alpha / a, -2 * cos, 1 - alpha / a]
-    elif kind == "notch":
-        b, den = [1, -2 * cos, 1], [1 + alpha, -2 * cos, 1 - alpha]
-    elif kind == "lowpass":
-        b, den = [(1 - cos) / 2, 1 - cos, (1 - cos) / 2], [1 + alpha, -2 * cos, 1 - alpha]
-    elif kind == "highpass":
-        b, den = [(1 + cos) / 2, -(1 + cos), (1 + cos) / 2], [1 + alpha, -2 * cos, 1 - alpha]
-    elif kind in ("low_shelf", "high_shelf"):
-        s = 1 if kind == "low_shelf" else -1
-        r = 2 * np.sqrt(a) * alpha
-        b = [a * ((a + 1) - s * (a - 1) * cos + r), s * 2 * a * ((a - 1) - s * (a + 1) * cos),
-             a * ((a + 1) - s * (a - 1) * cos - r)]
-        den = [(a + 1) + s * (a - 1) * cos + r, -s * 2 * ((a - 1) + s * (a + 1) * cos),
-               (a + 1) + s * (a - 1) * cos - r]
-    else:
-        raise ValueError(f"unknown filter kind {kind!r}")
-    return [b[0] / den[0], b[1] / den[0], b[2] / den[0], 1.0, den[1] / den[0], den[2] / den[0]]
 
 
 def fits(f: EqFilter, sr: int) -> int:
@@ -80,10 +56,10 @@ def sections(filters: list[EqFilter], sr: int) -> np.ndarray:
             continue
         # Half the gain: filtering twice doubles it.
         if f.kind == "hum":
-            rows += [_biquad("peak", f.hz * k, f.gain_db / 2, f.q, sr) for k in range(1, f.harmonics + 1)
+            rows += [biquad("peak", f.hz * k, f.gain_db / 2, f.q, sr) for k in range(1, f.harmonics + 1)
                      if f.hz * k < NYQUIST_SHARE * sr]
         elif f.hz < NYQUIST_SHARE * sr:
-            rows.append(_biquad(f.kind, f.hz, f.gain_db / 2, f.q, sr))
+            rows.append(biquad(f.kind, f.hz, f.gain_db / 2, f.q, sr))
     return np.array(rows, dtype=float).reshape(-1, 6)
 
 

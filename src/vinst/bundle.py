@@ -9,11 +9,15 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from vinst import level, lowcut, preset, review, sf2, store
+import numpy as np
+import soundfile as sf
+
+from vinst import eq, level, lowcut, preset, review, sf2, store
 from vinst.review import Manifest
 from vinst.plan import slicing_setup
-from vinst.slicing import changed_takes, cut_in_samples, edited_takes, eq_changed_takes, recut
-from vinst.spec import Instrument
+from vinst.slicing import (LOUDNESS_WINDOW_S, body_level, changed_takes, cut_in_samples, db, edited_takes,
+                           eq_changed_takes, recut)
+from vinst.spec import EqBand, Instrument
 from vinst.validate import Report, validate_bundle
 
 # Also shown in the worksheet, next to its slice button: so no pointer to a step here.
@@ -135,8 +139,15 @@ def low_cut_now(inst: Instrument, manifest: Manifest | None) -> bool:
     return inst.processing.low_cut and lowcut.applies(inst) and not (manifest and cut_in_samples(manifest))
 
 
-def after_low_cut(inst: Instrument, manifest: Manifest, step: Callable[[int, int], None] | None = None) -> Manifest:
-    """`manifest` with each note's loudness as it is after the low cut."""
+def eq_now(inst: Instrument) -> list[EqBand]:
+    """The equalizer's bands that play in this build, as its knobs start."""
+    return [b for b in inst.preset.eq if b.on] if "eq" in inst.preset.controls else []
+
+
+def measured(inst: Instrument, manifest: Manifest, cutting: bool, bands: list[EqBand],
+             step: Callable[[int, int], None] | None = None) -> Manifest:
+    """`manifest` with each note's loudness as it is after the low cut and the equalizer (as its knobs
+    start), so evening out and the level work with what's played."""
     p = inst.processing
     out = manifest.model_copy(deep=True)
     folder = Path(manifest.samples_dir)
@@ -148,15 +159,38 @@ def after_low_cut(inst: Instrument, manifest: Manifest, step: Callable[[int, int
             src = folder / h.files[t.signals[0]] if t.signals and t.signals[0] in h.files else None
             if h.rejected or src is None or not src.is_file():
                 continue
-            d_attack, d_body = lowcut.loudness_change(src, t.midi, p.low_cut_below, p.low_cut_db)
-            h.rms_db += d_attack
+            audio, sr = sf.read(str(src), always_2d=True, dtype="float64")
+            x = audio[:, 0]  # the first signal's first channel, as slicing measures loudness
+            y = lowcut.reduce(x, sr, t.midi, p.low_cut_below, p.low_cut_db) if cutting else x
+            y = eq.apply(y, sr, bands)
+            n = int(LOUDNESS_WINDOW_S * sr)
+            h.rms_db += round(float(db(np.sqrt(np.mean(y[:n] ** 2))) - db(np.sqrt(np.mean(x[:n] ** 2)))), 2)
             if h.body_db is not None:
-                h.body_db += d_body
+                h.body_db += round(body_level(y, sr) - body_level(x, sr), 2)
     return out
 
 
+def eq_overshoot(folder: Path, files: list[str], removed: dict[str, str], bands: list[EqBand],
+                 step: Callable[[int, int], None] | None = None) -> float:
+    """How far, in dB, the written samples go over the ceiling when played through the equalizer as
+    its knobs start; with the low cut knob, at both its ends (a sample alone and with what was cut)."""
+    worst = -np.inf
+    for i, name in enumerate(files):
+        if step:
+            step(i, len(files))
+        audio, sr = sf.read(str(folder / name), always_2d=True, dtype="float64")
+        played = [audio]
+        if name in removed:
+            low, _ = sf.read(str(folder / removed[name]), always_2d=True, dtype="float64")
+            played.append(audio + low)
+        for a in played:
+            worst = max(worst, float(db(np.max(np.abs(eq.apply(a, sr, bands))))))
+    return max(0.0, worst - level.CEILING_DB)
+
+
 # Share of a build's time per stage, roughly, for its progress bar: (stage, where it starts, where it ends).
-STAGES = {"recut": ("Updating edited recordings", 0.0, 0.1), "measure": ("Measuring the low cut", 0.1, 0.3), "samples": ("Writing samples", 0.3, 0.85),
+STAGES = {"recut": ("Updating edited recordings", 0.0, 0.1), "measure": ("Measuring loudness", 0.1, 0.3),
+          "samples": ("Writing samples", 0.3, 0.8), "room": ("Making room for the Equalizer", 0.8, 0.85),
           "soundfont": ("Writing the soundfont", 0.85, 0.95), "validate": ("Validating", 0.95, 1.0)}
 
 
@@ -197,9 +231,12 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
     if eq_changed:
         raise ValueError(eq_message(eq_changed) + " Slice them in the worksheet (step 5).")
     cutting = low_cut_now(inst, manifest)
-    # The cut changes how loud a note is (its low resonance goes), so evening out and the level work with the
-    # loudness after it: measured here, as the cut is applied here.
-    mapping = preset.map_samples(inst, after_low_cut(inst, manifest, stage("measure")) if cutting else manifest)
+    bands = eq_now(inst)
+    # The cut and the equalizer change how loud a note is (its low resonance goes, a boost adds), so evening
+    # out and the level work with the loudness after them: measured here, as they're applied here and live.
+    measuring = cutting or bands
+    mapping = preset.map_samples(inst, measured(inst, manifest, cutting, bands, stage("measure")) if measuring
+                                 else manifest)
     if not mapping.notes:
         raise ValueError("No usable hits: record and slice some notes first.")
     mapping.info[:0] = recut_info
@@ -233,6 +270,15 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
     for e in mapping.notes:
         e.volume_db = 0.0
     mapping.gain_db = 0.0
+    if bands:
+        # Boosts run after the limiter (an effect in DecentSampler), so they get their room as a volume
+        # the instrument plays at; the soundfont takes it into its samples.
+        over = eq_overshoot(bundle / preset.SAMPLES_DIR, sorted(mapping.files),
+                            {e.file: e.removed for e in mapping.notes if e.removed}, bands, stage("room"))
+        if over >= 0.1:
+            mapping.gain_db = -over
+            mapping.info.append(f"Played {over:.1f} dB quieter, so the Equalizer's boosts (as its knobs start) "
+                                "stay under full scale.")
 
     background = None
     if inst.preset.background:
