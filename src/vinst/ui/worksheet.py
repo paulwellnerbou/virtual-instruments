@@ -319,6 +319,12 @@ CSS = """
                  touch-action: none; display: flex; justify-content: center; }
 .vi-cut-handle::before { content: ""; width: 3px; border-radius: 2px; background: #1565c0; }
 .vi-cut-handle:hover::before, .vi-cut-handle.active::before { width: 5px; }
+/* No room for the hits beside a velocity's buttons: they go below them. */
+@media (max-width: 599px) {
+  .vi-vel-lane.vi-vel-lane { flex-wrap: wrap; }
+  .vi-vel-lane > .vi-vel-hits { flex: 1 0 100%; }
+  .vi-hits { gap: 3px; }
+}
 """
 DRAG_JS = "(e) => e.dataTransfer.setData('text/plain', {ref})"
 DRAG_OVER_JS = "(e) => { e.preventDefault(); e.currentTarget.classList.add('vi-drop'); }"
@@ -1380,7 +1386,8 @@ def step_worksheet(ed: "Editor") -> None:
                         result = results_by_key.get(take.key)
                         recorded = result is not None and result.status != "missing"
                         hits = by_lane.get(lane, [])
-                        with ui.row().classes("vi-lane items-start gap-1 w-full no-wrap").style(f"min-height:{ROW_H}px") \
+                        with ui.row().classes("vi-lane vi-vel-lane items-start gap-1 w-full no-wrap") \
+                                .style(f"min-height:{ROW_H}px") \
                                 as row:
                             with controls_strip():
                                 # Fixed widths, so the buttons line up across rows and notes; the
@@ -1391,7 +1398,7 @@ def step_worksheet(ed: "Editor") -> None:
                                     .style("width:7.5ch").tooltip(f"Velocity {lo}–{hi}")
                                 record_button(take, recorded)
                                 compare_button(hits)
-                            with ui.column().classes("grow gap-1 min-w-0"):
+                            with ui.column().classes("vi-vel-hits grow gap-1 min-w-0"):
                                 if not recorded and not hits:
                                     with controls_strip():
                                         drop_hint(take)

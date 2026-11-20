@@ -15,7 +15,7 @@ LABEL_CHARS = 12  # what fits into LABEL_W
 
 @contextmanager
 def setting(label: str, hint: str | None = None) -> Iterator[ui.row]:
-    with ui.row().classes("w-full items-center no-wrap gap-2 min-h-[40px]"):
+    with ui.row().classes("vi-setting w-full items-center no-wrap gap-2 min-h-[40px]"):
         with ui.row().classes(f"{LABEL_W} shrink-0 items-center gap-1 no-wrap"):
             name = ui.label(label).classes("text-sm opacity-80 truncate")
             if len(label) > LABEL_CHARS:  # only then can it be cut off
