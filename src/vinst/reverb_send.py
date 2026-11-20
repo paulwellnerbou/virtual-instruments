@@ -19,6 +19,9 @@ IR_DIR = "IRs"
 IR_TYPES = (".wav", ".aif", ".aiff", ".flac")  # what an impulse response of your own may be
 IR_RATE = 48000
 IR_MAX_S = 10.0
+IR_FADE_S = 0.5  # an own impulse response longer than IR_MAX_S fades out over this before it's cut
+IR_COPY = "reverb-ir"  # the start of the name of an own impulse response's copy in the instrument's folder
+DOCS_URL = "https://github.com/paulwellnerbou/virtual-instruments/blob/main/docs/recording-impulse-responses.md"
 IR_FLOOR_DB = -70.0  # the tail is cut where what's left is this far below the whole
 SHELF_DB = -9.0
 SHELF_ABOVE = 2.9  # times the band's pitch: the fundamental stays, the octave a little, the partials above less
@@ -146,7 +149,18 @@ def own_ir(path: Path) -> np.ndarray:
         data = resample_poly(data, IR_RATE // g, int(rate) // g, axis=-1)
     if not np.any(data):
         raise ValueError(f"The impulse response {path.name} is silent.")
+    # A tail sinking into room noise never gets trimmed, and every second of it costs size and CPU per band.
+    limit = int(IR_MAX_S * IR_RATE)
+    if data.shape[1] > limit:
+        fade = int(IR_FADE_S * IR_RATE)
+        data = data[:, :limit].copy()
+        data[:, -fade:] *= np.linspace(1.0, 0.0, fade)
     return data
+
+
+def too_long(path: Path) -> bool:
+    """Whether an impulse response file is cut to IR_MAX_S when building."""
+    return sf.info(str(path)).duration > IR_MAX_S
 
 
 def _energy(ir: np.ndarray) -> float:

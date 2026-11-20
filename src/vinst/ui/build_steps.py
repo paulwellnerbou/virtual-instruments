@@ -292,9 +292,6 @@ def background_field(ed: "Editor") -> None:
             ui.label("812 × 375 px; DecentSampler's keyboard covers its lower part.").classes("text-xs opacity-70")
 
 
-IR_COPY = "reverb-ir"  # the start of the name of an impulse response's copy in the instrument's folder
-
-
 def reverb_ir_field(ed: "Editor") -> None:
     """An impulse response of your own for the reverb: dropped or chosen, it's copied into the instrument's folder."""
     inst, p = ed.inst, ed.inst.preset
@@ -316,7 +313,7 @@ def reverb_ir_field(ed: "Editor") -> None:
         old = Path(p.reverb_ir).expanduser() if p.reverb_ir else None
         ed.set(p, "reverb_ir", "")
         # Only our own copy goes; a file picked elsewhere before stays where it is.
-        if old and old.parent == store.instrument_dir(inst.meta.slug) and old.stem.startswith(IR_COPY):
+        if old and old.parent == store.instrument_dir(inst.meta.slug) and old.stem.startswith(reverb_send.IR_COPY):
             old.unlink(missing_ok=True)
         current.refresh()
 
@@ -326,11 +323,14 @@ def reverb_ir_field(ed: "Editor") -> None:
             ui.notify("An impulse response must be a WAV, AIFF or FLAC file.", type="warning")
             return
         folder = store.instrument_dir(inst.meta.slug)
-        for old in folder.glob(f"{IR_COPY}*"):
-            old.unlink()
         # Its own name kept in the copy, so the field and the build say which room or reverb it is.
-        dest = folder / f"{IR_COPY}-{re.sub(r'[^A-Za-z0-9_.-]+', '-', Path(e.file.name).stem).strip('-')}{suffix}"
+        name = re.sub(r"[^\w.-]+", "-", Path(e.file.name).stem).strip("-.")
+        dest = folder / (f"{reverb_send.IR_COPY}-{name}{suffix}" if name else f"{reverb_send.IR_COPY}{suffix}")
         await e.file.save(dest)
+        # Only once the new one is saved: a failed upload leaves the one in use.
+        for old in folder.glob(f"{reverb_send.IR_COPY}*"):
+            if old != dest:
+                old.unlink()
         ed.set(p, "reverb_ir", str(dest))
         upload.reset()
         current.refresh()
@@ -345,9 +345,10 @@ def reverb_ir_field(ed: "Editor") -> None:
             ui.label("A room or a reverb you captured, instead of DecentSampler's reverb; the pitch-following "
                      "filtering is the same. Remove its direct sound first, or the reverb plays every note a "
                      "second time. It's made about as loud as DecentSampler's reverb with this room size and "
-                     "damping, which otherwise don't change it; set the knob by ear. How to record one: "
-                     "docs/recording-impulse-responses.md.") \
+                     "damping, which otherwise don't change it; set the knob by ear. Longer than "
+                     f"{reverb_send.IR_MAX_S:g} s, it's faded out and cut there.") \
                 .classes("text-xs opacity-70")
+            ui.link("How to record one", reverb_send.DOCS_URL, new_tab=True).classes("text-xs")
 
 
 def cut_curve_svg(below: float, reduction_db: float, accent: str) -> str:

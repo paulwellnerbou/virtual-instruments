@@ -158,3 +158,26 @@ def test_the_build_uses_an_own_ir_only_with_the_switch_on(built, tmp_path):
     inst.preset.reverb_ir = str(tmp_path / "gone.wav")
     with pytest.raises(ValueError, match="Impulse response not found"):
         bundle.build(inst)
+
+
+def test_a_long_own_ir_is_faded_out_and_cut(built, tmp_path):
+    long = _decaying_noise(tmp_path / "raw-room.wav", rate=48000, seconds=12)
+    assert reverb_send.too_long(long) and not reverb_send.too_long(_decaying_noise(tmp_path / "short.wav"))
+    ir = reverb_send.own_ir(long)
+    assert ir.shape[1] == int(reverb_send.IR_MAX_S * reverb_send.IR_RATE) and np.abs(ir[:, -1]).max() == 0
+    inst, _ = built
+    inst.preset.reverb_send, inst.preset.reverb_ir = True, str(long)
+    assert any("raw-room.wav, cut to 10 s" in line for line in bundle.build(inst).info)
+
+
+def test_a_duplicate_gets_its_own_copy_of_the_impulse_response(built):
+    from vinst import store
+
+    inst, _ = built
+    folder = store.instrument_dir(inst.meta.slug)
+    inst.preset.reverb_ir = str(_decaying_noise(folder / f"{reverb_send.IR_COPY}-hall.wav"))
+    store.save(inst)
+    twin = store.duplicate(inst.meta.slug, "Twin Uke")
+    copied = store.instrument_dir(twin.meta.slug) / f"{reverb_send.IR_COPY}-hall.wav"
+    assert twin.preset.reverb_ir == str(copied) and copied.is_file()
+    assert store.load(twin.meta.slug).preset.reverb_ir == str(copied)

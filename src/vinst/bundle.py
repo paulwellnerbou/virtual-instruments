@@ -297,7 +297,8 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
             raise ValueError(f"Impulse response not found: {own}")
         irs = reverb_send.write_irs(bundle, reverb_bands, inst.preset.reverb_room, inst.preset.reverb_damping, own)
         size = sum((bundle / p).stat().st_size for p in irs) / 1e6
-        source = own.name if own else "DecentSampler's reverb"
+        source = "DecentSampler's reverb" if own is None else (
+            f"{own.name}, cut to {reverb_send.IR_MAX_S:g} s" if reverb_send.too_long(own) else own.name)
         mapping.info.append(f"Reverb without the attack's hiss: {len(irs)} reverbs from {source}, one per few "
                             f"semitones ({size:.1f} MB).")
     elif (bundle / reverb_send.IR_DIR).is_dir():
