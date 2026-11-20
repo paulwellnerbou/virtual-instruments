@@ -516,7 +516,7 @@ CONTROL_TEXT = {
     "tone": "Darkens the sound, as a lowpass filter does; the mod wheel moves it. Instead of the Equalizer.",
     "eq": "Shapes the sound with up to 8 bands; each peak or shelf gets a knob to boost or cut it. "
           "Instead of the Tone knob.",
-    "lowcut": "Makes the frequencies below each note's pitch quieter.",
+    "lowcut": "Makes the frequencies below each note's pitch quieter (a key-tracked low cut).",
     "attack": "How long each note takes to fade in; starts at the envelope's attack. Not for plucked or "
               "struck strings: it only softens the pluck.",
     "release": "How long a note rings on after the key is let go; starts at the envelope's release.",
