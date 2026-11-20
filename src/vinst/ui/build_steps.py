@@ -1,6 +1,5 @@
 """Wizard steps 7 (sound & look) and 8 (build, install, package)."""
 
-from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -8,18 +7,20 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from nicegui import app, run, ui
 
-from vinst import bundle, lowcut, review, sf2, store
+from vinst import bundle, lowcut, preset, review, sf2, store
 from vinst.plan import layer_bounds, recording_passes
-from vinst.preset import (KNOB_Y, UI_H, UI_W, VISIBLE_H, knob_layout, low_cut_name, mixable_signals,
-                          switched_passes)
+from vinst.preset import mixable_signals
 from vinst.spec import CONTROLS, Extra
 from vinst.ui.anim import Collapse
+from vinst.ui import preview
 from vinst.ui.finder import reveal
 
 if TYPE_CHECKING:
+    from vinst.spec import Instrument
     from vinst.ui.app import Editor
 
-PREVIEW_SCALE = 0.75
+# Drawn at the instrument's own size and scaled to fit the column: an SVG's viewBox scales what's in it.
+PREVIEW_MAX_W = 640
 
 
 # slug -> image path as currently typed in an editor; the preview refreshes before autosave
@@ -50,58 +51,22 @@ def _sliced(slug: str) -> "review.Manifest | None":
     return _manifests[slug][1]
 
 
-def _argb_to_css(argb: str) -> str:
-    try:
-        a, rgb = int(argb[:2], 16) / 255, argb[2:]
-        return f"rgba({int(rgb[0:2], 16)},{int(rgb[2:4], 16)},{int(rgb[4:6], 16)},{a:.2f})"
-    except ValueError:
-        return "transparent"
-
-
 def preview_html(ed: "Editor") -> str:
-    """Approximation of the DecentSampler window: background, title and knob row."""
-    inst = ed.inst
-    p = inst.preset
-    labels = []
-    has_release = any(x.use == "release" for x in inst.extras)
-    mixable = mixable_signals(inst)
-    for c in p.controls:
-        if c == "mix" and len(mixable) == 2:
-            labels.append("Mix")
-        elif c == "mix" and len(mixable) > 2:
-            labels += [s.name for s in mixable]
-        elif c == "noise" and has_release:
-            labels.append("Noise")
-        elif c == "lowcut" and bundle.low_cut_now(inst, _sliced(inst.meta.slug)):
-            labels.append(f"{low_cut_name(inst)} %")
-        elif c not in ("mix", "noise", "lowcut"):
-            labels.append(CONTROLS[c])
-    s = PREVIEW_SCALE
-    text = _argb_to_css(p.text_color)
-    bg = f"background:{_argb_to_css(p.bg_color)};"
+    """The instrument as DecentSampler will show it (see preview)."""
+    inst, p = ed.inst, ed.inst.preset
+    url = None
     if p.background and Path(p.background).expanduser().is_file():
-        _backgrounds[inst.meta.slug] = Path(p.background).expanduser()
-        mtime = int(Path(p.background).expanduser().stat().st_mtime)
-        bg += f"background-image:url(/background/{inst.meta.slug}?v={mtime});background-size:{UI_W * s}px {UI_H * s}px;"
-    switched = switched_passes(inst)
-    menu = (f"<div style='position:absolute;left:{20 * s}px;top:{58 * s}px;width:{240 * s}px;"
-            f"height:{26 * s}px;border:1px solid {text};color:{text};font-size:{12 * s + 2}px;"
-            f"padding-left:6px;line-height:{26 * s}px'>{escape(switched[0].name)} ▾</div>") if switched else ""
-    x0, step, size = knob_layout(len(labels))
-    knobs = "".join(
-        f"<div style='position:absolute;left:{(x0 + i * step) * s}px;top:{KNOB_Y * s}px;"
-        f"width:{size * s}px;text-align:center;color:{text};font-size:{11 * s + 2}px'>"
-        f"<div style='margin:0 auto 4px;width:{46 * s}px;height:{46 * s}px;border-radius:50%;"
-        f"border:3px solid {text}'></div>{escape(label)}</div>"
-        for i, label in enumerate(labels))
-    return (f"<div style='position:relative;width:{UI_W * s}px;height:{UI_H * s}px;{bg}border-radius:6px;"
-            f"overflow:hidden;font-family:sans-serif'>"
-            f"<div style='position:absolute;left:{20 * s}px;top:{14 * s}px;color:{text};font-size:{26 * s}px'>"
-            f"{escape(inst.meta.name)}</div>{menu}{knobs}"
-            # The part DecentSampler covers with its on-screen keyboard.
-            f"<div style='position:absolute;left:0;top:{VISIBLE_H * s}px;width:100%;bottom:0;"
-            f"background:repeating-linear-gradient(90deg,#f4f4f4 0 {14 * s}px,#999 {14 * s}px {15 * s}px);"
-            f"opacity:.9'></div></div>")
+        path = Path(p.background).expanduser()
+        _backgrounds[inst.meta.slug] = path
+        url = f"/background/{inst.meta.slug}?v={path.stat().st_mtime_ns}"
+    manifest = _sliced(inst.meta.slug)
+    try:
+        mapping = preset.map_samples(inst, manifest) if manifest else None
+    except Exception:  # half-edited settings: the preview falls back to what they ask for
+        mapping = None
+    if mapping is not None and not mapping.span:
+        mapping = None
+    return preview.render(inst, bundle.low_cut_now(inst, manifest), url, PREVIEW_MAX_W, mapping)
 
 
 LAYER_COLOURS = ["#90caf9", "#42a5f5", "#1e88e5", "#1565c0", "#0d47a1"]
@@ -212,6 +177,8 @@ def step_sound(ed: "Editor") -> None:
              "rotation: more variation, slightly less faithful timbre. Stretching past the lowest and "
              "highest notes is set in step 3.").classes("text-xs opacity-70 max-w-3xl")
 
+    ui.separator()
+    ui.label("Loudness").classes("text-base font-medium")
     with ui.row().classes("items-center gap-4"):
         ui.switch("Even out loudness within each velocity", value=p.balance,
                   on_change=lambda e: (ed.set(p, "balance", e.value), max_db.set_open(e.value)))
@@ -222,26 +189,6 @@ def step_sound(ed: "Editor") -> None:
              "hits play alike; soft velocities stay softer than loud ones. Only the instrument's copies "
              "of the samples change.").classes("text-xs opacity-70 max-w-3xl")
 
-    proc = inst.processing
-    if lowcut.applies(inst):
-        with ui.row().classes("items-center gap-4"):
-            ui.switch("Low cut below each note's pitch", value=proc.low_cut,
-                      on_change=lambda e: (ed.set(proc, "low_cut", e.value), low_cut.set_open(e.value)))
-            with Collapse(proc.low_cut, axis="x", inner_classes="flex items-center gap-2 no-wrap") as low_cut:
-                ui.number("Below", value=round(proc.low_cut_below * 100), min=30, max=100, step=5, precision=0,
-                          suffix="% of the pitch",
-                          on_change=lambda e: e.value and ed.set(proc, "low_cut_below", float(e.value) / 100)) \
-                    .classes("w-40")
-                ed.number("By", proc, "low_cut_db", cast=float, min=1, max=40, step=1, suffix="dB").classes("w-24")
-        ui.label("Lowers what lies below each note's own pitch, e.g. the thump of a pluck on a ukulele's body; "
-                 "the note itself, from its pitch up, stays as it is. Some of that low end is the "
-                 "instrument's body, so start gently and listen. Applied when building: change it, build, "
-                 f"listen; no slicing needed. With the {low_cut_name(inst)} knob (below), you can blend while playing "
-                 "between the samples as recorded (0 %) and with this cut (100 %, where it starts); the "
-                 "instrument then also carries what was cut out. Loudness is "
-                 "evened out for the full cut, so notes with much thump play louder with the knob turned "
-                 "down.").classes("text-xs opacity-70 max-w-3xl")
-
     ui.separator()
     ui.label("Extras").classes("text-base font-medium")
     for x in inst.extras:
@@ -250,7 +197,7 @@ def step_sound(ed: "Editor") -> None:
         ui.label("No extras (step 4).").classes("text-sm opacity-70")
 
     ui.separator()
-    ui.label("Envelope & controls").classes("text-base font-medium")
+    ui.label("Envelope").classes("text-base font-medium")
     with ui.row().classes("items-start gap-4"):
         ed.number("Attack", p, "attack", cast=float, min=0, max=10, step=0.01, suffix="s").classes("w-28")
         ed.number("Release", p, "release", cast=float, min=0, max=20, step=0.1, suffix="s").classes("w-28")
@@ -260,49 +207,239 @@ def step_sound(ed: "Editor") -> None:
 
         ui.number("Velocity sensitivity", value=p.vel_track, min=0, max=1, step=0.05, placeholder="auto",
                   on_change=vel_changed).classes("w-44").props('hint="empty: auto"')
-    with ui.row().classes("items-center gap-2"):
-        ui.label("Knobs:")
-        for key, label in CONTROLS.items():
-            if key == "lowcut" and not lowcut.applies(inst):
-                continue
 
-            def toggle(e: Any, key: str = key) -> None:
-                chosen = [c for c in CONTROLS if (c == key and e.value) or (c != key and c in p.controls)]
-                ed.set(p, "controls", chosen)
-
-            ui.checkbox(low_cut_name(inst) if key == "lowcut" else label, value=key in p.controls, on_change=toggle)
-    with ui.row().classes("items-start gap-4"):
-        ed.number("Tone default", p, "tone", cast=float, min=0, max=1, step=0.05).classes("w-28")
-        ed.number("Reverb default", p, "reverb", cast=float, min=0, max=1, step=0.05).classes("w-28")
-        ed.number("Chorus default", p, "chorus", cast=float, min=0, max=1, step=0.05).classes("w-28")
+    ui.separator()
+    ui.label("Controls").classes("text-base font-medium")
+    ui.label("The knobs in the instrument.").classes("text-xs opacity-70")
+    with ui.column().classes("gap-1"):
+        for key in CONTROLS:
+            if key in shown_controls(inst):
+                control_row(ed, key)
 
     ui.separator()
     ui.label("Look").classes("text-base font-medium")
+    background_field(ed)
     with ui.row().classes("items-start gap-4 w-full"):
-        ed.text("Background image (812 × 375 px, PNG or JPG)", p, "background",
-                placeholder="/path/to/background.png").classes("grow")
-        ed.text("Background colour", p, "bg_color").classes("w-40").props('hint="AARRGGBB"')
-        ed.text("Text colour", p, "text_color").classes("w-40").props('hint="AARRGGBB"')
+        colour_field(ed, "Background colour", "bg_color")
+        colour_field(ed, "Text colour", "text_color")
+        colour_field(ed, "Accent colour", "accent_color", "The knobs' lit arcs and the playable keys")
 
     @ui.refreshable
-    def preview() -> None:
-        ui.html(preview_html(ed), sanitize=False)
+    def look_preview() -> None:
+        ui.html(preview_html(ed), sanitize=False).classes("w-full")
 
-    preview()
-    ed.on_change_hooks.append(preview.refresh)
+    look_preview()
+    ed.on_change_hooks.append(look_preview.refresh)
+
+
+BACKGROUND_TYPES = {".png", ".jpg", ".jpeg"}
+
+
+def background_field(ed: "Editor") -> None:
+    """The background image: dropped or chosen, it's copied into the instrument's folder."""
+    inst, p = ed.inst, ed.inst.preset
+
+    @ui.refreshable
+    def current() -> None:
+        path = Path(p.background).expanduser() if p.background else None
+        if path is None:
+            ui.label("No background image: the background colour fills it.").classes("text-sm opacity-70")
+            return
+        with ui.row().classes("items-center gap-3"):
+            if path.is_file():
+                ui.label(path.name).classes("text-sm")
+            else:
+                ui.label(f"{path.name} is missing.").classes("text-sm text-orange-600")
+            ui.button("Remove", icon="close", on_click=remove).props("flat dense")
+
+    def remove() -> None:
+        old = Path(p.background).expanduser() if p.background else None
+        ed.set(p, "background", "")
+        # Only our own copy goes; an image picked elsewhere before stays where it is.
+        if old and old.parent == store.instrument_dir(inst.meta.slug) and old.stem == "background":
+            old.unlink(missing_ok=True)
+        current.refresh()
+
+    async def uploaded(e: Any) -> None:
+        suffix = Path(e.file.name).suffix.lower()
+        if suffix not in BACKGROUND_TYPES:
+            ui.notify("A background must be a PNG or JPG image.", type="warning")
+            return
+        folder = store.instrument_dir(inst.meta.slug)
+        for old in folder.glob("background.*"):
+            old.unlink()
+        dest = folder / f"background{suffix}"
+        await e.file.save(dest)
+        ed.set(p, "background", str(dest))
+        upload.reset()
+        current.refresh()
+
+    ui.label("Background image").classes("text-sm font-medium")
+    with ui.row().classes("items-start gap-4 w-full"):
+        upload = ui.upload(on_upload=uploaded, auto_upload=True, max_files=1,
+                           label="Drop a PNG or JPG here, or click +") \
+            .props('accept=".png,.jpg,.jpeg" flat bordered color=grey-8').classes("w-80")
+        with ui.column().classes("gap-1 pt-2"):
+            current()
+            ui.label("812 × 375 px; DecentSampler's keyboard covers its lower part.").classes("text-xs opacity-70")
+
+
+def cut_curve_svg(below: float, reduction_db: float, accent: str) -> str:
+    """The low cut over the frequencies around a note: how much quieter, against the share of its pitch."""
+    w, h, left, top, right, bottom = 240, 90, 40, 8, 8, 18
+    lo, hi = 0.25, 1.25
+    shares = [lo + (hi - lo) * i / 120 for i in range(121)]
+    depth = max(reduction_db, 1.0) + 2
+    db = lowcut.curve(below, reduction_db, shares)
+
+    def x(share: float) -> float:
+        return left + (share - lo) / (hi - lo) * (w - left - right)
+
+    def y(v: float) -> float:
+        return top - v / depth * (h - top - bottom)
+
+    line = " ".join(f"{x(sh):.1f},{y(v):.1f}" for sh, v in zip(shares, db))
+    colour = preview.css(accent)
+    grid = "".join(f"<line x1='{left}' x2='{w - right}' y1='{y(v):.1f}' y2='{y(v):.1f}' stroke='currentColor' "
+                   f"stroke-opacity='.15'/><text x='{left - 4}' y='{y(v) + 3:.1f}' text-anchor='end' font-size='9' "
+                   f"fill='currentColor' opacity='.6'>{v:g} dB</text>" for v in (0, -round(reduction_db)))
+    # The share's label goes above the curve when it would sit on the pitch's.
+    near = abs(below - 1.0) < 0.12
+    marks = "".join(f"<line x1='{x(sh):.1f}' x2='{x(sh):.1f}' y1='{top}' y2='{h - bottom}' stroke='currentColor' "
+                    f"stroke-opacity='{op}' stroke-dasharray='3 3'/><text x='{x(sh):.1f}' y='{ty}' "
+                    f"text-anchor='{anchor}' font-size='9' fill='currentColor' opacity='.7'>{label}</text>"
+                    for sh, label, op, ty, anchor in (
+                        (below, f"{below:.0%}", .35, top + 8 if near else h - 4, "end" if near else "middle"),
+                        (1.0, "pitch", .5, h - 4, "middle")))
+    return (f"<svg viewBox='0 0 {w} {h}' width='{w}' height='{h}' style='display:block'>{grid}{marks}"
+            f"<polyline points='{line}' fill='none' stroke='{colour}' stroke-width='2'/></svg>")
+
+
+def colour_field(ed: "Editor", label: str, attr: str, tooltip: str | None = None) -> None:
+    """A colour with a picker, and a reset to the default while it differs; the preset keeps it as
+    AARRGGBB, its alpha left as it was."""
+    from vinst.spec import Preset
+
+    p = ed.inst.preset
+    default = Preset.model_fields[attr].default
+
+    def changed(e: Any) -> None:
+        value = (e.value or "").strip().lstrip("#")
+        if len(value) == 6 and all(c in "0123456789abcdefABCDEF" for c in value):
+            ed.set(p, attr, getattr(p, attr)[:2] + value.upper())
+        reset.set_visibility(getattr(p, attr).upper() != default.upper())
+
+    def to_default() -> None:
+        ed.set(p, attr, default)
+        field.value = f"#{default[2:]}"
+
+    with ui.row().classes("items-center gap-0 no-wrap"):
+        field = ui.color_input(label, value=f"#{getattr(p, attr)[2:]}", on_change=changed, preview=True) \
+            .classes("w-44")
+        if tooltip:
+            field.tooltip(tooltip)
+        reset = ui.button(icon="restart_alt", on_click=to_default).props("flat round dense size=sm") \
+            .tooltip("Back to the default colour")
+        reset.set_visibility(getattr(p, attr).upper() != default.upper())
+
+
+def shown_controls(inst: "Instrument") -> list[str]:
+    """The controls that can do something in this instrument."""
+    out = []
+    for key in CONTROLS:
+        if key == "mix" and len(mixable_signals(inst)) < 2:
+            continue
+        if key == "noise" and not any(x.use == "release" for x in inst.extras):
+            continue
+        if key == "lowcut" and not lowcut.applies(inst):
+            continue
+        out.append(key)
+    return out
+
+
+# What each control does, in a line under its switch.
+CONTROL_TEXT = {
+    "mix": "Blends the signals, e.g. pickup and microphone.",
+    "tone": "Darkens the sound, as a lowpass filter does; the mod wheel moves it.",
+    "lowcut": "Makes the frequencies below each note's pitch quieter.",
+    "attack": "How long each note takes to fade in; starts at the envelope's attack. Not for plucked or "
+              "struck strings: it only softens the pluck.",
+    "release": "How long a note rings on after the key is let go; starts at the envelope's release.",
+    "reverb": "How much room is added.",
+    "chorus": "Thickens and widens the sound with slightly detuned copies of it.",
+    "noise": "How loud the release noises play, e.g. a finger leaving the string.",
+}
+
+
+def control_row(ed: "Editor", key: str) -> None:
+    """A control's switch; its settings, if it has any, slide open below it while it's on: below, not
+    beside, so they keep their width in a narrow column and take no room while closed."""
+    inst, p, proc = ed.inst, ed.inst.preset, ed.inst.processing
+    # The low cut is one thing: on, its samples are cut and the knob blends back to the uncut ones.
+    on = proc.low_cut if key == "lowcut" else key in p.controls
+
+    def switched(e: Any) -> None:
+        if key == "lowcut":
+            ed.set(proc, "low_cut", e.value)
+        else:
+            ed.set(p, "controls", [c for c in CONTROLS if (c == key and e.value) or (c != key and c in p.controls)])
+        if settings is not None:
+            settings.set_open(e.value)
+
+    name = CONTROLS[key]
+    settings = None
+    with ui.column().classes("gap-0 py-1"):
+        ui.switch(name, value=on, on_change=switched)
+        ui.label(CONTROL_TEXT[key]).classes("text-xs opacity-70 pl-12 -mt-2")
+        if key in ("lowcut", "tone", "reverb", "chorus"):
+            with Collapse(on, inner_classes="flex flex-col gap-1 pl-12 pt-2") as settings:
+                with ui.row().classes("items-center gap-2"):
+                    if key == "lowcut":
+                        ui.number("Below", value=round(proc.low_cut_below * 100), min=30, max=100, step=5,
+                                  precision=0, suffix="% of the pitch",
+                                  on_change=lambda e: e.value and ed.set(proc, "low_cut_below",
+                                                                         float(e.value) / 100)).classes("w-40")
+                        ed.number("By", proc, "low_cut_db", cast=float, min=1, max=40, step=1,
+                                  suffix="dB").classes("w-24")
+
+                        @ui.refreshable
+                        def drawn() -> None:
+                            ui.html(cut_curve_svg(proc.low_cut_below, proc.low_cut_db,
+                                                  inst.preset.accent_color), sanitize=False)
+
+                        drawn()
+                        ed.on_change_hooks.append(drawn.refresh)
+                    else:
+                        ed.number("Starts at", p, key, cast=float, min=0, max=1, step=0.05).classes("w-28")
+                    if key == "reverb":
+                        ed.number("Room size", p, "reverb_room", cast=float, min=0, max=1, step=0.05) \
+                            .classes("w-28").tooltip("Bigger rooms ring longer")
+                        ed.number("Damping", p, "reverb_damping", cast=float, min=0, max=1, step=0.05) \
+                            .classes("w-28").tooltip("How fast the reverb loses its highs: more is warmer, and keeps "
+                                                     "a pluck's click from ringing on as a hiss")
+                if key == "lowcut":
+                    ui.label("E.g. the low resonance of a ukulele's body that rings on after the pluck; the note itself, from its pitch up, "
+                             "stays as it is. A curve, not a step, as drawn: the full amount well below the share "
+                             "set, less towards it, almost nothing at the pitch. The knob blends "
+                             "between the samples as recorded (0 %) and with this cut (100 %, where it starts). "
+                             "Applied when building, so no slicing is needed; the instrument then also carries "
+                             "what was cut out. Loudness is evened out for the full cut, so notes with much "
+                             "low resonance play louder with the knob turned down.").classes("text-xs opacity-70 max-w-3xl")
 
 
 def extra_row(ed: "Editor", x: Extra) -> None:
-    with ui.row().classes("items-start gap-4"):
-        ui.label(x.name).classes("w-48 mt-4")
+    with ui.column().classes("gap-0"):
+        with ui.row().classes("items-center gap-4 no-wrap"):
+            ui.label(x.name).classes("w-48")
 
-        def use_changed(e: Any) -> None:
-            ed.set(x, "use", e.value)
-            key.set_open(e.value == "key")
+            def use_changed(e: Any) -> None:
+                ed.set(x, "use", e.value)
+                key.set_open(e.value == "key")
 
-        ui.select({"release": "Play on key release", "key": "Own key", "off": "Don't use"}, value=x.use,
-                  label="Use", on_change=use_changed).classes("w-52")
-        with Collapse(x.use == "key", axis="x", inner_classes="flex items-start gap-4 no-wrap") as key:
+            ui.select({"release": "Play on key release", "key": "Own key", "off": "Don't use"}, value=x.use,
+                      label="Use", on_change=use_changed).classes("w-52")
+        # Below the row, not beside it: closed, it takes no room even where the row would wrap.
+        with Collapse(x.use == "key", inner_classes="flex items-start gap-4 pl-52 pt-2") as key:
             ed.note("Key", x, "key").classes("w-28")
             ui.switch("Stops ringing notes", value=x.mutes, on_change=lambda e: ed.set(x, "mutes", e.value)) \
                 .classes("mt-2").tooltip("As a chuck mutes the strings: playing it fades out the notes still ringing")
@@ -419,8 +556,10 @@ def step_build(ed: "Editor") -> None:
         except ValueError as e:
             ui.notify(str(e), type="warning", multi_line=True)
             return
+        # DecentSampler keeps a loaded instrument's samples in memory: an open one plays the old ones.
         ui.notify(f"Installed to {target}. In DecentSampler, open it from the library browser "
-                  "(rescan the folder if it doesn't show up).", type="positive", multi_line=True)
+                  "(rescan the folder if it doesn't show up). If it's open already, restart DecentSampler "
+                  "to hear the new samples.", type="positive", multi_line=True)
 
     async def do_package() -> None:
         path = await run.io_bound(bundle.package, inst, state["result"].bundle)

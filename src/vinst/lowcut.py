@@ -1,7 +1,7 @@
-"""Lowering what lies below a note's own pitch, e.g. the thump of a pluck on a ukulele's body.
+"""Lowering what lies below a note's own pitch, e.g. a ukulele body's low resonance after a pluck.
 
 A plucked string sounds at its pitch and above; what's below in its first moments is the pluck
-exciting the body. A fixed filter can't separate the two over a whole range, as the thump of a high
+exciting the body. A fixed filter can't separate the two over a whole range, as the resonance under a high
 note lies where the pitch of a low one is, so the cut follows each note.
 """
 
@@ -50,6 +50,18 @@ def removed(audio: np.ndarray, sr: int, midi: float, below: float, reduction_db:
     sos = butter(ORDER, cut, btype="lowpass", fs=sr, output="sos")
     taken = (1 - 10 ** (-reduction_db / 20)) * sosfiltfilt(sos, audio, axis=0)
     return audio - taken, taken
+
+
+def curve(below: float, reduction_db: float, shares: list[float]) -> list[float]:
+    """How much quieter the cut makes each frequency, in dB (0 or less), at `shares` of the note's
+    pitch; the same for every note, as the cut follows the pitch."""
+    from scipy.signal import sosfreqz
+
+    sr, pitch = 48000, 1000.0
+    sos = butter(ORDER, below * pitch, btype="lowpass", fs=sr, output="sos")
+    _, h = sosfreqz(sos, worN=[x * pitch for x in shares], fs=sr)
+    gain = 1 - (1 - 10 ** (-reduction_db / 20)) * np.abs(h) ** 2  # filtered both ways: |H|²
+    return [float(20 * np.log10(max(g, 1e-6))) for g in gain]
 
 
 def loudness_change(path: Path, midi: float, below: float, reduction_db: float) -> tuple[float, float]:

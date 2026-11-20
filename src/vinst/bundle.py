@@ -12,7 +12,7 @@ from pathlib import Path
 from vinst import level, lowcut, preset, review, sf2, store
 from vinst.review import Manifest
 from vinst.plan import slicing_setup
-from vinst.slicing import changed_takes, cut_in_samples
+from vinst.slicing import changed_takes, cut_in_samples, edited_takes, recut
 from vinst.spec import Instrument
 from vinst.validate import Report, validate_bundle
 
@@ -149,7 +149,7 @@ def after_low_cut(inst: Instrument, manifest: Manifest, step: Callable[[int, int
 
 
 # Share of a build's time per stage, roughly, for its progress bar: (stage, where it starts, where it ends).
-STAGES = {"measure": ("Measuring the low cut", 0.0, 0.3), "samples": ("Writing samples", 0.3, 0.85),
+STAGES = {"recut": ("Updating edited recordings", 0.0, 0.1), "measure": ("Measuring the low cut", 0.1, 0.3), "samples": ("Writing samples", 0.3, 0.85),
           "soundfont": ("Writing the soundfont", 0.85, 0.95), "validate": ("Validating", 0.95, 1.0)}
 
 
@@ -173,15 +173,26 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
         raise ValueError("Fix these first: " + " ".join(problems))
     if manifest.setup != slicing_setup(inst):
         raise ValueError(STALE_MESSAGE + " Slice again in the worksheet (step 5).")
+    # Recordings edited without moving a hit (e.g. an EQ) need no slicing: they're cut where they were.
+    edited = edited_takes(inst, manifest)
+    recut_info = []
+    if edited:
+        step = stage("recut")
+        manifest = recut(inst, manifest, edited, lambda i, n, _title: step(i, n))
+        review.save(manifest, store.manifest_path(inst.meta.slug))
+        titles = [t.title for t in manifest.takes if t.key in edited]
+        recut_info.append(f"Edited since slicing, so cut again where they were cut: {', '.join(titles[:3])}"
+                          + (f" and {len(titles) - 3} more." if len(titles) > 3 else "."))
     changed = changed_takes(inst, manifest)
     if changed:
         raise ValueError(changed_message(changed) + " Slice them in the worksheet (step 5) to use them.")
     cutting = low_cut_now(inst, manifest)
-    # The cut changes how loud a note is (its thump goes), so evening out and the level work with the
+    # The cut changes how loud a note is (its low resonance goes), so evening out and the level work with the
     # loudness after it: measured here, as the cut is applied here.
     mapping = preset.map_samples(inst, after_low_cut(inst, manifest, stage("measure")) if cutting else manifest)
     if not mapping.notes:
         raise ValueError("No usable hits: record and slice some notes first.")
+    mapping.info[:0] = recut_info
     if cut_in_samples(manifest):
         mapping.warnings.append("The sliced samples still have the low cut they were sliced with, so changes to it "
                                 "don't apply; slice them again (step 5) once and it's applied when building.")
@@ -198,7 +209,7 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
     gains.update({e.file: mapping.gain_db + e.volume_db for e in mapping.notes})
     p = inst.processing
     low_cuts = {e.file: (float(e.root), p.low_cut_below, p.low_cut_db) for e in mapping.notes} if cutting else {}
-    if cutting and "lowcut" in inst.preset.controls:
+    if cutting:  # with the knob, which blends back to the uncut samples
         for e in mapping.notes:
             e.removed = removed_name(e.file)
     limited = sync_raised({f: samples_src / f for f in mapping.files}, gains, bundle / preset.SAMPLES_DIR,

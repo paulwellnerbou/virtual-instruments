@@ -179,7 +179,7 @@ class Processing(BaseModel):
     # Sustain loops: from loop markers in the takes (e.g. set in WaveLab), else found automatically.
     loops: bool = False
     loop_crossfade_ms: float = Field(default=30.0, ge=0, le=500)
-    # Lowers what lies below each note's pitch, e.g. a pluck's thump (see vinst.lowcut); applied when
+    # Lowers what lies below each note's pitch, e.g. a body's low resonance (see vinst.lowcut); applied when
     # building, to the bundle's copies of the samples, so changing it needs no slicing.
     low_cut: bool = False
     low_cut_below: float = Field(default=0.75, ge=0.3, le=1.0, description="share of the note's pitch")
@@ -219,13 +219,18 @@ class Preset(BaseModel):
     # Bring every sample of a velocity to its median loudness (see preset.balance_corrections).
     balance: bool = False
     balance_max_db: float = Field(default=18.0, ge=0.5, le=30)
-    controls: list[str] = ["mix", "tone", "lowcut", "release", "reverb", "noise"]
+    controls: list[str] = ["mix", "tone", "release", "reverb", "noise"]  # the low cut's: see Processing.low_cut
     tone: float = Field(default=1.0, ge=0, le=1)
     reverb: float = Field(default=0.15, ge=0, le=1)
+    reverb_room: float = Field(default=0.7, ge=0, le=1)
+    # How fast the reverb's tail loses its highs. DecentSampler's own 0.3 lets a pluck's click ring on
+    # as a hiss; 0.6 sounds like a furnished room.
+    reverb_damping: float = Field(default=0.6, ge=0, le=1)
     chorus: float = Field(default=0.0, ge=0, le=1)
     background: str = ""  # image file; empty means a plain colour
     bg_color: str = "FF1F2328"
     text_color: str = "FFFFFFFF"
+    accent_color: str = "FFE0A458"  # the knobs' lit arc and the playable keys
 
 
 class Instrument(BaseModel):
@@ -268,7 +273,7 @@ class Instrument(BaseModel):
         for c in self.preset.controls:
             if c not in CONTROLS:
                 out.append(f"Unknown control “{c}”.")
-        for color in (self.preset.bg_color, self.preset.text_color):
+        for color in (self.preset.bg_color, self.preset.text_color, self.preset.accent_color):
             if not re.fullmatch(r"[0-9A-Fa-f]{8}", color):
                 out.append(f"Colour “{color}” must be 8 hex digits (AARRGGBB).")
         keys = [x.key for x in self.extras if x.use == "key"]

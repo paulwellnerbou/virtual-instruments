@@ -36,7 +36,7 @@ from vinst.plan import (
 from vinst.slicing import SUBTYPES
 from vinst.review import FLAGS, Hit, Manifest, TakeResult, check_lanes, lane_of, settle
 from vinst.spec import SAFE_NAME as SAFE_LANE, NoteLanes
-from vinst.ui import form, recording
+from vinst.ui import form, open_with, recording
 from vinst.ui.anim import Collapse
 from vinst.ui.finder import can_choose_folder, choose_folder, ensure_folder, reveal
 
@@ -503,12 +503,13 @@ def settings_cards(ed: "Editor") -> None:
                           suffix="ms crossfade").props("dense outlined").classes("w-40")
 
 
+
 def step_worksheet(ed: "Editor") -> None:
     inst = ed.inst
     slug = inst.meta.slug
     path = store.manifest_path(slug)
     state: dict[str, Any] = {"manifest": None, "problems_only": False, "busy": False,
-                             "progress": 0.0, "label": "", "stale": None}
+                             "progress": 0.0, "label": "", "stale": None, "edited": []}
     ui.add_css(CSS)
     ui.add_body_html(f"<script>{JS}</script>")
     try:
@@ -784,6 +785,22 @@ def step_worksheet(ed: "Editor") -> None:
                 ui.button("Move this recording…", on_click=lambda: move_take(take)) \
                     .props("flat dense no-caps size=sm") \
                     .tooltip("E.g. when it was played on the wrong note: all its hits go along")
+            edit_buttons(take)
+
+    def edit_buttons(take: TakeResult) -> None:
+        """Open the recording, e.g. in an audio editor; slicing again then picks up what was changed."""
+        folder = Path(rec.takes_dir).expanduser()
+
+        def files() -> list[Path]:
+            return [folder / f for f in take.files if (folder / f).is_file()]
+
+        def editing(paths: list[Path]) -> None:
+            for f in paths:
+                takes_meta.editing(slug, f)
+
+        open_with.open_button(files, "Opens the recording, e.g. in your audio editor to take out a click; slice it "
+                              "again afterwards. Edit the recording, not the sliced samples: slicing writes those "
+                              "anew.", before=editing)
 
     def open_recording(take: TakeResult) -> None:
         """A recording in which no hit was found: mark the one that was played by hand, or move it."""
@@ -1268,7 +1285,58 @@ def step_worksheet(ed: "Editor") -> None:
         if slicing.sliced_cleanup(inst, manifest) != slicing.cleanup_setup(inst) and manifest.source == "takes":
             return CLEANUP_MESSAGE
         changed = slicing.changed_takes(inst, manifest)
-        return changed_message(changed) if changed else ""
+        state["edited"] = []
+        if not changed:
+            return ""
+        # Edited without moving a hit (e.g. an EQ): cut again where they were, no slicing needed.
+        edited = slicing.edited_takes(inst, manifest)
+        titles = sorted({t.title for t in manifest.takes if t.key in edited})
+        if edited and set(changed) <= set(titles):
+            state["edited"] = edited
+            names = ", ".join(titles[:3]) + (f" and {len(titles) - 3} more" if len(titles) > 3 else "")
+            return (f"Edited since slicing: {names}. Building cuts {'it' if len(titles) == 1 else 'them'} again "
+                    "where it was cut and keeps your decisions; Update them does it now, to listen here.")
+        return changed_message(changed)
+
+    async def update_edited() -> None:
+        """Cut the edited recordings again where they were cut (see slicing.recut)."""
+        while state["busy"]:
+            await asyncio.sleep(0.1)
+        keys = list(state["edited"])
+        if not keys or not still_there() or state["manifest"] is None:
+            return
+        state["busy"] = True
+        button.disable()
+        progress_box.set_open(True)
+
+        def report(i: int, n: int, title: str) -> None:
+            state["progress"], state["label"] = (i / n if n else 1), f"{i}/{n} · {title}"
+
+        try:
+            manifest = await run.io_bound(slicing.recut, inst.model_copy(deep=True), state["manifest"], keys, report)
+        except Exception as e:  # unexpected I/O or audio errors: show them instead of failing silently
+            ui.notify(f"Updating failed: {e}", type="negative", multi_line=True)
+        else:
+            review.save(manifest, path)
+            state["manifest"] = manifest
+            state["stale"] = None
+            results.refresh()
+            ui.notify(f"{len(keys)} edited recording{'' if len(keys) == 1 else 's'} cut again where "
+                      f"{'it was' if len(keys) == 1 else 'they were'} cut.", type="positive")
+        finally:
+            state["busy"] = False
+            button.enable()
+            progress_box.set_open(False)
+            state["label"] = ""
+
+    def recheck() -> None:
+        """Notices recordings changed on disk, e.g. edited in another application, while the page is open."""
+        if state["busy"] or importing or not still_there():
+            return
+        now = pending(state["manifest"])
+        if now != state["stale"]:
+            state["stale"] = now
+            overview.refresh()
 
     @ui.refreshable
     def overview() -> None:
@@ -1278,16 +1346,20 @@ def step_worksheet(ed: "Editor") -> None:
             state["stale"] = pending(manifest)
         # Only offered when something needs it: takes recorded here are sliced right away.
         button.set_visibility(importing or bool(state["stale"]))
+        if not importing:
+            button.set_text("Update them" if state["edited"] else "Slice them")
+            button.props(f"icon={'sync' if state['edited'] else 'content_cut'}")
         if state["stale"]:
             ui.label("⚠ " + state["stale"]).classes("text-sm text-orange-600")
 
     # Buttons and the switch stay out of the redrawn parts: the switch keeps its animation.
-    # One line that never wraps: a long message wraps within its own column, and the progress bar fills
-    # the rest with the take's name on one line of its own below it, so nothing moves as names change.
+    # The message gets a line of its own, however long; below it the button, and the progress bar
+    # filling the rest with the take's name on one line of its own, so nothing moves as names change.
+    overview_box = ui.column().classes("gap-0 w-full")
     with ui.row().classes("items-center gap-4 w-full no-wrap"):
-        overview_box = ui.column().classes("gap-0 min-w-0 shrink")
         button = ui.button("Import & analyse" if importing else "Slice them",
-                           icon="file_download" if importing else "content_cut", on_click=lambda: slice_all()) \
+                           icon="file_download" if importing else "content_cut",
+                           on_click=lambda: update_edited() if state["edited"] else slice_all()) \
             .classes("shrink-0")
         with Collapse(False, axis="x", inner_classes="flex flex-col gap-1 min-w-0") as progress_box:
             progress = ui.linear_progress(value=0, show_value=False).classes("w-full")
@@ -1322,3 +1394,4 @@ def step_worksheet(ed: "Editor") -> None:
 
     results()
     ed.on_change_hooks.append(spec_changed)
+    ui.timer(3.0, recheck)

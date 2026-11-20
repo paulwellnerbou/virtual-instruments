@@ -3,7 +3,8 @@
 Slicing uses the click grid of takes recorded in the app to tell hits from handling noise: a piezo
 hears every touch of the instrument. Cuts set by hand replace the found ones. Both are kept per
 instrument, keyed by file name, and only used while the file's size and modification time match,
-so a take replaced from a DAW is sliced without them.
+so a take replaced from a DAW is sliced without them. A take opened for editing from the app keeps
+them as long as its length stays the same: a click taken out moves no hit.
 """
 
 import json
@@ -34,13 +35,51 @@ def _save(slug: str, data: dict) -> None:
     target.write_text(json.dumps(data, indent=1), encoding="utf-8")
 
 
+def _shape(path: Path) -> list[int]:
+    """[frames, sample rate]: what an edit that moves no hit leaves as it was."""
+    import soundfile as sf
+
+    info = sf.info(str(path))
+    return [int(info.frames), int(info.samplerate)]
+
+
 def _entry(slug: str, path: Path) -> dict | None:
-    """The file's entry, if it's still the file it was made for."""
+    """The file's entry, if it's still the file it was made for, or that file edited in place."""
+    data = _load(slug)
+    entry = data.get(path.name)
+    if not entry:
+        return None
+    try:
+        stamp = _stamp(path)
+        if entry.get("stamp") == stamp:
+            return entry
+        if entry.get("editing") != _shape(path):
+            return None
+    except (OSError, RuntimeError):  # gone, or not audio any more
+        return None
+    entry["stamp"] = stamp
+    _save(slug, data)
+    return entry
+
+
+def recorded_now(slug: str, path: Path) -> bool:
+    """Whether the file is as the app recorded it: a new recording, not one edited elsewhere."""
     entry = _load(slug).get(path.name)
     try:
-        return entry if entry and entry.get("stamp") == _stamp(path) else None
+        return bool(entry) and entry.get("stamp") == _stamp(path) and "editing" not in entry
     except OSError:
-        return None
+        return False
+
+
+def editing(slug: str, path: Path) -> None:
+    """The file is about to be edited elsewhere: its grid and hand cuts stay while its length does."""
+    data = _load(slug)
+    entry = _entry(slug, path)
+    if entry is None:
+        return
+    entry["editing"] = _shape(path)
+    data[path.name] = entry
+    _save(slug, data)
 
 
 def save(slug: str, path: Path, hits_at: list[float]) -> None:

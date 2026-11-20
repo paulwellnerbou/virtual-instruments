@@ -8,7 +8,7 @@ import pytest
 import soundfile as sf
 from lxml import etree
 
-from vinst import bundle, defaults, review, store, takes_meta
+from vinst import bundle, defaults, review, slicing, store, takes_meta
 from vinst.plan import combined_base, more_file, plan_takes
 from vinst.slicing import changed_takes, cut_points, on_grid, process, process_one
 from vinst.spec import InstrumentType, NoteLanes
@@ -124,7 +124,9 @@ def test_takes_recorded_again_are_noticed_before_building(uke):
     review.save(process(uke), store.manifest_path(uke.meta.slug))
     manifest = review.load(store.manifest_path(uke.meta.slug))
     assert changed_takes(uke, manifest) == []
-    os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 10**9))  # recorded again
+    # Recorded again, outside the app: the same length, another performance.
+    sf.write(path, take_audio(take, (0.2, 0.25), seed=99), SR, subtype="PCM_24")
+    os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 10**9))
     assert changed_takes(uke, manifest) == [take.title]
     with pytest.raises(ValueError, match="Recorded or changed since slicing"):
         bundle.build(uke)
@@ -456,3 +458,26 @@ def test_a_new_take_is_sliced_with_all_others_while_they_carry_the_old_low_cut(u
     write(uke, f.files[0], take_audio(f, (0.6, 0.62)), grid=[0.5, 3.5])
     again = process_one(uke, m, f.key)
     assert again.cleanup == "" and result(again, f.key).hits  # all sliced again, none cut
+
+
+def test_a_take_edited_without_moving_a_hit_is_cut_where_it_was_when_building(uke):
+    from scipy.signal import butter, sosfiltfilt
+
+    take = lane(uke, "p")
+    path = write(uke, take.files[0], take_audio(take, (0.2, 0.25)))
+    sliced = process(uke)
+    result(sliced, take.key).hits[1].rejected = True  # a decision made in the worksheet
+    review.save(sliced, store.manifest_path(uke.meta.slug))
+    before = [(h.start, h.end) for h in result(sliced, take.key).hits]
+    # An EQ in an audio editor: same length, same performance, other sound.
+    audio, _ = sf.read(path)
+    sf.write(path, 0.8 * sosfiltfilt(butter(2, 3000, "lowpass", fs=SR, output="sos"), audio), SR, subtype="PCM_24")
+    os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 10**9))
+    manifest = review.load(store.manifest_path(uke.meta.slug))
+    assert slicing.edited_takes(uke, manifest) == [take.key]
+    built = bundle.build(uke)  # no slicing asked for
+    assert any("cut again where they were cut" in line for line in built.info)
+    after = review.load(store.manifest_path(uke.meta.slug))
+    again = result(after, take.key)
+    assert [(h.start, h.end) for h in again.hits] == before and again.hits[1].rejected
+    assert slicing.changed_takes(uke, after) == []

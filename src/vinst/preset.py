@@ -8,7 +8,6 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 from lxml import etree
 
-from vinst import lowcut
 from vinst.plan import Pass, Take, lane_bounds, note_lanes, plan_takes, recording_passes
 from vinst.review import Hit, Manifest, lane_of
 from vinst.spec import (CONTROLS, FX_TAG, LOW_TAG, NOTES_TAG, RELEASE_TAG, SUSTAINED_TYPES, Instrument, Signal,
@@ -19,8 +18,12 @@ UI_W, UI_H = 812, 375
 # DecentSampler draws its keyboard over the lower part of the UI; only about the top 215 px
 # stay visible, which is why the official presets keep their controls above y=200.
 VISIBLE_H = 215
-KNOB_W, KNOB_H, KNOB_GAP = 90, 90, 6
-KNOB_Y = 100
+KNOB_W, KNOB_H, KNOB_GAP = 84, 84, 14
+KNOB_Y = 104
+MARGIN = 32
+KNOB_STYLE = "vinst"
+MENU_W = 240
+EXTRA_KEY_RGB = "7FB3D5"  # keys of the extras, apart from the notes' accent
 SAMPLES_DIR = "Samples"
 # Tone knob: 0..1 -> lowpass cutoff in Hz, as in the official Decent Sampler presets.
 TONE_TABLE = "0,33;0.3,150;0.4,450;0.5,1100;0.7,4100;0.9,11000;1.0001,22000"
@@ -342,23 +345,42 @@ class Knob:
     tooltip: str | None = None
 
 
-def low_cut_name(inst: Instrument) -> str:
-    """The Low cut knob's name: on a plucked or struck instrument, what it's for."""
-    from vinst.spec import InstrumentType
-
-    plucked = inst.meta.type in (InstrumentType.PLUCKED, InstrumentType.PITCHED_PERCUSSION)
-    return "Thump cut" if plucked else CONTROLS["lowcut"]
-
-
 def knob_layout(n: int) -> tuple[float, float, int]:
-    """(x of the first knob, distance between knobs, knob size) for a right-aligned row.
+    """(x of the first knob, distance between knobs, knob size) for a row centred under the title.
 
     Knobs shrink when there are too many to fit next to each other: there is no second row,
     because DecentSampler's keyboard covers everything below the first one.
     """
-    step = min(KNOB_W + KNOB_GAP, (UI_W - 32) / max(n, 1))
+    step = min(KNOB_W + KNOB_GAP, (UI_W - 2 * MARGIN) / max(n, 1))
     size = int(min(KNOB_W, step - KNOB_GAP))
-    return UI_W - 16 - n * step, step, size
+    return (UI_W - n * step) / 2 + (step - size) / 2, step, size
+
+
+def title_width(with_menu: bool) -> int:
+    """The title's width: up to the passes menu, if the instrument has one, at the top right."""
+    return UI_W - 2 * MARGIN - (MENU_W + 16 if with_menu else 0)
+
+
+def pale(argb: str, share: float) -> str:
+    """`argb` mixed into white, `share` of it: a tint that is opaque."""
+    rgb = [int(argb[i:i + 2], 16) for i in (2, 4, 6)]
+    return "FF" + "".join(f"{round(255 + (c - 255) * share):02X}" for c in rgb)
+
+
+def knob_style(accent: str, text: str) -> etree._Element:
+    """A knob DecentSampler draws itself (1.43+): a dark cap with a pointer, on a faint track that
+    lights up in the accent colour up to the value; the value shows on the cap while hovered."""
+    rgb = accent[2:]
+    style = etree.Element("knobStyle", id=KNOB_STYLE, startAngle="-135", endAngle="135")
+    _el(style, "arc", r=46.0, width=6.0, color="22FFFFFF", cap="round")  # the whole sweep
+    lit = _el(style, "arc", r=46.0, width=6.0, color=accent, to="value", cap="round")
+    _el(lit, "glow", radius=3.0, color=f"55{rgb}")
+    cap = _el(style, "circle", r=34.0, fill="FF353A42", fill2="FF1B1E23", gradient="linear")
+    _el(cap, "shadow", dy=2.0, blur=4.0, color="AA000000")
+    _el(cap, "bevel", depth=1.0)
+    _el(style, "pointer", shape="rounded", r1=14.0, r2=30.0, width=5.0, color=text, show="notHover")
+    _el(style, "text", showValue="true", size=15.0, color=text, show="hover")
+    return style
 
 
 def switched_passes(inst: Instrument) -> list[Pass]:
@@ -374,8 +396,11 @@ def mixable_signals(inst: Instrument) -> list[Signal]:
 
 
 def active_controls(inst: Instrument, mapping: Mapping) -> list[str]:
+    """The knobs, in CONTROLS order; the low cut's comes with the low cut (see bundle.build)."""
     out = []
-    for c in inst.preset.controls:
+    for c in CONTROLS:
+        if c not in inst.preset.controls and c != "lowcut":
+            continue
         if c == "mix" and len(mixable_signals(inst)) < 2:
             continue
         if c == "noise" and not mapping.release:
@@ -412,12 +437,11 @@ def knobs_for(inst: Instrument, controls: list[str], effects: list[str]) -> list
                      parameter="FX_FILTER_FREQUENCY", translation="table", translationTable=TONE_TABLE)]))
         elif c == "lowcut":
             # 0 %: as recorded, 100 %: the cut set when building; between, a blend of the two.
-            knobs.append(Knob("lowcut", f"{low_cut_name(inst)} %", 0, 100, 100, [  # a knob shows a bare number
+            knobs.append(Knob("lowcut", f"{CONTROLS[c]} %", 0, 100, 100, [  # a knob shows a bare number
                 dict(type="amp", level="tag", identifier=LOW_TAG, parameter="AMP_VOLUME", translation="table",
                      translationTable="0,1;100,0;100.001,0")],
-                tooltip=("The thump" if low_cut_name(inst) == "Thump cut" else "What lies")
-                + f" below each note's pitch: 0 % as recorded, 100 % lowered by the "
-                  f"{inst.processing.low_cut_db:g} dB set when building"))
+                tooltip=f"The low resonance below each note's pitch, e.g. of the body after a pluck: 0 % as "
+                        f"recorded, 100 % quieter by the {inst.processing.low_cut_db:g} dB set when building"))
         elif c == "attack":
             knobs.append(Knob("attack", CONTROLS[c], 0, 2, p.attack, [
                 dict(type="amp", level="instrument", position=0, parameter="ENV_ATTACK")]))
@@ -468,12 +492,21 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
     ui = _el(root, "ui", **ui_attrs)
     tab = _el(ui, "tab", name="main")
     ui_index = 0
-    _el(tab, "label", x=20, y=14, width=520, height=36, text=meta.name, textSize=26, textColor=p.text_color,
-        hAlign="left")
-    ui_index += 1
+    _el(ui, "controlStyles").append(knob_style(p.accent_color, p.text_color))
     switched = switched_passes(inst)
+    title_w = title_width(bool(switched))
+    _el(tab, "label", x=MARGIN, y=20, width=title_w, height=36, text=meta.name, textSize=28,
+        textColor=p.text_color, hAlign="left")
+    ui_index += 1
+    if meta.author:
+        _el(tab, "label", x=MARGIN, y=54, width=title_w, height=20, text=f"by {meta.author}",
+            textSize=13, textColor=f"99{p.text_color[2:]}", hAlign="left")
+        ui_index += 1
+    # A hairline under the title, so the knobs sit in a panel of their own.
+    _el(tab, "line", x1=MARGIN, y1=84, x2=UI_W - MARGIN, y2=84, lineColor="1FFFFFFF", lineThickness=1.0)
+    ui_index += 1
     if switched:
-        menu = _el(tab, "menu", x=20, y=58, width=240, height=26, value=1, textColor=p.text_color,
+        menu = _el(tab, "menu", x=UI_W - MARGIN - MENU_W, y=26, width=MENU_W, height=26, value=1, textColor=p.text_color,
                    tooltip="Which recording to play")
         for chosen in switched:
             option = _el(menu, "option", name=chosen.name)
@@ -486,19 +519,22 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
     x0, step, size = knob_layout(len(knobs))
     for i, k in enumerate(knobs):
         el = _el(tab, "labeled-knob", x=round(x0 + i * step), y=KNOB_Y,
-                 width=size, height=size, label=k.label, textSize=14, type="float", minValue=float(k.lo),
-                 maxValue=float(k.hi), value=float(k.value), textColor=p.text_color,
-                 trackForegroundColor=p.text_color, trackBackgroundColor="44FFFFFF", tooltip=k.tooltip)
+                 width=size, height=size, label=k.label, textSize=13, type="float", minValue=float(k.lo),
+                 maxValue=float(k.hi), value=float(k.value), textColor=f"CC{p.text_color[2:]}",
+                 trackForegroundColor=p.accent_color, trackBackgroundColor="22FFFFFF", tooltip=k.tooltip,
+                 controlStyle=KNOB_STYLE, tags=f"knob-{k.key}")
         for b in k.bindings:
             _el(el, "binding", **b)
         knob_index[k.key] = ui_index
         ui_index += 1
     if mapping.span or mapping.fx_keys:
-        kb = _el(ui, "keyboard")
+        # A tint, not a fill: the keys stay keys, the playable ones warmer than the rest. (The keyboard
+        # ignores a colour's alpha, so the tint is mixed in.)
+        kb = _el(ui, "keyboard", centerNote=sum(mapping.span) // 2 if mapping.span else None)
         if mapping.span:
-            _el(kb, "color", loNote=mapping.span[0], hiNote=mapping.span[1], color="FF2A9D8F")
+            _el(kb, "color", loNote=mapping.span[0], hiNote=mapping.span[1], color=pale(p.accent_color, 0.4))
         for key in mapping.fx_keys:
-            _el(kb, "color", loNote=key, hiNote=key, color="FFE9A23B")
+            _el(kb, "color", loNote=key, hiNote=key, color=pale(f"FF{EXTRA_KEY_RGB}", 0.6))
 
     vel_track = p.vel_track if p.vel_track is not None else (0.3 if len(inst.dynamics.layers) > 1 else 0.8)
     groups = _el(root, "groups", attack=float(p.attack), decay=25.0, sustain=1.0, release=float(p.release),
@@ -559,15 +595,17 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
         elif name == "chorus":
             _el(fx, "effect", type="chorus", mix=float(p.chorus))
         elif name == "reverb":
-            _el(fx, "effect", type="reverb", wetLevel=float(p.reverb))
+            _el(fx, "effect", type="reverb", wetLevel=float(p.reverb), roomSize=float(p.reverb_room),
+                damping=float(p.reverb_damping))
 
-    # Not the low cut: at rest, the wheel would bring all the thump back.
+    # Not the low cut: at rest, the wheel would bring all the low end back.
     cc_target = "tone" if "tone" in knob_index else next((k for k in knob_index if k != "lowcut"), None)
     if cc_target is not None:
         target = next(k for k in knobs if k.key == cc_target)
         midi = _el(root, "midi")
         cc = _el(midi, "cc", number=1)
-        _el(cc, "binding", level="ui", type="control", position=knob_index[cc_target], parameter="VALUE",
+        # By its tag, not its position: what counts as a position (labels, lines) isn't spelled out.
+        _el(cc, "binding", level="ui", type="control", controlTags=f"knob-{cc_target}", parameter="VALUE",
             translation="linear", translationOutputMin=float(target.lo), translationOutputMax=float(target.hi))
 
     tags_el = _el(root, "tags")

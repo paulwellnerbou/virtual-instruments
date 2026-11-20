@@ -279,7 +279,9 @@ def test_tone_default_sets_the_filter_and_cc_follows_knob_range(built):
 def test_many_knobs_fit_in_one_row():
     for n in range(1, 13):
         x0, step, size = preset.knob_layout(n)
-        assert x0 >= 16 - 1e-9 and x0 + n * step <= preset.UI_W - 16 + 1e-9 and size > 0
+        last = x0 + (n - 1) * step + size
+        assert x0 >= preset.MARGIN - 1e-9 and last <= preset.UI_W - preset.MARGIN + 1e-9 and size > 0
+        assert x0 == pytest.approx(preset.UI_W - last)  # centred
     assert preset.knob_layout(5)[2] == preset.KNOB_W
 
 
@@ -388,11 +390,10 @@ def test_the_low_cut_knob_blends_the_uncut_and_the_cut_sample(built, monkeypatch
     inst, manifest = built
     inst.processing.low_cut = True
     monkeypatch.setattr(inst.processing, "low_cut_db", 20.0)
-    inst.preset.controls = [*inst.preset.controls, "lowcut"]
     result = bundle.build(inst)
     assert not result.report.errors
     xml = etree.parse(str(result.preset_file))
-    knob = next(k for k in xml.iter("labeled-knob") if k.get("label") == "Thump cut %")
+    knob = next(k for k in xml.iter("labeled-knob") if k.get("label") == "Low cut %")
     assert (float(knob.get("minValue")), float(knob.get("value")), float(knob.get("maxValue"))) == (0, 100, 100)
     assert float(next(t for t in xml.iter("tag") if t.get("name") == LOW_TAG).get("volume")) == 0  # the full cut
     notes = next(g for g in xml.iter("group") if "notes" in g.get("tags").split(","))
@@ -426,17 +427,15 @@ def test_no_low_cut_knob_without_the_low_cut(built):
     assert not list(result.bundle.rglob("*-low-part*"))
 
 
-def test_turning_the_knob_on_and_off_rewrites_the_built_samples(built):
+def test_turning_the_low_cut_on_and_off_rewrites_the_built_samples(built):
     import soundfile as sf
 
     from vinst.level import CEILING_DB
 
     inst, _ = built
-    inst.processing.low_cut = True
-    inst.preset.controls = [c for c in inst.preset.controls if c != "lowcut"]
     result = bundle.build(inst)
     assert not list(result.bundle.rglob("*-low-part*"))
-    inst.preset.controls = [*inst.preset.controls, "lowcut"]
+    inst.processing.low_cut = True  # brings its knob along
     result = bundle.build(inst)
     parts = list(result.bundle.rglob("*-low-part*"))
     assert parts
@@ -444,7 +443,7 @@ def test_turning_the_knob_on_and_off_rewrites_the_built_samples(built):
         low, _ = sf.read(str(part))
         cut, _ = sf.read(str(part).replace(bundle.REMOVED_SUFFIX, ""))
         assert np.max(np.abs(cut + low)) <= 10 ** (CEILING_DB / 20) + 1e-4
-    inst.preset.controls = [c for c in inst.preset.controls if c != "lowcut"]
+    inst.processing.low_cut = False
     result = bundle.build(inst)
     assert not list(result.bundle.rglob("*-low-part*"))
 
@@ -454,10 +453,8 @@ def test_the_mod_wheel_leaves_the_low_cut_alone(built):
     inst.processing.low_cut = True
     inst.preset.controls = ["lowcut", "release"]
     xml = etree.parse(str(bundle.build(inst).preset_file))
-    tab = xml.find("ui/tab")
-    labels = [el.get("label") for el in tab]
-    position = int(xml.find("midi/cc/binding").get("position"))
-    assert labels[position] == "Release"
+    tag = xml.find("midi/cc/binding").get("controlTags")
+    assert [k.get("label") for k in xml.iter("labeled-knob") if k.get("tags") == tag] == ["Release"]
 
 
 def _riff(data: bytes, at: int, end: int) -> dict[bytes, list[bytes]]:
@@ -575,10 +572,41 @@ def test_the_build_reports_its_progress_in_order(built):
     bundle.build(inst, lambda fraction, what: seen.append((fraction, what)))
     fractions = [f for f, _ in seen]
     assert fractions == sorted(fractions) and 0 <= fractions[0] and fractions[-1] <= 1
-    stages = [w.split(" · ")[0] for _, w in seen]
-    assert list(dict.fromkeys(stages)) == [t for t, _, _ in bundle.STAGES.values()]
+    stages = list(dict.fromkeys(w.split(" · ")[0] for _, w in seen))
+    order = [t for t, _, _ in bundle.STAGES.values()]
+    assert stages == [t for t in order if t in stages] and "Updating edited recordings" not in stages
 
 
-def test_the_low_cut_knob_is_named_for_what_it_does():
-    assert preset.low_cut_name(defaults.new_instrument("Uke", InstrumentType.PLUCKED)) == "Thump cut"
-    assert preset.low_cut_name(defaults.new_instrument("Flute", InstrumentType.SUSTAINED)) == "Low cut"
+def test_the_preview_draws_the_knobs_and_the_keyboard(built):
+    from vinst.ui import preview
+
+    inst, _ = built
+    inst.processing.low_cut = True
+    svg = preview.render(inst, cutting=True)
+    assert "Low cut %" in svg and "Tone" in svg and svg.count("<rect") > 50  # the keys
+    assert "Low cut" not in preview.render(inst, cutting=False)
+
+
+def test_the_low_cut_curve_is_steep_around_the_share_set():
+    from vinst.lowcut import curve
+
+    below, at, pitch = curve(0.75, 12, [0.5, 0.75, 1.0])
+    assert below == pytest.approx(-11.8, abs=0.2) and -6 < at < -3 and pitch > -0.3
+
+
+def test_the_reverb_gets_its_room_and_damping(built):
+    inst, _ = built
+    inst.preset.reverb_damping = 0.8
+    xml = etree.parse(str(bundle.build(inst).preset_file))
+    fx = next(e for e in xml.iter("effect") if e.get("type") == "reverb")
+    assert (fx.get("roomSize"), fx.get("damping")) == ("0.7", "0.8")
+
+
+def test_the_preview_marks_the_keys_that_really_play(built):
+    from vinst.ui import preview
+
+    inst, manifest = built
+    mapping = preset.map_samples(inst, manifest)
+    tint = preview.css(preset.pale(inst.preset.accent_color, 0.4))
+    assert preview.render(inst, False, mapping=mapping).count(f"fill='{tint}'") == sum(
+        1 for n in range(mapping.span[0], mapping.span[1] + 1) if n % 12 in preview.WHITE_STEPS)

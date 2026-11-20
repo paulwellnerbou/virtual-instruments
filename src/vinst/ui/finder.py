@@ -21,6 +21,23 @@ end run
 """
 
 
+def open_with(app: str | None, files: list[Path]) -> bool:
+    """Open `files` in the application `app`, or with the system's default for them; False if that
+    didn't work, e.g. the application is gone."""
+    if sys.platform == "darwin":
+        result = subprocess.run(["open", *(["-a", app] if app else []), *map(str, files)],
+                                capture_output=True, check=False)
+        return result.returncode == 0
+    if sys.platform == "win32":
+        try:
+            for f in files:
+                os.startfile(f)  # type: ignore[attr-defined]
+        except OSError:
+            return False
+        return True
+    return all(subprocess.run(["xdg-open", str(f)], check=False).returncode == 0 for f in files)
+
+
 def reveal(path: Path) -> None:
     """Select the file in Finder on macOS; elsewhere open its folder."""
     if sys.platform == "darwin":

@@ -364,8 +364,10 @@ def lane_files(take: Take, takes_dir: Path) -> set[tuple[str, int | None]]:
 
 
 def process_take(inst: Instrument, take: Take, takes_dir: Path, out_dir: Path,
-                 noise_db: float | None, profiles: dict[str, np.ndarray] | None = None) -> TakeResult:
-    """Slice and analyse one recording. The first signal is the reference for pitch and loudness."""
+                 noise_db: float | None, profiles: dict[str, np.ndarray] | None = None,
+                 fixed: list[tuple[int, int, bool]] | None = None) -> TakeResult:
+    """Slice and analyse one recording. The first signal is the reference for pitch and loudness.
+    `fixed`: cut there instead of finding the hits (see edited_cuts)."""
     result = TakeResult(number=take.number, base=take.base_name, pass_id=take.pass_id, title=take.title,
                         kind=take.kind, status="ok", expected_hits=take.hits,
                         midi=take.note.midi if take.note else None, signals=take.signals,
@@ -404,8 +406,8 @@ def process_take(inst: Instrument, take: Take, takes_dir: Path, out_dir: Path,
     floor = max(floor, MIN_NOISE_FLOOR_DB)
     # detect_onsets works on the normalised mix; express the floor relative to the primary's peak.
     rel_floor = floor - primary_level
-    cuts = find_cuts(inst, paths[0], ref, sr, rel_floor)
-    result.cut_by_hand = takes_meta.cuts(inst.meta.slug, paths[0]) is not None
+    cuts = fixed if fixed is not None else find_cuts(inst, paths[0], ref, sr, rel_floor)
+    result.cut_by_hand = takes_meta.cuts(inst.meta.slug, paths[0]) is not None  # with `fixed`, see keep_cuts
     markers = next((m for m in (loops.read_wav_loops(p) for p in paths) if m), []) \
         if inst.processing.loops and take.kind == "note" else []
     analyse_cuts(inst, take, result, take_signals, signals, sr, cuts, out_dir, profiles, markers)
@@ -493,10 +495,11 @@ def by_take(manifest: Manifest | None) -> dict[str, TakeResult]:
     return {t.key: t for t in manifest.takes} if manifest else {}
 
 
-def carry_over(inst: Instrument, result: TakeResult, earlier: TakeResult | None) -> None:
+def carry_over(inst: Instrument, result: TakeResult, earlier: TakeResult | None, same_cuts: bool = False) -> None:
     """Keep the review's decisions (rejections, loops, moved lanes) while the recording is unchanged,
-    for hits that are still cut where they were: slicing differently may number other hits alike."""
-    if earlier and earlier.source == result.source:
+    for hits that are still cut where they were: slicing differently may number other hits alike.
+    `same_cuts`: cut where it was after an edit, so its hits are the same ones."""
+    if earlier and (same_cuts or earlier.source == result.source):
         old = {h.id: h for h in earlier.hits}
         for h in result.hits:
             was = old.get(h.id)
@@ -540,6 +543,100 @@ def process_one(inst: Instrument, previous: Manifest, key: str) -> Manifest:
         manifest.takes = [result if t.key == key else t for t in manifest.takes]
         remove_stale_files(Manifest(samples_dir=previous.samples_dir, takes=[old]), manifest)
     check_all_lanes(inst, manifest)
+    return manifest
+
+
+SAME_PERFORMANCE = 0.3  # least correlation of an edited take's hits with what was sliced from them
+
+
+def edited_cuts(inst: Instrument, take: Take, takes_dir: Path, earlier: TakeResult | None,
+                samples_dir: Path | None) -> list[tuple[int, int, bool]] | None:
+    """Where `take` was cut before, if it was edited since in a way that moves no hit: changed, but
+    as long as it was, at the same rate, and still the same performance where its hits are, e.g.
+    after an EQ (measured: 0.6; another recording: 0.1 at most). Not for a recording made again,
+    in the app or elsewhere, nor one without hits to keep: their hits are found anew."""
+    if earlier is None or not earlier.hits or not earlier.length or samples_dir is None:
+        return None
+    paths = [takes_dir / f for f in take.files]
+    if not all(p.exists() for p in paths) or fingerprint(paths) == earlier.source:
+        return None
+    if takes_meta.recorded_now(inst.meta.slug, paths[0]):
+        return None
+    try:
+        info = sf.info(str(paths[0]))
+    except RuntimeError:
+        return None
+    if info.frames != earlier.length or info.samplerate != earlier.sample_rate:
+        return None
+    if same_performance(paths[0], earlier, samples_dir) < SAME_PERFORMANCE:
+        return None
+    return [(h.start, h.end, "cut_off" in h.flags) for h in earlier.hits]
+
+
+def same_performance(path: Path, earlier: TakeResult, samples_dir: Path, hits: int = 3) -> float:
+    """How alike the recording at `path` is, where its first hits were cut, to the samples sliced
+    there: about 1 for the same audio, still high after an EQ, about 0 for another performance."""
+    seconds = 0.5
+    scores = []
+    for h in earlier.hits[:hits]:
+        name = h.files.get(earlier.signals[0]) if earlier.signals else None
+        try:
+            then, sr = sf.read(str(samples_dir / name), frames=int(seconds * 96000), always_2d=True) if name \
+                else (None, 0)
+            now, _ = sf.read(str(path), start=h.start, frames=min(h.end - h.start, int(seconds * sr)),
+                             always_2d=True) if then is not None else (None, 0)
+        except (RuntimeError, OSError, TypeError):
+            continue
+        if then is None or now is None:
+            continue
+        n = min(len(then), len(now))
+        a, b = now[:n, 0], then[:n, 0]
+        scores.append(float(np.dot(a, b) / (np.sqrt(np.dot(a, a) * np.dot(b, b)) + 1e-12)))
+    return float(np.median(scores)) if scores else 0.0
+
+
+def keep_cuts(inst: Instrument, take: Take, takes_dir: Path, result: TakeResult, earlier: TakeResult) -> None:
+    """After cutting an edited recording where it was cut: cuts set by hand stay set by hand."""
+    if earlier.cut_by_hand and not result.cut_by_hand:
+        takes_meta.save_cuts(inst.meta.slug, takes_dir / take.files[0], [(h.start, h.end) for h in result.hits])
+        result.cut_by_hand = True
+
+
+def edited_takes(inst: Instrument, manifest: Manifest) -> list[str]:
+    """Keys of the recordings edited since slicing without moving a hit (see edited_cuts)."""
+    if inst.recording.source == "samples" or not inst.recording.takes_dir:
+        return []
+    takes_dir = Path(inst.recording.takes_dir).expanduser()
+    earlier = by_take(manifest)
+    folder = Path(manifest.samples_dir) if manifest.samples_dir else None
+    return [t.key for t in recordings(inst, takes_dir)
+            if edited_cuts(inst, t, takes_dir, earlier.get(t.key), folder)]
+
+
+def recut(inst: Instrument, previous: Manifest, keys: list[str], progress: Progress | None = None) -> Manifest:
+    """The edited recordings `keys` cut again where they were cut, their decisions kept; others as
+    they were. Fast: no hit is looked for."""
+    takes_dir = Path(inst.recording.takes_dir).expanduser()
+    out_dir = Path(previous.samples_dir)
+    earlier = by_take(previous)
+    profiles = noise_profiles(inst, takes_dir) if inst.processing.denoise else None
+    passes = {p.id: p for p in recording_passes(inst)}
+    takes = [t for t in recordings(inst, takes_dir) if t.key in keys]
+    manifest = previous.model_copy(deep=True)
+    for i, take in enumerate(takes):
+        if progress:
+            progress(i, len(takes), take.title)
+        old = earlier.get(take.key)
+        fixed = edited_cuts(inst, take, takes_dir, old, out_dir)
+        if fixed is None:
+            continue
+        noise = noise_floor(passes[take.pass_id].signals[0].id, takes_dir)
+        result = process_take(inst, take, takes_dir, out_dir, noise, profiles, fixed)
+        keep_cuts(inst, take, takes_dir, result, old)
+        carry_over(inst, result, old, same_cuts=True)
+        manifest.takes = [result if t.key == take.key else t for t in manifest.takes]
+    check_all_lanes(inst, manifest)
+    remove_stale_files(previous, manifest)
     return manifest
 
 
@@ -606,8 +703,13 @@ def process(inst: Instrument, previous: Manifest | None = None, progress: Progre
     for i, take in enumerate(takes):
         if progress:
             progress(i, len(takes), take.title)
-        result = process_take(inst, take, takes_dir, out_dir, noise[take.pass_id], profiles)
-        carry_over(inst, result, earlier.get(result.key))
+        old = earlier.get(take.key)
+        # Before process_take overwrites the samples the comparison needs.
+        fixed = edited_cuts(inst, take, takes_dir, old, Path(previous.samples_dir) if previous else None)
+        result = process_take(inst, take, takes_dir, out_dir, noise[take.pass_id], profiles, fixed)
+        if fixed is not None and old is not None:
+            keep_cuts(inst, take, takes_dir, result, old)
+        carry_over(inst, result, old, same_cuts=fixed is not None)
         manifest.takes.append(result)
     check_all_lanes(inst, manifest)
     if previous:
