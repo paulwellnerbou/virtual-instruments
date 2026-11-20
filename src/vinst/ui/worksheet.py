@@ -21,7 +21,7 @@ from fastapi import HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from nicegui import app, background_tasks, run, ui
 
-from vinst import cleanup_eq, loops, relocate, review, slicing, store, takes_meta
+from vinst import aims, cleanup_eq, loops, relocate, review, slicing, store, takes_meta
 from vinst import notes as note_names
 from vinst.bundle import CLEANUP_MESSAGE, FINDER_MESSAGE, STALE_MESSAGE, changed_message, eq_message
 from vinst.plan import (
@@ -36,8 +36,8 @@ from vinst.plan import (
     take_key,
 )
 from vinst.slicing import SUBTYPES
-from vinst.review import FLAGS, Hit, Manifest, TakeResult, check_lanes, lane_of, settle
-from vinst.spec import SAFE_NAME as SAFE_LANE, CleanupEq, EqFilter, Instrument, NoteLanes
+from vinst.review import FLAGS, Hit, Manifest, TakeResult, lane_of, loudness, settle
+from vinst.spec import SAFE_NAME as SAFE_LANE, SUSTAINED_TYPES, CleanupEq, EqFilter, Instrument, NoteLanes
 from vinst.ui import form, open_with, recording
 from vinst.ui.anim import Collapse
 from vinst.ui.finder import can_choose_folder, choose_folder, ensure_folder, reveal
@@ -741,6 +741,10 @@ def step_worksheet(ed: "Editor") -> None:
                  "Rejections stored in it are lost.").classes("text-sm text-orange-600")
 
     importing = inst.recording.source == "samples"
+    if state["manifest"] and not importing:
+        # The checks across lanes depend on every note and on the lanes as set now: as they are now, not
+        # as when sliced. Saved with the next decision.
+        slicing.check_all_lanes(inst, state["manifest"])
     rec = inst.recording
 
 
@@ -826,7 +830,7 @@ def step_worksheet(ed: "Editor") -> None:
         if take.kind == "note" and not importing:
             lanes = note_lanes(inst, take.note)
             settle(take, lanes)
-            check_lanes(note_results(take.note, take.pass_id), lanes)
+            slicing.check_all_lanes(inst, state["manifest"])  # one note's levels move every note's aims
         review.save(state["manifest"], path)
         results.refresh()
 
@@ -1376,6 +1380,21 @@ def step_worksheet(ed: "Editor") -> None:
                 draggable_hit(tile, r, h)
                 info_tip(tile, r, h)
 
+    def aim_label(pass_id: str, note: str, lane: str, hits: list[tuple[TakeResult, Hit]]) -> None:
+        """How loud to play this velocity: orange while its kept hits are off it. Every row has one, so
+        the hits of all rows start at the same x."""
+        found: aims.Aims = state.get("aims") or aims.Aims()
+        tip = aims.advice(found, pass_id, note, lane, inst.preset.loudness_range_db is not None)
+        label = ui.label("").classes("shrink-0 text-xs whitespace-nowrap").style("width:10ch")
+        if tip is None:
+            return
+        aim = found.of(pass_id, note)[0][lane]
+        kept = [loudness(h, inst.meta.type in SUSTAINED_TYPES) for _, h in hits if not h.rejected]
+        off = bool(kept) and abs(float(np.median(kept)) - aim) > review.AIM_TOLERANCE_DB
+        label.set_text(f"aim {aim:.0f} dB")
+        label.classes("text-orange-600" if off else "opacity-70")
+        label.tooltip(tip)
+
     def note_card(lane_takes: list[Take], results_by_key: dict[str, TakeResult]) -> None:
         first = lane_takes[0]
         note = first.note_base
@@ -1435,6 +1454,7 @@ def step_worksheet(ed: "Editor") -> None:
                                     .style("width:7.5ch").tooltip(f"Velocity {lo}–{hi}")
                                 record_button(take, recorded)
                                 compare_button(hits)
+                                aim_label(first.pass_id, note, lane, hits)
                             with ui.column().classes("vi-vel-hits grow gap-1 min-w-0"):
                                 if not recorded and not hits:
                                     with controls_strip():
@@ -1519,6 +1539,7 @@ def step_worksheet(ed: "Editor") -> None:
                 import_card(take)
             return
         results_by_key = {t.key: t for t in manifest.takes} if manifest else {}
+        state["aims"] = aims.aims(inst, manifest)
         passes = recording_passes(inst)
         takes = plan_takes(inst)
         for p in passes:

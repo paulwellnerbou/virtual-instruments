@@ -70,6 +70,7 @@ The **Equalizer** in Sound & look draws its bands as a curve over the spectrum o
 
 - Record the noise floor first (30 s of silence): it tells the builder what is noise and what is your instrument.
 - Record a few more hits than you need and reject the weak ones; the builder keeps your decisions when you slice again.
+- Play each velocity the same way on every note: the worksheet shows how loud to play the soft ones next to each note's loudest. The instrument then sets the loudness by velocity itself, so moving from piano to forte changes the sound, not the loudness, and it can reach further than you played.
 - You can try the first few notes before recording everything: build, play them in DecentSampler, then carry on.
 
 More detail on every step is in [docs/builder-ui.md](docs/builder-ui.md); capturing a room or a reverb as an impulse response is in [docs/recording-impulse-responses.md](docs/recording-impulse-responses.md). For working on the builder itself, see [docs/development.md](docs/development.md).

@@ -24,6 +24,7 @@ INITIAL_ATTENUATION, FINE_TUNE, SAMPLE_ID, SAMPLE_MODES = 48, 52, 53, 54
 FILTER_FC = 8
 VELOCITY_CONCAVE_NEGATIVE = 0x0502  # the default velocity → attenuation modulator's source
 VELOCITY_LINEAR_NEGATIVE = 0x0102
+VELOCITY_LINEAR_POSITIVE = 0x0002
 VELOCITY_SWITCH = 0x0C02  # the default velocity → filter modulator's amount source
 INFO_MAX = 256  # bytes of an INFO string, its terminating zeros included (FluidSynth rejects longer)
 PAD = 46  # zero samples the specification wants after each sample
@@ -156,7 +157,7 @@ def pick(entries: list[Entry]) -> list[Entry]:
                 and last.hi_vel == hi_vel and last.hi == key - 1):
             last.hi = key
         else:
-            out.append(Entry(signal, e.file, e.root, key, key, lo_vel, hi_vel, e.tuning, 1, 1, 0.0, e.loop,
+            out.append(Entry(signal, e.file, e.root, key, key, lo_vel, hi_vel, e.tuning, 1, 1, e.volume_db, e.loop,
                              e.sample_rate))
     return out
 
@@ -165,7 +166,11 @@ def write(inst: Instrument, mapping: Mapping, samples_dir: Path, dest: Path) -> 
     """Writes the soundfont of `mapping`, whose samples in `samples_dir` are as the instrument plays
     them (so their volume is in them, as the build writes them), but for `mapping.gain_db`. The
     equalizer, an effect in DecentSampler, goes into the soundfont's samples, as its knobs start."""
-    zones = pick(mapping.notes) + pick(mapping.keys)
+    note_zones = pick(mapping.notes)
+    zones = note_zones + pick(mapping.keys)
+    # Loudness following velocity is a line in dB, as a soundfont's linear velocity modulator makes it.
+    curved = {id(z) for z in note_zones} if mapping.loudness_range_db is not None else set()
+    per_velocity = (mapping.loudness_range_db or 0.0) / 126
     signals = list(dict.fromkeys(e.signal for e in zones))
     p = inst.preset
     bands = [b for b in p.eq if b.on] if "eq" in p.controls else []
@@ -216,6 +221,16 @@ def write(inst: Instrument, mapping: Mapping, samples_dir: Path, dest: Path) -> 
         for e in (z for z in zones if z.signal == signal):
             ibag.append(struct.pack("<HH", len(igen), len(imod)))
             igen += [rng(KEY_RANGE, e.lo, e.hi), rng(VEL_RANGE, e.lo_vel, e.hi_vel)]
+            if id(e) in curved:
+                # In cB: per_velocity·(hi_vel − velocity) − volume_db, as A − amount·velocity/128, never below
+                # 0 within the zone (players clamp it there). The instrument's velocity modulator is
+                # replaced by one of 0: same source and destination.
+                amount = round(1280 * per_velocity)
+                igen.append(gen(INITIAL_ATTENUATION, round(10 * (per_velocity * e.hi_vel - e.volume_db))))
+                imod += [struct.pack("<HHhHH", VELOCITY_LINEAR_NEGATIVE, INITIAL_ATTENUATION, 0, 0, 0),
+                         struct.pack("<HHhHH", VELOCITY_LINEAR_POSITIVE, INITIAL_ATTENUATION, -amount, 0, 0)]
+            elif e.volume_db < 0:
+                igen.append(gen(INITIAL_ATTENUATION, round(-10 * e.volume_db)))
             if e.tuning:
                 igen.append(gen(FINE_TUNE, round(e.tuning * 100)))
             if e.loop:

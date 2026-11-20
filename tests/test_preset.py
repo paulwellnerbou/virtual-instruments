@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from conftest import piezo_and_mic
+from conftest import lane_ranges, piezo_and_mic
 from lxml import etree
 
 from vinst import bundle, defaults, preset, review, store
@@ -416,8 +416,38 @@ def test_velocity_layers_start_where_chosen(built):
     assert layer_bounds(3, [100]) == layer_bounds(3)  # doesn't fit three layers: even split
     inst.preset.velocity_splits = [20, 110]
     result = bundle.build(inst)
-    vels = {(s["loVel"], s["hiVel"]) for s in samples(result, "Piezo") if s["rootNote"] == "64"}
+    vels = lane_ranges(s for s in samples(result, "Piezo") if s["rootNote"] == "64")
     assert vels == {("1", "19"), ("20", "109"), ("110", "127")}
+
+
+def test_loudness_follows_velocity_without_a_step_between_velocities(built):
+    import soundfile as sf
+
+    from vinst import velocity
+    from vinst.slicing import LOUDNESS_WINDOW_S
+
+    inst, _ = built
+    result = bundle.build(inst)
+    assert result.report.ok, result.report.errors
+    folder = result.bundle
+    level: dict[str, float] = {}
+    by_velocity: dict[int, list[float]] = {}
+    for s in samples(result, "Piezo"):
+        if s["rootNote"] != "64" or not (int(s["loNote"]) <= 64 <= int(s["hiNote"])):
+            continue
+        if s["path"] not in level:
+            audio, sr = sf.read(str(folder / s["path"]), always_2d=True)
+            level[s["path"]] = 20 * np.log10(np.sqrt(np.mean(audio[: int(LOUDNESS_WINDOW_S * sr), 0] ** 2)))
+        volume = float(s.get("volume", "0dB").removesuffix("dB"))
+        for v in range(int(s["loVel"]), int(s["hiVel"]) + 1):
+            by_velocity.setdefault(v, []).append(level[s["path"]] + volume
+                                                 + velocity.tracking_db(v, float(s["ampVelTrack"])))
+    played = {v: float(np.median(dbs)) for v, dbs in by_velocity.items()}
+    assert sorted(played) == list(range(1, 128))
+    steps = [played[v + 1] - played[v] for v in range(1, 127)]
+    # Three velocities recorded, each with its own loudness: across all of them one even rise.
+    assert max(steps) < 1.0 and min(steps) > -0.5
+    assert played[127] - played[1] == pytest.approx(inst.preset.loudness_range_db, abs=3)
 
 
 def test_quiet_recordings_play_louder_by_how_loud_their_notes_are(built):
@@ -611,6 +641,26 @@ def test_the_build_writes_a_valid_soundfont(built):
         zone = [op for op, _ in gens[a:b]]
         if 53 in zone:  # a sample's zone: its ranges first, its sample last
             assert zone[0] == 43 and zone[1] == 44 and zone[-1] == 53
+    mods = [struct.unpack("<HHhHH", m) for m in records[b"imod"]]
+    mod_bags = [struct.unpack("<HH", b)[1] for b in records[b"ibag"]]
+    per_velocity = 10 * inst.preset.loudness_range_db / 126  # cB
+    curved = 0
+    for (a, b), (ma, mb) in zip(zip(bags, bags[1:]), zip(mod_bags, mod_bags[1:])):
+        zone = dict(gens[a:b])
+        if 53 not in zone or mb == ma:
+            continue
+        # A note's zone: loudness by velocity, a line in dB, as a player sums its attenuation.
+        lo, hi = zone[44] & 0xFF, zone[44] >> 8
+        sources = {0x0102: lambda v: 1 - v / 128, 0x0002: lambda v: v / 128}
+
+        def attenuation(v: int) -> float:
+            return zone.get(48, 0) + sum(amount * sources[src](v) for src, dest, amount, _, _ in mods[ma:mb]
+                                         if dest == 48)
+
+        assert -1 <= attenuation(hi) <= 2  # as loud as written at its top velocity, whatever range it has
+        assert attenuation(lo) - attenuation(hi) == pytest.approx(per_velocity * (hi - lo), abs=2)
+        curved += 1
+    assert curved
     sample_ids = {amount for op, amount in gens if op == 53}
     assert sample_ids == set(range(len(records[b"shdr"]) - 1))
     assert result.soundfont.parent == result.bundle.parent and result.soundfont_samples == len(sample_ids)
