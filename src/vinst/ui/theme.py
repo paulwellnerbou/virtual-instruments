@@ -72,6 +72,9 @@ body.body--dark { background: var(--vi-bg); color: var(--vi-text); }
 .q-separator { background: var(--vi-border); }
 .q-item:not(.q-item--dense) { min-height: 32px; padding: 4px 12px; }
 .q-item.q-hoverable:hover > .q-focus-helper { background: var(--vi-hover); opacity: 1; }
+/* Menu rows highlight as rounded insets, as in a native menu. */
+.q-menu .q-item > .q-focus-helper { top: 2px; bottom: 2px; left: 4px; right: 4px; width: auto; height: auto;
+                                    border-radius: 5px; }
 
 /* Buttons: small, sentence case, no Material shadow or ripple. */
 .q-btn { font-size: 13px; font-weight: 500; text-transform: none; letter-spacing: normal;
@@ -177,6 +180,9 @@ body.body--dark .q-tooltip { background: rgba(84, 81, 77, .97); }  /* stands out
 .q-stepper__tab { background: linear-gradient(var(--q-primary), var(--q-primary)) center bottom / 0 2px no-repeat;
                   transition: background-size .25s ease, color .2s; }
 .q-stepper__tab--active { background-size: 100% 2px; }
+/* Hover and keyboard focus: rounded like the buttons, inset so it stays clear of the underline. */
+.q-stepper__tab > .q-focus-helper { top: 3px; bottom: 5px; left: 2px; right: 2px; width: auto; height: auto;
+                                    border-radius: 6px; }
 .q-stepper__tab--active .q-stepper__title { font-weight: 600; }
 .q-stepper__tab--done:not(.q-stepper__tab--active) .q-stepper__dot { background: var(--vi-muted) !important; }
 .q-stepper__tab--done:not(.q-stepper__tab--active) { color: var(--vi-text) !important; }
