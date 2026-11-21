@@ -10,6 +10,7 @@ import io
 import itertools
 import json
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -21,7 +22,7 @@ from fastapi import HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from nicegui import app, background_tasks, run, ui
 
-from vinst import aims, cleanup_eq, loops, relocate, review, slicing, store, takes_meta
+from vinst import aims, cleanup_eq, loops, relocate, review, slicing, split, store, takes_meta
 from vinst import notes as note_names
 from vinst.bundle import CLEANUP_MESSAGE, FINDER_MESSAGE, STALE_MESSAGE, changed_message, eq_message
 from vinst.plan import (
@@ -37,7 +38,7 @@ from vinst.plan import (
 )
 from vinst.slicing import SUBTYPES
 from vinst.review import FLAGS, Hit, Manifest, TakeResult, lane_of, loudness, settle
-from vinst.spec import SAFE_NAME as SAFE_LANE, SUSTAINED_TYPES, CleanupEq, EqFilter, Instrument, NoteLanes
+from vinst.spec import AUDIO_SUFFIXES, SAFE_NAME as SAFE_LANE, SUSTAINED_TYPES, CleanupEq, EqFilter, Instrument, NoteLanes
 from vinst.ui import form, open_with, recording
 from vinst.ui.anim import Collapse
 from vinst.ui.finder import can_choose_folder, choose_folder, ensure_folder, reveal
@@ -176,6 +177,69 @@ async def drop_file(slug: str, key: str, request: Request, name: str = "") -> di
     note = "" if sr == inst.recording.sample_rate else \
         f" It runs at {sr} Hz, the instrument at {inst.recording.sample_rate} Hz."
     return {"ok": True, "key": result_key, "message": f"“{name}” is now {target.name}.{note}"}
+
+
+LONG_DIR = ".long-recordings"  # in the instrument's folder: uploads waiting to be split
+LONG_KEPT_S = 24 * 3600  # older uploads, never split or cancelled, are cleared away
+UPLOAD_BLOCK = 4 << 20
+
+
+def long_upload_dir(slug: str, batch: str) -> Path:
+    return store.instrument_dir(slug) / LONG_DIR / batch
+
+
+def long_files(folder: Path) -> list[Path]:
+    return sorted(p for p in folder.iterdir() if p.is_file()) if folder.is_dir() else []
+
+
+def clear_long(folder: Path) -> None:
+    for f in long_files(folder):
+        f.unlink(missing_ok=True)
+    try:
+        folder.rmdir()
+    except OSError:
+        pass
+
+
+@app.post("/long/{slug}")
+async def long_upload(slug: str, request: Request, batch: str = "", name: str = "") -> dict:
+    """A long recording of many notes dropped onto the worksheet, one file per signal; the files
+    dropped together share `batch`. Kept until split (see vinst.split) or cancelled."""
+    if request.headers.get(DROP_HEADER) != "1":  # see drop_file
+        raise HTTPException(403)
+    if not store.exists(slug) or not batch.isdigit():
+        raise HTTPException(404)
+    inst = store.load(slug)
+    if inst.recording.source == "samples" or not inst.recording.takes_dir:
+        raise HTTPException(404)
+    safe = Path(name).name
+    if not safe or safe.startswith(".") or Path(safe).suffix.lower() not in AUDIO_SUFFIXES:
+        return {"ok": False, "message": f"“{name}” isn't a WAV, AIFF or FLAC file."}
+    root = store.instrument_dir(slug) / LONG_DIR
+    if root.is_dir():
+        now = time.time()
+        for old in root.iterdir():
+            if old.name != batch and now - old.stat().st_mtime > LONG_KEPT_S:
+                clear_long(old)
+    folder = long_upload_dir(slug, batch)
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / safe
+    # Streamed, as a whole scale can be hundreds of MB, and written off the event loop, which every
+    # open page waits on.
+    with target.open("wb") as f:
+        buffer = bytearray()
+        async for chunk in request.stream():
+            buffer += chunk
+            if len(buffer) >= UPLOAD_BLOCK:
+                await run.io_bound(f.write, bytes(buffer))
+                buffer.clear()
+        await run.io_bound(f.write, bytes(buffer))
+    try:
+        sf.info(str(target))
+    except RuntimeError:
+        target.unlink(missing_ok=True)
+        return {"ok": False, "message": f"“{name}” isn't an audio file this app can read (WAV, AIFF, FLAC)."}
+    return {"ok": True, "batch": batch, "name": safe}
 
 
 # One player for the whole page: a second click on the same button stops it.
@@ -339,6 +403,13 @@ DROP_JS = ("(e) => { e.preventDefault(); e.currentTarget.classList.remove('vi-dr
            "Promise.all(files.map(f => fetch(URL + '?name=' + encodeURIComponent(f.name), "
            "{method: 'POST', body: f, headers: {'X-Vinst-Drop': '1'}})"
            ".then(r => r.json()).catch(err => ({ok: false, message: String(err)})))).then(rs => emit(rs)); }")
+# Files dropped together (one per signal) are uploaded under one batch; hit chips dragged here are ignored.
+LONG_DROP_JS = ("(e) => { e.preventDefault(); e.currentTarget.classList.remove('vi-drop'); "
+                "const files = [...(e.dataTransfer.files || [])]; if (!files.length) return; "
+                "const batch = String(Date.now()); "
+                "Promise.all(files.map(f => fetch(URL + '?batch=' + batch + '&name=' + encodeURIComponent(f.name), "
+                "{method: 'POST', body: f, headers: {'X-Vinst-Drop': '1'}})"
+                ".then(r => r.json()).catch(err => ({ok: false, message: String(err)})))).then(rs => emit(rs)); }")
 SUGGESTED_LANES = ["pp", "p", "mp", "mf", "f", "ff"]
 VELOCITY_COLOURS = ["#90caf9", "#42a5f5", "#1e88e5", "#1565c0", "#0d47a1"]
 WAVE_H = 36  # px; a row's buttons sit in a strip this tall, so they line up with the middle of its wave
@@ -1562,6 +1633,160 @@ def step_worksheet(ed: "Editor") -> None:
             for t in extras:
                 take_card(t, results_by_key.get(t.key))
 
+
+    # A long recording of many notes, e.g. the whole scale: split into the notes' takes by pitch.
+    with ui.dialog() as long_dialog, ui.card().classes("min-w-[28rem] max-w-[40rem]") as long_body:
+        pass
+    long_dialog.on("hide", lambda: clear_long(state.get("long_folder") or Path("/nonexistent")))
+
+    def long_card() -> None:
+        if not rec.takes_dir or inst.range.mode == "sounds":
+            return  # unpitched sounds: a pitch can't tell them apart
+        with ui.card().classes("w-full py-1").props("flat bordered"):
+            with ui.row().classes("vi-lane items-center gap-2 w-full no-wrap") as row:
+                ui.icon("queue_music").classes("text-xl opacity-70")
+                ui.label("Many notes in one recording").classes("font-medium whitespace-nowrap")
+                ui.label("drop it here, e.g. the whole scale with each note a few times: each hit goes to its "
+                         "note by its pitch").classes("text-xs opacity-50 truncate") \
+                    .tooltip("One file per signal, dropped together, each with its signal in its name. Hits in a "
+                             "row on the same note become that note's take at the velocity you choose, or more "
+                             "hits beside the ones it has; nothing is overwritten.")
+            url = json.dumps(f"/long/{slug}")
+            row.on("dragover", js_handler=DRAG_OVER_JS)
+            row.on("dragleave", js_handler=DRAG_LEAVE_JS)
+            row.on("drop", js_handler=LONG_DROP_JS.replace("URL", url), handler=lambda e: long_dropped(e.args))
+
+    async def long_dropped(args: Any) -> None:
+        with anchor:  # the card may be redrawn while the files are analysed
+            if not isinstance(args, list):
+                return
+            for r in args:
+                if not r.get("ok"):
+                    ui.notify(r.get("message", ""), type="warning", multi_line=True)
+            ok = [r for r in args if r.get("ok")]
+            if not ok:
+                return
+            folder = long_upload_dir(slug, ok[0]["batch"])
+            paths = long_files(folder)
+            if state.get("long_folder") not in (None, folder):
+                clear_long(state["long_folder"])  # an earlier drop still waiting is replaced by this one
+            state["long_folder"] = folder
+            long_body.clear()
+            with long_body:
+                ui.label(", ".join(p.name for p in paths)).classes("text-base font-medium")
+                with ui.row().classes("items-center gap-2"):
+                    ui.spinner(size="sm")
+                    ui.label("Finding the hits and their notes…").classes("text-sm opacity-70")
+            # Not closed by Esc or a click beside it while the upload is read: closing deletes it.
+            long_dialog.props("persistent")
+            long_dialog.open()
+            try:
+                found = await run.io_bound(split.analyse, inst.model_copy(deep=True), paths)
+            except Exception as e:  # unreadable audio, signals at different rates
+                long_dialog.close()
+                ui.notify(f"Can't split {paths[0].name if paths else 'it'}: {e}", type="warning", multi_line=True)
+                return
+            if not long_dialog.value:
+                return  # closed meanwhile: cancelled
+            if isinstance(found, str):
+                long_dialog.close()
+                ui.notify(found, type="warning", multi_line=True)
+                return
+            if not found[1].runs:
+                long_dialog.close()
+                ui.notify(f"No notes found in {paths[0].name}.", type="warning")
+                return
+            long_review(paths, *found)
+
+    def long_review(paths: list[Path], p: Any, found: split.Split) -> None:
+        takes_dir = Path(rec.takes_dir).expanduser()
+        lanes = list(dict.fromkeys([*inst.dynamics.layers, *(la for v in inst.note_lanes.values() for la in v.layers)]))
+        placements = {la: split.place(inst, p, found, la, takes_dir) for la in lanes}
+        # The velocity most of these notes have no recording of yet.
+        lane = max(lanes, key=lambda la: sum(pl.take is not None and not pl.more for pl in placements[la]))
+        choice = {"lane": lane}
+        planned = split.planned_notes(inst, p.id)
+        missing = sorted(planned - {r.midi for r in found.runs})
+        long_dialog.props(remove="persistent")
+        long_body.clear()
+        with long_body:
+            ui.label(f"{', '.join(x.name for x in paths)}: {found.hits()} hits on {len(found.runs)} "
+                     f"note{'' if len(found.runs) == 1 else 's'}").classes("text-base font-medium")
+            if len(recording_passes(inst)) > 1:
+                ui.label(f"Pass: {p.name}").classes("text-sm opacity-70")
+            with ui.row().classes("items-center gap-2"):
+                ui.label("Played at velocity").classes("text-sm")
+                ui.select({la: la for la in lanes}, value=lane,
+                          on_change=lambda e: (choice.update(lane=e.value), listing.refresh())) \
+                    .props("dense outlined")
+
+            @ui.refreshable
+            def listing() -> None:
+                placed = placements[choice["lane"]]
+                adding = [pl for pl in placed if pl.take is not None]
+                with ui.column().classes("gap-0 w-full max-h-[50vh] overflow-y-auto"):
+                    for pl in placed:
+                        hits = f"{pl.run.hits} hit{'' if pl.run.hits == 1 else 's'}"
+                        if pl.run.unpitched:
+                            hits += f", {pl.run.unpitched} without a clear pitch"
+                        name = note_names.label(pl.run.midi)
+                        with ui.row().classes("items-baseline gap-2 no-wrap text-sm"):
+                            ui.label(name).classes("w-20 shrink-0 font-medium whitespace-nowrap"
+                                                   + (" opacity-50" if pl.take is None else ""))
+                            if pl.take is None:
+                                ui.label(f"{hits}: {pl.why}, left out").classes("text-orange-600")
+                            else:
+                                # The string it's played on, if any: the title without the note and lane.
+                                where = pl.take.title.replace(f" · {pl.take.lane}", "").removeprefix(name)
+                                ui.label(f"{hits}{where} · " + ("more hits beside the ones recorded" if pl.more
+                                                               else "new take")).classes("opacity-80")
+                notes_ = []
+                if found.corrected:
+                    notes_.append(f"{found.corrected} hit{' was' if found.corrected == 1 else 's were'} read as "
+                                  "another note between two of the same: kept with them, and flagged if it's "
+                                  "a wrong note.")
+                if any(pl.run.unpitched for pl in adding):
+                    notes_.append("Hits without a clear pitch stay with the note before them: check them in the "
+                                  "worksheet.")
+                if found.before_first:
+                    notes_.append(f"{found.before_first} sound{'' if found.before_first == 1 else 's'} without a "
+                                  "clear pitch before the first note left out.")
+                if missing:
+                    notes_.append("Not in the recording: " + ", ".join(note_names.label(m) for m in missing) + ".")
+                if found.sample_rate != rec.sample_rate:
+                    notes_.append(f"It runs at {found.sample_rate} Hz, the instrument at {rec.sample_rate} Hz.")
+                for text in notes_:
+                    ui.label(text).classes("text-xs opacity-70")
+                with ui.row().classes("w-full justify-end gap-2 mt-2"):
+                    ui.button("Cancel", on_click=long_dialog.close).props("flat")
+                    ui.button(f"Add {len(adding)} take{'' if len(adding) == 1 else 's'}",
+                              on_click=lambda: long_add(paths, choice["lane"], found)) \
+                        .props("unelevated" + ("" if adding else " disable"))
+
+            listing()
+
+    async def long_add(paths: list[Path], lane: str, found: split.Split) -> None:
+        with anchor:  # the button that started it is cleared from the dialog
+            if not still_there():
+                long_dialog.close()
+                return
+            long_dialog.props("persistent")
+            long_body.clear()
+            with long_body, ui.row().classes("items-center gap-2"):
+                ui.spinner(size="sm")
+                ui.label("Writing the takes…").classes("text-sm opacity-70")
+            try:
+                ensure_folder(Path(rec.takes_dir).expanduser())
+                keys = await run.io_bound(split.add, inst.model_copy(deep=True), paths, lane, found)
+            except Exception as e:  # e.g. the disk gone, or audio that can't be read: say so, as slicing does
+                ui.notify(f"Couldn't add the takes: {e}", type="negative", multi_line=True)
+                return
+            finally:
+                long_dialog.close()
+            ui.notify(f"{len(keys)} take{'' if len(keys) == 1 else 's'} at {lane} from {paths[0].name}; slicing them.",
+                      type="positive")
+            ui.timer(0.1, lambda: slice_all(), once=True)
+
     @ui.refreshable
     def noise() -> None:
         """The noise-floor recordings, before the notes: they're recorded first."""
@@ -1571,6 +1796,7 @@ def step_worksheet(ed: "Editor") -> None:
         for t in plan_takes(inst):
             if t.kind == "noise_floor":
                 noise_card(t, results_by_key.get(t.key))
+        long_card()
 
     @ui.refreshable
     def counts() -> None:

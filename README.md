@@ -12,6 +12,7 @@ Made for ukuleles, it works for any plucked or struck string instrument, pitched
 
 - **A recording plan:** from the type, strings and tuning (or a note range), velocities and variations, the builder lists every take to record and names its files.
 - **Record in the app** with a count-in and a visual metronome; interface dropouts are caught before they become clicks. Or drop in files from your DAW, or import a folder of cut samples (notes from the file names or the measured pitch).
+- **A whole scale in one recording:** drop it in and each hit goes to its note by its pitch.
 - **Several signals per note**, e.g. pickup and microphone, cut at the same points so they stay in phase, to blend, switch or layer.
 - **Takes are cut into hits automatically**, each starting at the pluck. Move cuts by hand, move a recording to the right note, or edit it in your audio editor: your decisions are kept.
 - **Extras:** release noises, chucks (down and up strokes, stopping ringing notes) and body knocks.
