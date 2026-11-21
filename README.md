@@ -6,6 +6,51 @@ It was made for ukuleles, but works for any plucked or struck string instrument,
 
 ![The worksheet: one card per note, one row per velocity, every recorded hit with its tuning and loudness](docs/images/worksheet.png)
 
+## What it does
+
+### Recording and organising takes
+
+- **A recording plan from a description:** choose the type, the strings and their tuning (or a note range), the velocities and how many variations of each. The builder works out every take to record and names its files. Each note is recorded on the string where it's played at the lowest fret.
+- **Record in the app** from your audio interface, with a count-in and a visual metronome. Dropouts from the interface are caught, so they don't end up as clicks in a sample. You can also drop in files from your DAW, or import a folder of samples that are already cut (the note comes from the file name or the measured pitch).
+- **Several signals per note**, e.g. pickup and microphone, recorded together or in passes of their own. Signals recorded together are cut at the same points, so they stay in phase and can be blended, switched or layered.
+- **Takes are cut into single hits automatically**, each sample starting exactly at the pluck. You can move a cut by hand, move a recording to the note it was really played on, or edit it in your audio editor: the builder picks up the change and keeps your decisions.
+- **Extras:** release noises, chucks (down and up strokes on keys of their own, stopping the notes still ringing) and body knocks.
+
+### Checking the recordings
+
+- Each hit shows its tuning and attack loudness. Wrong notes, clipping, hits without a pitch, cut-off hits and hits whose loudness fits another velocity better are flagged.
+- **An aim for each velocity** tells you how loud to play the soft ones, so each velocity sounds alike on every note.
+- Uneven variations, velocities that don't get louder in order, and weak loops are reported too. A filter shows only the notes with problems.
+- Play a row's hits one after another to compare them, then reject the weak ones, record replacements or move a hit to another velocity.
+
+### Cleaning up noise
+
+- **Denoising** (optional): spectral noise reduction that uses your noise-floor recording as the noise profile.
+- **Clean-up EQ:** takes mains hum (50 or 60 Hz, with its harmonics), buzz or a click's ring out of the takes you choose. If your noise floor has hum, the builder tells you its frequency.
+- Only the sliced samples change. Your recordings are never touched.
+
+### Even loudness
+
+- **Level:** quiet recordings are raised as far as the note needs. A limiter keeps the short click of the pluck from clipping, so a single click doesn't hold the whole note down.
+- **Even out loudness:** notes, or whole strings of a pickup, that came out louder or softer than their neighbours are brought within an allowed difference. The instrument's own trend from low to high notes stays.
+- **Loudness follows velocity:** one velocity curve for all notes, so going from one recorded velocity to the next changes the sound, not the loudness. There is no jump between velocities, and the instrument can reach further than you played, e.g. from pianissimo to fortissimo with p and mf recorded.
+
+### Sound
+
+- **Tuning correction:** off, partial (keeps some natural detune) or full.
+- **Mapping:** keys between recorded notes, and beyond the recorded range, are played by stretching their neighbours. Neighbour round robins add variation from nearby notes.
+- **Pitch-relative low cut:** a key-tracked low cut that lowers what lies below each note's own pitch, e.g. the boom of a ukulele's body after the pluck. It follows each note, so it never cuts into the low notes. A knob in the instrument blends between the samples as recorded and with the cut.
+- **Equalizer:** up to 8 bands, shaped as a curve over the spectrum of your samples, which you can listen to in the builder. Each boost or cut becomes a knob of its own in the instrument.
+- **Reverb without the pluck's hiss:** convolution reverbs on send buses, one for each pitch band, made from DecentSampler's reverb or from an impulse response you recorded yourself.
+- **More knobs:** signal mix, tone, attack, release, chorus and release-noise volume.
+- **Loops** for sustained sounds, from loop markers in the files or found automatically.
+
+### Look and packaging
+
+- A background image, colours, subtitle and credits, and a cover for DecentSampler's File Browser. A preview shows the instrument as DecentSampler will.
+- **DecentSampler:** builds a `.dsbundle`, checks it against DecentSampler's preset format and for gaps in keys and velocities, installs it into your DecentSampler library, and packages it as a `.dslibrary` to share.
+- **SF2 soundfont** for MuseScore and other players without DecentSampler. It gets the same levels, velocity curve, low cut and EQ, and the builder can copy it straight into MuseScore's soundfont folder.
+
 ## What you need
 
 - A Mac (the app launcher is macOS only; the builder itself runs anywhere Python does)
