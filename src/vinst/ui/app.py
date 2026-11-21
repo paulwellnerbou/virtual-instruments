@@ -86,8 +86,6 @@ STEPS_CSS = """
 .vi-steps .q-stepper__header { flex-wrap: wrap; justify-content: flex-start; }
 .vi-steps .q-stepper__tab { flex: 0 0 auto; }
 @media (min-width: 1024px) { .vi-steps .q-stepper__title { white-space: nowrap; } }
-/* Empty placeholders (e.g. a timer's host) would each still take a gap in the step. */
-.vi-steps .q-stepper__step-inner > div:empty { display: none; }
 /* Chrome anchors the scroll position to the focused element (a chip being dragged, the button just
    clicked); a redraw replaces it and the page jumps. The steps redraw in place, so no anchoring. */
 .vi-steps .q-stepper__step-inner { overflow-anchor: none; }
@@ -126,7 +124,7 @@ STEPS_CSS = """
 def header() -> None:
     anim.add_css()
     ui.add_css(STEPS_CSS)
-    theme.add_css()
+    theme.add_assets()
     recording.add_assets()
     with ui.header().classes("items-center justify-between px-4 py-0"):
         ui.link(APP_TITLE, "/").classes("text-inherit font-semibold no-underline")

@@ -358,7 +358,8 @@ CSS = """
               box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .1s; }
 .vi-vel-dot.active { transform: scale(1.15); }
 .vi-vel-dot span { position: absolute; left: 20px; top: -1px; font-size: 11px; opacity: .75; pointer-events: none; }
-/* With nothing in view it would still take a gap in the step. */
+/* Empty, these would still take a gap in the step. */
+.vi-if-filled:empty { display: none; }
 .vi-slice-row:not(:has(> .q-btn:not(.hidden))):not(:has(> .vi-collapse.vi-open)) { display: none; }
 .vi-lane { border-radius: 6px; padding: 2px 4px; transition: background-color .15s; }
 .vi-hits { display: flex; flex-wrap: nowrap; gap: 6px; width: 100%; }
@@ -877,7 +878,8 @@ def step_worksheet(ed: "Editor") -> None:
         pass
     with ui.dialog() as lane_dialog, ui.card().classes("min-w-[22rem]") as lane_card:
         pass
-    anchor = ui.element("div")  # stays put while the results redraw; hosts the re-slice timers
+    # Stays put while the results redraw; hosts the re-slice timers.
+    anchor = ui.element("div").classes("vi-if-filled")
 
     def resliced(key: str) -> None:
         """Right after recording: slice just that recording."""
@@ -1979,7 +1981,7 @@ def step_worksheet(ed: "Editor") -> None:
     # Buttons and the switch stay out of the redrawn parts: the switch keeps its animation.
     # The message gets a line of its own, however long; below it the button, and the progress bar
     # filling the rest with the take's name on one line of its own, so nothing moves as names change.
-    overview_box = ui.column().classes("gap-0 w-full")
+    overview_box = ui.column().classes("vi-if-filled gap-0 w-full")
     with ui.row().classes("vi-slice-row items-center gap-4 w-full no-wrap"):
         button = ui.button("Import & analyse" if importing else "Slice them",
                            icon="file_download" if importing else "content_cut",
