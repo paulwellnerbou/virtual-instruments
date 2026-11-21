@@ -124,6 +124,23 @@ body.body--dark { background: var(--vi-bg); color: var(--vi-text); }
 .vi-segment:focus-visible { outline: 2px solid var(--vi-focus); outline-offset: -2px; }
 .vi-segment:disabled { opacity: .5; }
 
+/* Velocity splits (controls.VelocitySplits): the layers' bar, a knob on each boundary. The side margins
+   keep the end knobs inside the column. */
+.vi-splits { position: relative; height: 26px; margin: 10px 9px 0; }
+.vi-splits-track { position: absolute; inset: 0; overflow: hidden; border-radius: 6px; }
+.vi-splits-seg { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; justify-content: center;
+                 overflow: hidden; white-space: nowrap; color: #fff; font-size: 11.5px;
+                 transition: left .2s ease, width .2s ease; }
+.vi-splits-knob { position: absolute; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%;
+                  background: #fff; border: .5px solid rgba(0, 0, 0, .2); box-shadow: 0 1px 3px rgba(0, 0, 0, .35);
+                  cursor: ew-resize; touch-action: none; transition: left .2s ease, transform .1s; }
+.vi-splits-dragging .vi-splits-seg, .vi-splits-dragging .vi-splits-knob { transition: transform .1s; }
+.vi-splits-knob:active { transform: scale(1.12); }
+.vi-splits-knob:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--vi-focus), 0 1px 3px rgba(0, 0, 0, .35); }
+.vi-splits-value { position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); padding: 1px 6px;
+                   border-radius: 4px; background: var(--vi-text); color: var(--vi-bg); font-size: 11px;
+                   pointer-events: none; }
+
 /* Controls on one line are as tall as a field beside them. */
 .row:has(> .q-field) > .q-btn:not(.q-btn--round) { min-height: 36px; }
 .row:has(> .q-field) > .q-btn-group > .q-btn:not(.q-btn--round),

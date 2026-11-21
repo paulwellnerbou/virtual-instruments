@@ -828,9 +828,13 @@ def step_worksheet(ed: "Editor") -> None:
 
     def show_progress(on: bool) -> None:
         """The progress bar beside the slice button. Their row is only there with one of them in it: empty,
-        it would still take a gap in the step."""
+        it would still take a gap in the step. Closing, the bar slides shut first (anim.Collapse takes .25 s)."""
         progress_box.set_open(on)
-        slice_row.set_visibility(on or button.visible)
+        if on:
+            slice_row.set_visibility(True)
+        else:
+            with anchor:
+                ui.timer(0.3, lambda: slice_row.set_visibility(button.visible or state["busy"]), once=True)
 
     async def slice_all(only: str | None = None) -> None:
         """Slice everything, or with `only` just that recording (right after recording it). While a slice
