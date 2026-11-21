@@ -557,7 +557,7 @@ def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
     settings = None
     with ui.column().classes("gap-0 py-1 w-full"):
         switches[key] = ui.switch(name, value=on, on_change=switched)
-        ui.label(CONTROL_TEXT[key]).classes("text-xs opacity-70 pl-12 -mt-2")
+        ui.label(CONTROL_TEXT[key]).classes("text-xs opacity-70 pl-12")
         if key == "eq":
             with Collapse(on, inner_classes="flex flex-col gap-1 pl-12 pt-2") as settings:
                 ui.label("Drag a band's point on the curve, or type its values. In the instrument, each peak "
@@ -573,7 +573,7 @@ def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
                         ui.number("Below", value=round(proc.low_cut_below * 100), min=30, max=100, step=5,
                                   precision=0, suffix="% of the pitch",
                                   on_change=lambda e: e.value and ed.set(proc, "low_cut_below",
-                                                                         float(e.value) / 100)).classes("w-40")
+                                                                         float(e.value) / 100)).classes("w-44")
                         ed.number("By", proc, "low_cut_db", cast=float, min=1, max=40, step=1,
                                   suffix="dB").classes("w-24")
 

@@ -349,15 +349,17 @@ def hit_wave(take: TakeResult, hit: Hit, height: int, loudest_db: float) -> str:
 
 
 CSS = """
-.vi-vel { position: relative; width: 14px; margin: 4px 30px 4px 4px; border-radius: 7px; background: #eee; }
+.vi-vel { position: relative; width: 6px; margin: 4px 34px 4px 8px; border-radius: 3px; background: var(--vi-border); }
 /* Clips the segments to the track's rounded ends; the dots sit outside it, so they aren't cut. */
-.vi-vel-segs { position: absolute; inset: 0; border-radius: 7px; overflow: hidden; }
+.vi-vel-segs { position: absolute; inset: 0; border-radius: 3px; overflow: hidden; }
 .vi-vel-seg { position: absolute; left: 0; right: 0; transition: top .15s, height .15s; }
-.vi-vel-dot { position: absolute; left: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%;
-              background: white; border: 2px solid #1565c0; cursor: ns-resize; touch-action: none;
-              box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .1s; }
-.vi-vel-dot.active { transform: scale(1.2); }
-.vi-vel-dot span { position: absolute; left: 22px; top: -1px; font-size: 11px; opacity: .75; pointer-events: none; }
+.vi-vel-dot { position: absolute; left: 50%; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%;
+              background: white; border: .5px solid rgba(0,0,0,.2); cursor: ns-resize; touch-action: none;
+              box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .1s; }
+.vi-vel-dot.active { transform: scale(1.15); }
+.vi-vel-dot span { position: absolute; left: 20px; top: -1px; font-size: 11px; opacity: .75; pointer-events: none; }
+/* With nothing in view it would still take a gap in the step. */
+.vi-slice-row:not(:has(> .q-btn:not(.hidden))):not(:has(> .vi-collapse.vi-open)) { display: none; }
 .vi-lane { border-radius: 6px; padding: 2px 4px; transition: background-color .15s; }
 .vi-hits { display: flex; flex-wrap: nowrap; gap: 6px; width: 100%; }
 /* As wide as the hit is long; when a row runs out of room, all shrink alike and stay to scale. */
@@ -569,7 +571,7 @@ def settings_cards(ed: "Editor") -> None:
                     .classes("grow min-w-0")
                 ui.select({b: f"{b}-bit" for b in (16, 24, 32)}, value=rec.bit_depth,
                           on_change=lambda e: ed.set(rec, "bit_depth", e.value)).props("dense outlined") \
-                    .classes("w-24 shrink-0")
+                    .classes("w-28 shrink-0")
 
         source()
         if not importing:
@@ -1978,7 +1980,7 @@ def step_worksheet(ed: "Editor") -> None:
     # The message gets a line of its own, however long; below it the button, and the progress bar
     # filling the rest with the take's name on one line of its own, so nothing moves as names change.
     overview_box = ui.column().classes("gap-0 w-full")
-    with ui.row().classes("items-center gap-4 w-full no-wrap"):
+    with ui.row().classes("vi-slice-row items-center gap-4 w-full no-wrap"):
         button = ui.button("Import & analyse" if importing else "Slice them",
                            icon="file_download" if importing else "content_cut",
                            on_click=lambda: update_edited() if state["edited"] else slice_all()) \

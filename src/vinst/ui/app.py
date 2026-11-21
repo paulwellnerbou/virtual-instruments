@@ -84,7 +84,10 @@ STEPS_CSS = """
 .vi-side.vi-side-sticky { position: sticky; top: 5rem; }
 .vi-side .vi-collapse.vi-open > .vi-collapse-inner { overflow: visible; }
 .vi-steps .q-stepper__header { flex-wrap: wrap; justify-content: flex-start; }
-.vi-steps .q-stepper__tab { flex: 0 0 25%; max-width: 25%; }
+.vi-steps .q-stepper__tab { flex: 0 0 auto; }
+@media (min-width: 1024px) { .vi-steps .q-stepper__title { white-space: nowrap; } }
+/* Empty placeholders (e.g. a timer's host) would each still take a gap in the step. */
+.vi-steps .q-stepper__step-inner > div:empty { display: none; }
 /* Chrome anchors the scroll position to the focused element (a chip being dragged, the button just
    clicked); a redraw replaces it and the page jumps. The steps redraw in place, so no anchoring. */
 .vi-steps .q-stepper__step-inner { overflow-anchor: none; }
@@ -117,7 +120,7 @@ STEPS_CSS = """
   .vi-setting > .row:first-child { width: auto; }
   .vi-setting > .row:last-child { flex-basis: 100%; }
 }
-"""  # wide screens: seven steps, four on the first line, then the worksheet starts the second
+"""
 
 
 def header() -> None:
@@ -125,11 +128,11 @@ def header() -> None:
     ui.add_css(STEPS_CSS)
     theme.add_css()
     recording.add_assets()
-    with ui.header().classes("items-center justify-between"):
-        ui.link(APP_TITLE, "/").classes("text-white text-lg no-underline")
-        with ui.row().classes("items-center gap-1 text-sm"):
+    with ui.header().classes("items-center justify-between px-4 py-0"):
+        ui.link(APP_TITLE, "/").classes("text-inherit font-semibold no-underline")
+        with ui.row().classes("items-center gap-1 text-sm opacity-70"):
             ui.label("Builds instruments for")
-            ui.link("DecentSampler", DECENTSAMPLER_URL, new_tab=True).classes("text-white font-medium")
+            ui.link("DecentSampler", DECENTSAMPLER_URL, new_tab=True).classes("text-inherit")
             ui.icon("open_in_new").classes("text-sm")
 
 
@@ -311,7 +314,8 @@ class Editor:
     # Field helpers bound to model attributes.
 
     def text(self, label: str, obj: Any, attr: str, **kw: Any) -> ui.input:
-        return ui.input(label, value=getattr(obj, attr),
+        # An empty label would still reserve its line and push the value down.
+        return ui.input(label or None, value=getattr(obj, attr),
                         on_change=lambda e: self.set(obj, attr, e.value), **kw)
 
     def number(self, label: str, obj: Any, attr: str, *, cast: type = int, **kw: Any) -> ui.number:
@@ -319,7 +323,7 @@ class Editor:
             if e.value is not None:
                 self.set(obj, attr, cast(e.value))
 
-        return ui.number(label, value=getattr(obj, attr), on_change=handle, **kw)
+        return ui.number(label or None, value=getattr(obj, attr), on_change=handle, **kw)
 
     def folder(self, label: str, obj: Any, attr: str, prompt: str, **kw: Any) -> ui.input:
         """A path field with a "Choose…" button that opens the system's folder dialog."""
