@@ -128,7 +128,7 @@ def header() -> None:
     recording.add_assets()
     with ui.header().classes("items-center justify-between px-4 py-0"):
         ui.link(APP_TITLE, "/").classes("text-inherit font-semibold no-underline")
-        with ui.row().classes("items-center gap-1 text-sm opacity-70"):
+        with ui.row().classes("items-center gap-1 text-sm opacity-80"):
             ui.label("Builds instruments for")
             ui.link("DecentSampler", DECENTSAMPLER_URL, new_tab=True).classes("text-inherit")
             ui.icon("open_in_new").classes("text-sm")
@@ -744,8 +744,10 @@ def step_dynamics(ed: Editor) -> None:
     @ui.refreshable
     def layers() -> None:
         with ui.row().classes("items-center"):
+            # Redrawn with every choice: the key lets its highlight slide on from the replaced one.
             ui.toggle({n: str(n) for n in LAYER_PRESETS}, value=len(dyn.layers) if len(dyn.layers) in LAYER_PRESETS
-                      else None, on_change=lambda e: set_layers(LAYER_PRESETS[e.value]) if e.value else None)
+                      else None, on_change=lambda e: set_layers(LAYER_PRESETS[e.value]) if e.value else None) \
+                .props("data-vi-key=velocity-count")
             for i in range(len(dyn.layers)):
                 def rename(e: Any, i: int = i) -> None:
                     dyn.layers[i] = e.value

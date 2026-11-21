@@ -610,7 +610,7 @@ def settings_cards(ed: "Editor") -> None:
                       on_change=lambda e: (ed.set(proc, "loops", e.value), crossfade.set_open(e.value)))
             with Collapse(proc.loops, axis="x") as crossfade:
                 ed.number("", proc, "loop_crossfade_ms", cast=float, min=0, max=500, step=5,
-                          suffix="ms crossfade").props("dense outlined").classes("w-40")
+                          suffix="ms crossfade").props("dense outlined").classes("w-44")
 
 
 def eq_summary(inst: Instrument, eq: CleanupEq) -> str:
@@ -725,13 +725,13 @@ def cleanup_eqs(ed: "Editor") -> None:
                                   on_change=lambda e, f=f: kind(f, e.value)).props("dense outlined") \
                             .classes("w-48 shrink-0")
                         watched = [ed.number("", f, "hz", cast=float, min=10, max=40000, step=1, suffix="Hz")
-                                   .props("dense outlined").classes("w-28")]
+                                   .props("dense outlined").classes("w-32")]
                         if f.kind in cleanup_eq.HAS_GAIN:
                             ed.number("", f, "gain_db", cast=float, min=-60, max=24, step=1, suffix="dB") \
                                 .props("dense outlined").classes("w-24")
                         if f.kind not in ("highpass", "lowpass"):
                             ed.number("", f, "q", cast=float, min=0.1, max=100, step=0.5, prefix="Q") \
-                                .props("dense outlined").classes("w-24") \
+                                .props("dense outlined").classes("w-28") \
                                 .tooltip("Higher is narrower")
                         if f.kind == "hum":
                             watched.append(ed.number("", f, "harmonics", min=1, max=40, step=1, suffix="×")

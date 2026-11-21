@@ -15,6 +15,7 @@ body {
   --vi-muted: #7d7870;
   --vi-hover: rgba(0, 0, 0, .05);
   --vi-focus: rgba(10, 110, 230, .35);
+  --vi-bar: #0a6ee6;
   color-scheme: light;
   --q-primary: #0a6ee6 !important;
   --q-positive: #248a3d !important;
@@ -33,12 +34,15 @@ body.body--dark {
   --vi-muted: #9a958d;
   --vi-hover: rgba(255, 255, 255, .06);
   --vi-focus: rgba(10, 132, 255, .45);
-  color-scheme: dark;  /* scrollbars and other native widgets turn dark too */
+  --vi-bar: #1a4f8c;  /* the light bar's blue would glare on a dark page */
   --q-primary: #0a84ff !important;
   --q-positive: #30d158 !important;
   --q-negative: #ff453a !important;
   --q-warning: #ff9f0a !important;
 }
+
+/* Native widgets (scrollbars, pickers) follow. The page's own scrollbar takes it from the root element. */
+html:has(> body.body--dark), body.body--dark { color-scheme: dark; }
 
 /* Tailwind sizes are in rem: a smaller root makes text and spacing desktop-sized together. */
 html { font-size: 14px; }
@@ -53,14 +57,13 @@ body {
 body.body--dark { background: var(--vi-bg); color: var(--vi-text); }
 
 .q-header.q-header {
-  background: var(--vi-panel) !important;
-  color: var(--vi-text);
-  border-bottom: 1px solid var(--vi-border);
+  background: var(--vi-bar) !important;
+  color: #fff;
+  border-bottom: none;
   box-shadow: none;
 }
 .q-header { min-height: 44px; }
 
-/* Panels: a hairline border, no shadow. */
 .q-card {
   background: var(--vi-panel);
   color: var(--vi-text);
@@ -78,7 +81,6 @@ body.body--dark { background: var(--vi-bg); color: var(--vi-text); }
 .q-menu .q-item > .q-focus-helper { top: 2px; bottom: 2px; left: 4px; right: 4px; width: auto; height: auto;
                                     border-radius: 5px; }
 
-/* Buttons: small, sentence case, no Material shadow or ripple. */
 .q-btn { font-size: 13px; font-weight: 500; text-transform: none; letter-spacing: normal;
          transition: background-color .15s, border-color .15s, color .15s, opacity .15s; }
 .q-btn:not(.q-btn--round) { border-radius: 6px; min-height: 28px; padding: 2px 12px; }
@@ -102,7 +104,6 @@ body.body--dark { background: var(--vi-bg); color: var(--vi-text); }
 /* The uploader's own buttons are white icons on its coloured header. */
 .q-uploader .q-btn--flat, .q-uploader .q-btn--flat:hover { background: transparent; border: none; }
 
-/* Segmented controls. */
 .q-btn-group { border-radius: 6px; overflow: hidden; box-shadow: none; border: 1px solid var(--vi-border-strong); }
 .q-btn-group > .q-btn:not(.q-btn--round) { border-radius: 0; border: none; min-height: 26px; }
 .q-btn-group > .q-btn + .q-btn { border-left: 1px solid var(--vi-border-strong); }
@@ -155,6 +156,7 @@ body.body--dark { background: var(--vi-bg); color: var(--vi-text); }
                      transition: background-color .15s, color .15s; }
 .vi-stepper button:hover { background: var(--vi-hover); color: var(--vi-text); }
 .vi-stepper button:active { background: var(--vi-border-strong); }
+.q-field--disabled .vi-stepper, .q-field--readonly .vi-stepper { opacity: .4; pointer-events: none; }
 
 /* macOS-style switches: the thumb inside the track. Quasar sizes them in em off a 40px font. */
 .q-toggle .q-toggle__inner { font-size: 20px; width: 34px; min-width: 34px; height: 20px; padding: 0; margin: 0 4px; }
@@ -180,7 +182,6 @@ body.body--dark .q-tooltip { background: rgba(84, 81, 77, .97); }  /* stands out
 .q-slider__thumb-shape { transform: scale(1.35); filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, .35)); }
 .q-slider__thumb-shape path { fill: #fff; stroke: rgba(0, 0, 0, .2); stroke-width: .5; }
 
-/* Steps as a quiet tab row. */
 .q-stepper { background: transparent; box-shadow: none; border: none; color: var(--vi-text); }
 .q-stepper__header { border-bottom: 1px solid var(--vi-border); min-height: 0; }
 .q-stepper__tab { padding: 8px 10px; min-height: 0; font-size: 13px; }
@@ -212,13 +213,14 @@ CONTROLS_JS = """
 (() => {
   const seen = new WeakMap();  // group -> index of its pressed segment
   const widths = new WeakMap();
-  // Where each control's highlight last was, by its labels: a redraw that replaces the control
-  // (a refreshed section) still slides from there.
+  // Where each control's highlight last was, so a redraw that replaces the control (a refreshed section)
+  // still slides from there. Keyed by its data-vi-key, else by its labels.
   const last = new Map();
   const stepped = new WeakSet();
   const pressedIndex = group => [...group.children].findIndex(b => b.getAttribute('aria-pressed') === 'true');
   const labels = group => [...group.children].map(b => b.textContent.trim()).join('|');
   function keyOf(group) {
+    if (group.dataset.viKey) return group.dataset.viKey;
     const same = [...document.querySelectorAll('.q-btn-toggle')].filter(g => labels(g) === labels(group));
     return labels(group) + '#' + same.indexOf(group);
   }
@@ -244,6 +246,7 @@ CONTROLS_JS = """
   // Only real resizes re-place it: the first report comes right after observing, and would cut short
   // a slide that has just started.
   const sized = new ResizeObserver(entries => entries.forEach(e => {
+    if (!e.target.isConnected) { sized.unobserve(e.target); return; }  // replaced by a redraw
     const w = e.contentRect.width, known = widths.has(e.target);
     if (known && widths.get(e.target) === w) return;
     widths.set(e.target, w);
@@ -265,18 +268,27 @@ CONTROLS_JS = """
     box.innerHTML =
       '<button type="button" tabindex="-1" aria-label="Increase" data-dir="1">' + chevron('M1 5l4-4 4 4') + '</button>' +
       '<button type="button" tabindex="-1" aria-label="Decrease" data-dir="-1">' + chevron('M1 1l4 4 4-4') + '</button>';
-    let timer;
-    const stop = () => clearTimeout(timer);
+    // While held, each step starts from the last one: an older value the server echoes back in
+    // between would otherwise set it back.
+    let timer, held = null;
+    const stop = () => { clearTimeout(timer); held = null; };
+    const stepFrom = dir => {
+      if (held !== null) input.value = held;
+      step(input, dir);
+      held = input.value;
+    };
     box.addEventListener('pointerdown', e => {
       const button = e.target.closest('button');
       if (!button || e.button !== 0) return;
       e.preventDefault();
       const dir = Number(button.dataset.dir);
-      step(input, dir);
-      const repeat = delay => { timer = setTimeout(() => { step(input, dir); repeat(70); }, delay); };
+      stepFrom(dir);
+      const repeat = delay => { timer = setTimeout(() => { stepFrom(dir); repeat(70); }, delay); };
       repeat(400);
     });
-    ['pointerup', 'pointerleave', 'pointercancel'].forEach(type => box.addEventListener(type, stop));
+    box.querySelectorAll('button').forEach(b => b.addEventListener('pointerleave', stop));
+    ['pointerup', 'pointercancel'].forEach(type => box.addEventListener(type, stop));
+    window.addEventListener('blur', stop);
     control.appendChild(box);
     input.classList.add('vi-stepped');
   }
@@ -305,9 +317,12 @@ CONTROLS_JS = """
       if (before !== on) place(group, before !== undefined);
     });
   }
+  const WATCHED = '.q-btn-toggle, .q-field input[type=number]';
+  const matters = m => m.type === 'attributes' || [...m.addedNodes].some(n =>
+    n.nodeType === 1 && (n.matches(WATCHED) || n.querySelector(WATCHED)));
   let queued = false;
-  new MutationObserver(() => {
-    if (queued) return;
+  new MutationObserver(mutations => {
+    if (queued || !mutations.some(matters)) return;
     queued = true;
     requestAnimationFrame(() => { queued = false; scan(); });
   }).observe(document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ['aria-pressed']});
