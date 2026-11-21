@@ -131,10 +131,15 @@ def note_title(n: SampledNote) -> str:
     return notes.label(n.midi)
 
 
+def valid_splits(n: int, splits: list[int]) -> bool:
+    """Whether `splits` can start lanes 2..n: one start each, rising, so every lane keeps a velocity."""
+    return len(splits) == n - 1 and splits == sorted(set(splits)) and all(2 <= v <= 127 for v in splits)
+
+
 def layer_bounds(n: int, splits: list[int] | None = None) -> list[tuple[int, int]]:
     """Velocities 1..127 per lane: from the chosen splits (each lane's lowest velocity after the
     first), or evenly."""
-    if splits and len(splits) == n - 1 and splits == sorted(set(splits)) and all(2 <= v <= 127 for v in splits):
+    if splits and valid_splits(n, splits):
         edges = [1, *splits, 128]
     else:
         edges = [1 + round(i * 127 / n) for i in range(n)] + [128]

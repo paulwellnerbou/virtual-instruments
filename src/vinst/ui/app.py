@@ -470,8 +470,7 @@ def step_instrument(ed: Editor) -> None:
     inst, meta = ed.inst, ed.inst.meta
     with ui.column().classes("w-full max-w-xl"):
         ed.text("Name", meta, "name").classes("w-full")
-        ed.text("Subtitle", meta, "subtitle", placeholder="e.g. Hawaiian koa").classes("w-full") \
-            .props('hint="Under the name in the instrument"')
+        ed.text("Subtitle", meta, "subtitle", placeholder="e.g. Hawaiian koa").classes("w-full")
 
         def author_changed(e: Any) -> None:
             # A copyright still as it was filled in follows the author (also through an emptied

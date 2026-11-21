@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from nicegui import app, run, ui
 
 from vinst import bundle, lowcut, preset, reverb_send, review, sf2, store
-from vinst.plan import layer_bounds, recording_passes
+from vinst.plan import layer_bounds, recording_passes, valid_splits
 from vinst.preset import mixable_signals
 from vinst.spec import CONTROLS, Extra
 from vinst.ui.anim import Collapse
@@ -112,8 +112,13 @@ def velocity_layers(ed: "Editor") -> None:
             return [lo for lo, _ in layer_bounds(len(layers), p.velocity_splits)][1:]
 
         def moved(e: Any) -> None:
-            values = [int(v) for v in e.value]
-            if values != starts():  # also called for "Even split", which only shows the even starts
+            try:
+                values = [int(v) for v in e.value]
+            except (TypeError, ValueError):
+                values = []
+            if not valid_splits(len(layers), values):
+                splits.set_value(starts())  # e.g. sent for another number of velocities
+            elif values != starts():  # also called for "Even split", which only shows the even starts
                 ed.set(p, "velocity_splits", values)
 
         def even() -> None:

@@ -129,7 +129,7 @@ body.body--dark { background: var(--vi-bg); color: var(--vi-text); }
 .vi-splits { position: relative; height: 26px; margin: 10px 9px 0; }
 .vi-splits-track { position: absolute; inset: 0; overflow: hidden; border-radius: 6px; }
 .vi-splits-seg { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; justify-content: center;
-                 overflow: hidden; white-space: nowrap; color: #fff; font-size: 11.5px;
+                 overflow: hidden; white-space: nowrap; font-size: 11.5px;
                  transition: left .2s ease, width .2s ease; }
 .vi-splits-knob { position: absolute; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%;
                   background: #fff; border: .5px solid rgba(0, 0, 0, .2); box-shadow: 0 1px 3px rgba(0, 0, 0, .35);
