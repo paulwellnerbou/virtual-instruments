@@ -1,4 +1,6 @@
+import platform
 import plistlib
+import shlex
 import stat
 import subprocess
 
@@ -38,6 +40,28 @@ def test_launcher_bundle_script_runs_and_alerts_on_failure(tmp_path):
     repo.rmdir()
     out = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True)
     assert "folder is missing" in out.stdout
+
+
+def rosetta() -> bool:
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        return False
+    return subprocess.run(["/usr/bin/arch", "-x86_64", "/usr/bin/true"], capture_output=True).returncode == 0
+
+
+@pytest.mark.skipif(not rosetta(), reason="needs Apple silicon with Rosetta")
+def test_launcher_started_under_rosetta_runs_the_builder_natively(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text("#!/bin/sh\necho translated=$(/usr/sbin/sysctl -n sysctl.proc_translated)\n")
+    fake_uv.chmod(0o755)
+    bundle = tmp_path / "Builder.app"
+    launcher.write_launcher(bundle, repo, fake_uv)
+    log = tmp_path / "vinst.log"
+    script = bundle / "Contents" / "MacOS" / "launcher"
+    script.write_text(script.read_text().replace(shlex.quote(str(launcher.LOG_FILE)), shlex.quote(str(log))))
+    out = subprocess.run(["/usr/bin/arch", "-x86_64", "/bin/sh", str(script)], capture_output=True, text=True)
+    assert out.returncode == 0 and log.read_text() == "translated=0\n"
 
 
 def test_open_reuses_a_running_server_and_prefers_the_chrome_app(monkeypatch, tmp_path):
