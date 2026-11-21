@@ -23,6 +23,8 @@ It was made for ukuleles, but works for any plucked or struck string instrument,
 - Uneven variations, velocities that don't get louder in order, and weak loops are reported too. A filter shows only the notes with problems.
 - Play a row's hits one after another to compare them, then reject the weak ones, record replacements or move a hit to another velocity.
 
+![Reviewing a hit: details, where it was cut, and what to do with it](docs/images/hit-review.png)
+
 ### Cleaning up noise
 
 - **Denoising** (optional): spectral noise reduction that uses your noise-floor recording as the noise profile.
@@ -44,6 +46,8 @@ It was made for ukuleles, but works for any plucked or struck string instrument,
 - **Reverb without the pluck's hiss:** convolution reverbs on send buses, one for each pitch band, made from DecentSampler's reverb or from an impulse response you recorded yourself.
 - **More knobs:** signal mix, tone, attack, release, chorus and release-noise volume.
 - **Loops** for sustained sounds, from loop markers in the files or found automatically.
+
+![The Equalizer: its bands as a curve over the spectrum of your samples](docs/images/equalizer.png)
 
 ### Look and packaging
 
@@ -80,31 +84,13 @@ This puts **DecentSampler Instrument Builder.app** into `~/Applications`. Start 
 
 The builder walks you through seven steps. Everything is saved as you go, so you can stop and come back any time.
 
-1. **Instrument:** name and type. The type fills in sensible defaults for everything after it. You can also choose to import a folder of existing samples instead of recording.
-2. **Signals:** what you record, e.g. a pickup, a microphone or both. Each one becomes a sound you can blend or switch in the instrument.
-3. **Range:** for string instruments the strings, their tuning and how many frets; otherwise the lowest and highest note.
-4. **Dynamics & extras:** the velocities to record (e.g. soft and loud), how many variations of each note, and extra sounds such as release noise, a muted strum or a body knock.
-5. **Worksheet:** record, check and fix every note (see below).
-6. **Sound & look:** tuning correction, an equalizer, knobs, effects, colours and a background image.
-7. **Build:** creates the instrument, checks it, installs it into DecentSampler and can package it as a `.dslibrary` to share.
-
-### Recording and checking in the worksheet
-
-- **Record in the app:** press ● on a velocity row. After a count-in, a visual metronome tells you when to play each hit. Choose your audio interface and its input in the Recording panel beside the notes; "Detect" finds the input you play into.
-- **Or use your DAW:** record wherever you like and drop the audio file (WAV, AIFF, FLAC) onto the right row.
-- **Every hit is cut and analysed for you:** you see its waveform, how far it is out of tune and how loud its attack is. Wrong notes, clipping and hits that belong to another velocity are flagged.
-- **Listen and compare:** ▶ plays the hits of a row one after another, so you can pick the best ones.
-- **Fix what's wrong:** click a hit to review it. You can reject it, record a new one instead, move it to another velocity (or drag it there), or drag the blue lines to change where it was cut.
-- **Clean up noise:** a clean-up EQ takes hum, buzz or a click's ring out of the recordings you pick; only the samples change, never your recordings. Hits it went through show a small EQ mark.
-- **Per-note velocities:** drag the dots on the slider beside a note to set where the next velocity starts, or add a velocity to just that note.
-
-![Reviewing a hit: details, where it was cut, and what to do with it](docs/images/hit-review.png)
-
-### Shaping the sound
-
-The **Equalizer** in Sound & look draws its bands as a curve over the spectrum of your samples. Drag a point to shape it, scroll on it for its width, and **Listen** to a few notes through it. In the instrument, each band you boost or cut gets a knob of its own.
-
-![The Equalizer: its bands as a curve over the spectrum of your samples](docs/images/equalizer.png)
+1. **Instrument:** name and type; the type fills in sensible defaults for everything after it. Or choose to import a folder of existing samples.
+2. **Signals:** what you record, e.g. a pickup, a microphone or both.
+3. **Range:** the strings, their tuning and frets, or the lowest and highest note.
+4. **Dynamics & extras:** the velocities, how many variations of each, and extras.
+5. **Worksheet:** press ● on a velocity row to record it, or drop a file from your DAW onto the row. Choose your interface and input in the Recording panel beside the notes. Click a hit to review it. Drag the dots on a note's slider to give it velocities of its own.
+6. **Sound & look:** tuning, loudness, equalizer, knobs, effects, colours and artwork.
+7. **Build:** creates and checks the instrument, installs it into DecentSampler, and packages it as `.dslibrary` or SF2.
 
 ### Where your files go
 
@@ -115,7 +101,7 @@ The **Equalizer** in Sound & look draws its bands as a curve over the spectrum o
 
 - Record the noise floor first (30 s of silence): it tells the builder what is noise and what is your instrument.
 - Record a few more hits than you need and reject the weak ones; the builder keeps your decisions when you slice again.
-- Play each velocity the same way on every note: the worksheet shows how loud to play the soft ones next to each note's loudest. The instrument then sets the loudness by velocity itself, so moving from piano to forte changes the sound, not the loudness, and it can reach further than you played.
+- Play each velocity the same way on every note, following the aim beside each row. Two or three dynamics you can play evenly are enough.
 - You can try the first few notes before recording everything: build, play them in DecentSampler, then carry on.
 
 More detail on every step is in [docs/builder-ui.md](docs/builder-ui.md); capturing a room or a reverb as an impulse response is in [docs/recording-impulse-responses.md](docs/recording-impulse-responses.md). For working on the builder itself, see [docs/development.md](docs/development.md).
