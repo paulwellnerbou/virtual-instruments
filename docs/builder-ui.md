@@ -58,6 +58,7 @@ Record, check and fix everything in one place.
 - Once a velocity is recorded, ● records **more hits** beside the others, to compare and reject the weak ones. The noise floor and extras are single takes, so ● records them again.
 - A recording replaces the old one only when it finishes: cancelling or an interface problem keeps what you had. The app won't record while the interface runs at another sample rate than the instrument.
 - **Recorded elsewhere?** Drop a WAV, AIFF or FLAC onto a row. It becomes that velocity's take, or more hits if there is one, so nothing is overwritten. With several signals per take, put the signal's name in the file name (`…_piezo.wav`).
+- **Many notes in one recording?** Drop it onto **Many notes in one recording**, e.g. the whole scale with each note played a few times. Each hit's note comes from its pitch; hits in a row on one note become that note's take at the velocity you choose, or more hits if it has one. Before anything is written, a list shows where each note goes; notes outside the range are left out. A single misread or wrong note inside a run of the same note stays with it, flagged if it's wrong. With several signals, drop one file per signal together.
 - Takes are named `<note>_<velocity>_<signal>.wav`, e.g. `060_C-0_p_pickup.wav`; later hits `…_p-more1_pickup.wav`. Files you put in the folder yourself are picked up with **Slice them**.
 
 ### Checking

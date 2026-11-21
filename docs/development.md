@@ -20,6 +20,7 @@ Other commands:
 - `uv run vinst new "Name" --type plucked`
 - `uv run vinst slice <slug>`: cuts the recorded takes into hits (or, for an instrument that imports existing samples, imports its folder), analyses them and writes `hits.json`
 - `uv run vinst build <slug> [--install] [--package]`: generates and validates the `.dsbundle`; optionally installs it into `~/DecentSampler` and writes a `.dslibrary`
+- `uv run vinst split <slug> <velocity> <files…> [--dry-run]`: cuts a long recording of many notes into the notes' takes by pitch (one file per signal); slice afterwards
 - `uv run vinst synth-takes <slug> <folder>`: writes fake takes, with a few deliberate mistakes, for trying out slicing and review without recording
 
 The launcher's server listens on http://127.0.0.1:4780 and stops about two minutes after the last page closes. If it can't start (e.g. the port is taken), the launcher shows an alert. The log is `~/Library/Logs/vinst.log`, trimmed when it passes 1 MB.
@@ -47,6 +48,7 @@ Audio is kept outside the repo: takes in the folder set in the worksheet, sliced
 - Each hit starts 2 ms before its attack: the first sample within 20 dB of the attack's peak, so a touch of the string before the pluck is left out (on sustained instruments within 40 dB, so a slow attack keeps its rise). A start set by hand snaps forward the same way, up to 150 ms, but never closer than 50 ms to its end. Its tail is trimmed 6 dB above the noise floor (from the noise-floor recording, or estimated from the take), it's DC-removed and gets a 50 ms fade-out. Optional denoising uses the noise-floor recording as the profile and only changes the sliced samples.
 - Pitch: YIN, restricted to ±5 semitones around the expected note, refined by a spectral peak with parabolic interpolation (YIN reads about 4 cents sharp on decaying notes); well under 1 cent on test tones.
 - Loudness is the RMS of the first 0.3 s (the attack) for plucked and struck sounds, the held part for sustained ones.
+- A long recording of many notes (`vinst.split`) is cut into takes before slicing: onsets as above, each hit's pitch by YIN without a hint, hits in a row on one note form a take. Off the instrument's notes, an instrument note an octave away wins if the spectrum agrees (the lower of the two if its fundamental is there, else the higher). One hit inside a run of another note (two of them on one side) joins it. A take starts 0.2 s before its first sound (at most halfway back to the hit before), as onset detection misses a hit right at a file's start, and ends where the next note's sound begins.
 - A take is written to a `.part` file and only replaces the existing one when it finishes; the count-in isn't recorded, apart from half a second of pre-roll.
 - Decisions in `hits.json` are carried over when slicing again while the recording's size and modification time are unchanged. The slicing setup fingerprint covers passes, signals and loops, so velocity changes don't need re-slicing.
 - Loops: a WAV `smpl` chunk is used as is; otherwise the steady part of each note is searched for the loop whose end best matches its start.

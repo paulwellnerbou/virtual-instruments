@@ -104,6 +104,47 @@ def slice_(slug: str) -> None:
     typer.echo(path)
 
 
+@app.command("split")
+def split_(
+    slug: str,
+    velocity: str,
+    files: Annotated[list[Path], typer.Argument(help="the long recording, one file per signal")],
+    dry_run: Annotated[bool, typer.Option(help="only show where each note's hits would go")] = False,
+) -> None:
+    """Cut a long recording of many notes (e.g. the whole scale) into the notes' takes at VELOCITY, by
+    each hit's pitch; slice afterwards."""
+    from vinst import notes, split
+
+    inst = store.load(slug)
+    if inst.recording.source == "samples":
+        typer.echo("This instrument imports existing samples; it has no takes to add to.", err=True)
+        raise typer.Exit(1)
+    if not inst.recording.takes_dir:
+        typer.echo("Set the takes folder first.", err=True)
+        raise typer.Exit(1)
+    if velocity not in {*inst.dynamics.layers, *(la for v in inst.note_lanes.values() for la in v.layers)}:
+        typer.echo(f"No velocity “{velocity}”; the instrument has {', '.join(inst.dynamics.layers)}.", err=True)
+        raise typer.Exit(1)
+    found = split.analyse(inst, files)
+    if isinstance(found, str):
+        typer.echo(found, err=True)
+        raise typer.Exit(1)
+    p, result = found
+    takes_dir = Path(inst.recording.takes_dir).expanduser()
+    for pl in split.place(inst, p, result, velocity, takes_dir):
+        where = pl.why + ", left out" if pl.take is None else (pl.take.title + (" (more hits)" if pl.more else ""))
+        typer.echo(f"{notes.label(pl.run.midi):5} {pl.run.hits:3} hits → {where}")
+    if result.before_first:
+        typer.echo(f"{result.before_first} sounds without a clear pitch before the first note, left out")
+    if not dry_run:
+        try:
+            keys = split.add(inst, files, velocity, result)
+        except OSError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1) from e
+        typer.echo(f"{len(keys)} takes written to {takes_dir}; run `vinst slice {slug}`")
+
+
 @app.command("synth-takes")
 def synth_takes(
     slug: str,
