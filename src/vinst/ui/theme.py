@@ -3,6 +3,8 @@ compact controls, and colours that follow the system's light or dark mode."""
 
 from nicegui import ui
 
+from vinst.ui.controls import NumberField
+
 CSS = """
 /* Quasar reads its brand colours from these. NiceGUI sets its defaults inline on body; !important wins. */
 body {
@@ -107,24 +109,25 @@ body.body--dark { background: var(--vi-bg); color: var(--vi-text); }
 .q-btn-group { border-radius: 6px; overflow: hidden; box-shadow: none; border: 1px solid var(--vi-border-strong); }
 .q-btn-group > .q-btn:not(.q-btn--round) { border-radius: 0; border: none; min-height: 26px; }
 .q-btn-group > .q-btn + .q-btn { border-left: 1px solid var(--vi-border-strong); }
-.q-btn-toggle > .q-btn:not(.bg-primary) { background: var(--vi-panel); color: var(--vi-text) !important; }
-/* One highlight slides to the chosen segment; CONTROLS_JS sets where. Without it, Quasar's own colours stay. */
-@property --vi-seg-x { syntax: "<length>"; inherits: false; initial-value: 0px; }
-@property --vi-seg-w { syntax: "<length>"; inherits: false; initial-value: 0px; }
-.q-btn-toggle.vi-seg {
-  background-color: var(--vi-panel);
-  background-image: linear-gradient(var(--q-primary), var(--q-primary));
-  background-repeat: no-repeat;
-  background-position: var(--vi-seg-x) 0;
-  background-size: var(--vi-seg-w) 100%;
-}
-.q-btn-toggle.vi-seg-anim { transition: --vi-seg-x .22s ease, --vi-seg-w .22s ease; }
-.q-btn-toggle.vi-seg > .q-btn { background: transparent !important; transition: color .22s ease; }
-.q-btn-toggle.vi-seg > .q-btn[aria-pressed="true"] { color: #fff !important; }
+
+/* Segmented control (controls.Segmented). */
+.vi-segmented { position: relative; display: inline-flex; max-width: 100%; overflow: hidden; border-radius: 6px;
+                border: 1px solid var(--vi-border-strong); background: var(--vi-panel); vertical-align: middle; }
+.vi-segmented-thumb { position: absolute; top: 0; bottom: 0; background: var(--q-primary); }
+.vi-segmented-ready .vi-segmented-thumb { transition: left .22s ease, width .22s ease; }
+.vi-segment { position: relative; min-height: 26px; padding: 2px 12px; border: 0; background: transparent;
+              color: var(--vi-text); font: inherit; font-weight: 500; cursor: default;  /* wraps only if too narrow */
+              transition: color .22s ease, background-color .15s; }
+.vi-segment + .vi-segment { border-left: 1px solid var(--vi-border-strong); }
+.vi-segment:hover:not([aria-pressed="true"]):not(:disabled) { background: var(--vi-hover); }
+.vi-segment[aria-pressed="true"] { color: #fff; }
+.vi-segment:focus-visible { outline: 2px solid var(--vi-focus); outline-offset: -2px; }
+.vi-segment:disabled { opacity: .5; }
 
 /* Controls on one line are as tall as a field beside them. */
 .row:has(> .q-field) > .q-btn:not(.q-btn--round) { min-height: 36px; }
-.row:has(> .q-field) > .q-btn-group > .q-btn:not(.q-btn--round) { min-height: 34px; }  /* + its border */
+.row:has(> .q-field) > .q-btn-group > .q-btn:not(.q-btn--round),
+.row:has(> .q-field) > .vi-segmented > .vi-segment { min-height: 34px; }  /* + their border */
 .row:has(> .q-field) > .q-btn--round:not(.q-btn--dense) { min-width: 36px; min-height: 36px; }
 
 /* Fields: a compact box with its label above-inside, as in a settings pane. */
@@ -145,12 +148,12 @@ body.body--dark { background: var(--vi-bg); color: var(--vi-text); }
 .q-field__label { color: var(--vi-muted); font-size: 13px; }
 .q-field__bottom { padding-top: 3px; font-size: 11.5px; }
 .q-textarea.q-field--dense .q-field__control { height: auto; }
-/* Number fields step with a quiet stepper (CONTROLS_JS) instead of the browser's spin buttons. */
-.q-field input.vi-stepped { appearance: textfield; -moz-appearance: textfield; }
-.q-field input.vi-stepped::-webkit-inner-spin-button,
-.q-field input.vi-stepped::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-.vi-stepper { display: flex; flex-direction: column; justify-content: center; gap: 1px; align-self: center;
-              margin: 0 -5px 0 6px; }
+/* Number field (controls.NumberField): its stepper instead of the browser's spin buttons. */
+.q-field:has(.vi-stepper) input[type=number] { appearance: textfield; -moz-appearance: textfield; }
+.q-field:has(.vi-stepper) input::-webkit-inner-spin-button,
+.q-field:has(.vi-stepper) input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.q-field__append:has(> .vi-stepper) { padding-left: 6px; margin-right: -5px; }
+.vi-stepper { display: flex; flex-direction: column; justify-content: center; gap: 1px; }
 .vi-stepper button { display: flex; align-items: center; justify-content: center; width: 16px; height: 13px;
                      padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--vi-muted);
                      transition: background-color .15s, color .15s; }
@@ -205,131 +208,6 @@ body.body--dark .q-tooltip { background: rgba(84, 81, 77, .97); }  /* stands out
 .q-stepper__nav { padding: 16px 0 0; }
 """
 
-# Segmented controls: places the highlight under the pressed segment. It only moves (animated) when the
-# choice changes; on first sight and on resizes it's set in place, so nothing slides in from the left.
-# Number fields: adds the stepper. Its buttons aren't in the tab order (the arrow keys step), keep the
-# field's focus, and repeat while held, as the native ones do.
-CONTROLS_JS = """
-(() => {
-  const seen = new WeakMap();  // group -> index of its pressed segment
-  const widths = new WeakMap();
-  // Where each control's highlight last was, so a redraw that replaces the control (a refreshed section)
-  // still slides from there. Keyed by its data-vi-key, else by its labels.
-  const last = new Map();
-  const stepped = new WeakSet();
-  const pressedIndex = group => [...group.children].findIndex(b => b.getAttribute('aria-pressed') === 'true');
-  const labels = group => [...group.children].map(b => b.textContent.trim()).join('|');
-  function keyOf(group) {
-    if (group.dataset.viKey) return group.dataset.viKey;
-    const same = [...document.querySelectorAll('.q-btn-toggle')].filter(g => labels(g) === labels(group));
-    return labels(group) + '#' + same.indexOf(group);
-  }
-  function show(group, x, w, animate) {
-    group.classList.add('vi-seg');
-    group.classList.toggle('vi-seg-anim', animate);
-    group.style.setProperty('--vi-seg-x', x + 'px');
-    group.style.setProperty('--vi-seg-w', w + 'px');
-  }
-  const SLIDE_MS = 220;  // as the CSS transition
-  function place(group, animate, from) {
-    if (!group.offsetWidth) return;
-    const i = pressedIndex(group), on = group.children[i];
-    const x = on ? on.offsetLeft : 0, w = on ? on.offsetWidth : 0;
-    const key = keyOf(group), prev = from || last.get(key) || {x, w};
-    last.set(key, {i, x, w, t: animate ? performance.now() : 0, fromX: prev.x, fromW: prev.w});
-    show(group, x, w, animate);
-  }
-  function now(at) {  // where a highlight is at this moment, also partway through its slide
-    const p = at.t ? Math.min(1, (performance.now() - at.t) / SLIDE_MS) : 1;
-    return {x: at.fromX + (at.x - at.fromX) * p, w: at.fromW + (at.w - at.fromW) * p};
-  }
-  // Only real resizes re-place it: the first report comes right after observing, and would cut short
-  // a slide that has just started.
-  const sized = new ResizeObserver(entries => entries.forEach(e => {
-    if (!e.target.isConnected) { sized.unobserve(e.target); return; }  // replaced by a redraw
-    const w = e.contentRect.width, known = widths.has(e.target);
-    if (known && widths.get(e.target) === w) return;
-    widths.set(e.target, w);
-    if (known) place(e.target, false);
-  }));
-  const chevron = d => '<svg viewBox="0 0 10 6" width="9" height="6" aria-hidden="true"><path d="' + d +
-    '" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-  function step(input, dir) {
-    if (input.disabled || input.readOnly) return;
-    try { dir > 0 ? input.stepUp() : input.stepDown(); } catch (e) { return; }  // step="any" can't step
-    input.dispatchEvent(new Event('input', {bubbles: true}));
-  }
-  function addStepper(input) {
-    stepped.add(input);
-    const control = input.closest('.q-field__control');
-    if (!control) return;
-    const box = document.createElement('div');
-    box.className = 'vi-stepper';
-    box.innerHTML =
-      '<button type="button" tabindex="-1" aria-label="Increase" data-dir="1">' + chevron('M1 5l4-4 4 4') + '</button>' +
-      '<button type="button" tabindex="-1" aria-label="Decrease" data-dir="-1">' + chevron('M1 1l4 4 4-4') + '</button>';
-    // While held, each step starts from the last one: an older value the server echoes back in
-    // between would otherwise set it back.
-    let timer, held = null;
-    const stop = () => { clearTimeout(timer); held = null; };
-    const stepFrom = dir => {
-      if (held !== null) input.value = held;
-      step(input, dir);
-      held = input.value;
-    };
-    box.addEventListener('pointerdown', e => {
-      const button = e.target.closest('button');
-      if (!button || e.button !== 0) return;
-      e.preventDefault();
-      const dir = Number(button.dataset.dir);
-      stepFrom(dir);
-      const repeat = delay => { timer = setTimeout(() => { stepFrom(dir); repeat(70); }, delay); };
-      repeat(400);
-    });
-    box.querySelectorAll('button').forEach(b => b.addEventListener('pointerleave', stop));
-    ['pointerup', 'pointercancel'].forEach(type => box.addEventListener(type, stop));
-    window.addEventListener('blur', stop);
-    control.appendChild(box);
-    input.classList.add('vi-stepped');
-  }
-  function scan() {
-    document.querySelectorAll('.q-field input[type=number]').forEach(input => {
-      if (!stepped.has(input)) addStepper(input);
-    });
-    document.querySelectorAll('.q-btn-toggle').forEach(group => {
-      const on = pressedIndex(group);
-      const before = seen.get(group);
-      seen.set(group, on);
-      if (before === undefined) {
-        sized.observe(group);
-        const was = last.get(keyOf(group));
-        const target = group.children[on];
-        if (was && target && group.offsetWidth) {
-          // The replaced control's click usually started the slide already: carry on from where it is.
-          const at = now(was);
-          if (Math.abs(at.x - target.offsetLeft) > 0.5 || Math.abs(at.w - target.offsetWidth) > 0.5) {
-            show(group, at.x, at.w, false);
-            requestAnimationFrame(() => place(group, true, at));
-            return;
-          }
-        }
-      }
-      if (before !== on) place(group, before !== undefined);
-    });
-  }
-  const WATCHED = '.q-btn-toggle, .q-field input[type=number]';
-  const matters = m => m.type === 'attributes' || [...m.addedNodes].some(n =>
-    n.nodeType === 1 && (n.matches(WATCHED) || n.querySelector(WATCHED)));
-  let queued = false;
-  new MutationObserver(mutations => {
-    if (queued || !mutations.some(matters)) return;
-    queued = true;
-    requestAnimationFrame(() => { queued = false; scan(); });
-  }).observe(document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ['aria-pressed']});
-  scan();
-})();
-"""
-
 _applied = False
 
 
@@ -338,12 +216,12 @@ def apply() -> None:
     global _applied
     if _applied:
         return
-    for element in (ui.input, ui.number, ui.select, ui.textarea):
+    # NumberField took ui.number's defaults when it was defined, so it needs its own.
+    for element in (ui.input, ui.number, NumberField, ui.select, ui.textarea):
         element.default_props("outlined dense")
     _applied = True
 
 
-def add_assets() -> None:
+def add_css() -> None:
     """Once per page."""
     ui.add_css(CSS)
-    ui.add_body_html(f"<script>{CONTROLS_JS}</script>")

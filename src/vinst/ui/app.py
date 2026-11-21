@@ -30,6 +30,7 @@ from vinst.spec import (
     slugify,
 )
 from vinst.ui import anim, keyboard, recording, theme
+from vinst.ui.controls import NumberField, Segmented
 from vinst.ui.build_steps import step_build, step_sound, velocity_layers
 from vinst.ui.finder import can_choose_folder, choose_folder, trash
 from vinst.ui.worksheet import settings_cards, step_worksheet
@@ -124,7 +125,7 @@ STEPS_CSS = """
 def header() -> None:
     anim.add_css()
     ui.add_css(STEPS_CSS)
-    theme.add_assets()
+    theme.add_css()
     recording.add_assets()
     with ui.header().classes("items-center justify-between px-4 py-0"):
         ui.link(APP_TITLE, "/").classes("text-inherit font-semibold no-underline")
@@ -316,12 +317,12 @@ class Editor:
         return ui.input(label or None, value=getattr(obj, attr),
                         on_change=lambda e: self.set(obj, attr, e.value), **kw)
 
-    def number(self, label: str, obj: Any, attr: str, *, cast: type = int, **kw: Any) -> ui.number:
+    def number(self, label: str, obj: Any, attr: str, *, cast: type = int, **kw: Any) -> NumberField:
         def handle(e: Any) -> None:
             if e.value is not None:
                 self.set(obj, attr, cast(e.value))
 
-        return ui.number(label or None, value=getattr(obj, attr), on_change=handle, **kw)
+        return NumberField(label or None, value=getattr(obj, attr), on_change=handle, **kw)
 
     def folder(self, label: str, obj: Any, attr: str, prompt: str, **kw: Any) -> ui.input:
         """A path field with a "Choose…" button that opens the system's folder dialog."""
@@ -497,7 +498,7 @@ def step_instrument(ed: Editor) -> None:
             ui.navigate.reload()
 
         ui.label("Samples").classes("text-sm opacity-70 mt-2")
-        ui.toggle({"takes": "Record new takes", "samples": "Import existing samples"},
+        Segmented({"takes": "Record new takes", "samples": "Import existing samples"},
                   value=inst.recording.source, on_change=source_changed)
 
         async def type_changed(e: Any) -> None:
@@ -594,7 +595,7 @@ def step_range(ed: Editor) -> None:
         ed.changed()
         body.refresh()
 
-    ui.toggle(MODE_LABELS, value=rng.mode, on_change=mode_changed)
+    Segmented(MODE_LABELS, value=rng.mode, on_change=mode_changed)
 
     @ui.refreshable
     def body() -> None:
@@ -648,7 +649,7 @@ def step_range(ed: Editor) -> None:
         with ui.row().classes("items-end max-w-full"):
             preset = ui.select(list(defaults.TUNINGS), label="Tuning preset",
                                value=None).classes("w-80 max-w-full")
-            frets = ui.number("Frets", value=rng.strings[0].frets if rng.strings else 12, min=0, max=36,
+            frets = NumberField("Frets", value=rng.strings[0].frets if rng.strings else 12, min=0, max=36,
                               precision=0).classes("w-24")
 
             def apply() -> None:
@@ -741,13 +742,19 @@ def step_dynamics(ed: Editor) -> None:
              "defaults: in the worksheet, single notes can get their own velocities and ranges.") \
         .classes("text-sm opacity-70 max-w-3xl")
 
-    @ui.refreshable
-    def layers() -> None:
-        with ui.row().classes("items-center"):
-            # Redrawn with every choice: the key lets its highlight slide on from the replaced one.
-            ui.toggle({n: str(n) for n in LAYER_PRESETS}, value=len(dyn.layers) if len(dyn.layers) in LAYER_PRESETS
-                      else None, on_change=lambda e: set_layers(LAYER_PRESETS[e.value]) if e.value else None) \
-                .props("data-vi-key=velocity-count")
+    def set_layers(names: list[str]) -> None:
+        if names != dyn.layers:
+            dyn.layers = list(names)
+            ed.changed()
+            layer_names.refresh()
+
+    # Only the names are redrawn: the count stays the same control, so its highlight slides.
+    with ui.row().classes("items-center"):
+        Segmented({n: str(n) for n in LAYER_PRESETS}, value=len(dyn.layers) if len(dyn.layers) in LAYER_PRESETS
+                  else None, on_change=lambda e: set_layers(LAYER_PRESETS[e.value]) if e.value else None)
+
+        @ui.refreshable
+        def layer_names() -> None:
             for i in range(len(dyn.layers)):
                 def rename(e: Any, i: int = i) -> None:
                     dyn.layers[i] = e.value
@@ -755,13 +762,7 @@ def step_dynamics(ed: Editor) -> None:
 
                 ui.input(value=dyn.layers[i], on_change=rename).classes("w-20").props("dense")
 
-    def set_layers(names: list[str]) -> None:
-        if names != dyn.layers:
-            dyn.layers = list(names)
-            ed.changed()
-            layers.refresh()
-
-    layers()
+        layer_names()
     if inst.recording.source == "samples":
         velocity_layers(ed)
         ui.label("When importing: a sample whose file name contains a velocity name (e.g. “_mf_”) goes to that "

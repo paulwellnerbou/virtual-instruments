@@ -14,6 +14,7 @@ from vinst.plan import layer_bounds, recording_passes
 from vinst.preset import mixable_signals
 from vinst.spec import CONTROLS, Extra
 from vinst.ui.anim import Collapse
+from vinst.ui.controls import NumberField, Segmented
 from vinst.ui import preview
 from vinst.ui.equalizer import equalizer
 from vinst.ui.finder import reveal
@@ -170,7 +171,7 @@ def step_sound(ed: "Editor") -> None:
             ed.set(p, "tuning", e.value)
             partial.set_open(e.value == "partial")
 
-        ui.toggle({"off": "Off", "partial": "Partial", "full": "Full"}, value=p.tuning, on_change=tuning_changed)
+        Segmented({"off": "Off", "partial": "Partial", "full": "Full"}, value=p.tuning, on_change=tuning_changed)
         with Collapse(p.tuning == "partial", axis="x", inner_classes="flex items-center gap-4 pr-2") as partial:
             ui.slider(min=0, max=1, step=0.05, value=p.tuning_amount,
                       on_change=lambda e: ed.set(p, "tuning_amount", e.value)).classes("w-48")
@@ -180,7 +181,7 @@ def step_sound(ed: "Editor") -> None:
     if len(recording_passes(inst)) > 1:
         ui.separator()
         ui.label("Recording passes").classes("text-base font-medium")
-        ui.toggle({"switch": "Switch (menu in the instrument)", "layer": "Layer (play together)"},
+        Segmented({"switch": "Switch (menu in the instrument)", "layer": "Layer (play together)"},
                   value=p.pass_mode, on_change=lambda e: ed.set(p, "pass_mode", e.value))
         ui.label("Passes are separate performances. Switch plays one at a time; Layer plays them together, "
                  "which sounds like two players in unison (doubled, slightly chorused).").classes(
@@ -193,7 +194,7 @@ def step_sound(ed: "Editor") -> None:
         for field, label in (("neighbours_below", "Notes below (pitched up)"),
                              ("neighbours_above", "Notes above (pitched down)")):
             ui.label(label)
-            ui.toggle({0: "Off", 1: "1 semitone", 2: "2 semitones"}, value=getattr(p, field),
+            Segmented({0: "Off", 1: "1 semitone", 2: "2 semitones"}, value=getattr(p, field),
                       on_change=lambda e, f=field: ed.set(p, f, e.value))
     ui.label("Keys between recorded notes play the recorded note above them, pitched down (pitched up, a "
              "sample soon sounds thin; only above the highest note is it pitched up). Neighbour round robins "
@@ -257,7 +258,7 @@ def step_sound(ed: "Editor") -> None:
         def vel_changed(e: Any) -> None:
             ed.set(p, "vel_track", None if e.value in (None, "") else float(e.value))
 
-        ui.number("Velocity sensitivity", value=p.vel_track, min=0, max=1, step=0.05, placeholder="auto",
+        NumberField("Velocity sensitivity", value=p.vel_track, min=0, max=1, step=0.05, placeholder="auto",
                   on_change=vel_changed).classes("w-44").props('hint="empty: auto"')
 
     ui.separator()
@@ -570,7 +571,7 @@ def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
             with Collapse(on, inner_classes="flex flex-col gap-1 pl-12 pt-2") as settings:
                 with ui.row().classes("items-center gap-2"):
                     if key == "lowcut":
-                        ui.number("Below", value=round(proc.low_cut_below * 100), min=30, max=100, step=5,
+                        NumberField("Below", value=round(proc.low_cut_below * 100), min=30, max=100, step=5,
                                   precision=0, suffix="% of the pitch",
                                   on_change=lambda e: e.value and ed.set(proc, "low_cut_below",
                                                                          float(e.value) / 100)).classes("w-44")

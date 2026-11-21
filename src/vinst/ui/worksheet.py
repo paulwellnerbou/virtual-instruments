@@ -41,6 +41,7 @@ from vinst.review import FLAGS, Hit, Manifest, TakeResult, lane_of, loudness, se
 from vinst.spec import AUDIO_SUFFIXES, SAFE_NAME as SAFE_LANE, SUSTAINED_TYPES, CleanupEq, EqFilter, Instrument, NoteLanes
 from vinst.ui import form, open_with, recording
 from vinst.ui.anim import Collapse
+from vinst.ui.controls import NumberField, Segmented
 from vinst.ui.finder import can_choose_folder, choose_folder, ensure_folder, reveal
 
 if TYPE_CHECKING:
@@ -358,9 +359,6 @@ CSS = """
               box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .1s; }
 .vi-vel-dot.active { transform: scale(1.15); }
 .vi-vel-dot span { position: absolute; left: 20px; top: -1px; font-size: 11px; opacity: .75; pointer-events: none; }
-/* Empty, these would still take a gap in the step. */
-.vi-if-filled:empty { display: none; }
-.vi-slice-row:not(:has(> .q-btn:not(.hidden))):not(:has(> .vi-collapse.vi-open)) { display: none; }
 .vi-lane { border-radius: 6px; padding: 2px 4px; transition: background-color .15s; }
 .vi-hits { display: flex; flex-wrap: nowrap; gap: 6px; width: 100%; }
 /* As wide as the hit is long; when a row runs out of room, all shrink alike and stay to scale. */
@@ -708,8 +706,8 @@ def cleanup_eqs(ed: "Editor") -> None:
                               multiple=True, label="Signals (none: all)",
                               on_change=lambda e: (ed.set(eq, "signals", list(e.value or [])), gone.set_visibility(False))) \
                         .props("dense outlined use-chips").classes("grow min-w-0")
-                ui.toggle({False: "Takes I pick", True: "Every take"}, value=eq.every_take,
-                          on_change=lambda e: ed.set(eq, "every_take", bool(e.value))).props("dense no-caps")
+                Segmented({False: "Takes I pick", True: "Every take"}, value=eq.every_take,
+                          on_change=lambda e: ed.set(eq, "every_take", bool(e.value)))
             missing = cleanup_eq.missing_signals(inst, eq)
             gone = ui.label(f"It was also for {', '.join(f'“{m}”' for m in missing)}, which this instrument no "
                             "longer has. " + ("It works on the signals chosen above." if len(missing) < len(eq.signals)
@@ -828,6 +826,12 @@ def step_worksheet(ed: "Editor") -> None:
 
     ui.timer(0.25, tick)
 
+    def show_progress(on: bool) -> None:
+        """The progress bar beside the slice button. Their row is only there with one of them in it: empty,
+        it would still take a gap in the step."""
+        progress_box.set_open(on)
+        slice_row.set_visibility(on or button.visible)
+
     async def slice_all(only: str | None = None) -> None:
         """Slice everything, or with `only` just that recording (right after recording it). While a slice
         runs, this one waits for it: a change made meanwhile (a recording moved, a cut set) is sliced too."""
@@ -838,7 +842,7 @@ def step_worksheet(ed: "Editor") -> None:
         ed.autosave()
         state["busy"] = True
         button.disable()
-        progress_box.set_open(True)
+        show_progress(True)
 
         def report(i: int, n: int, title: str) -> None:
             state["progress"], state["label"] = (i / n if n else 1), f"{i}/{n} · {title}"
@@ -869,7 +873,7 @@ def step_worksheet(ed: "Editor") -> None:
         finally:
             state["busy"] = False
             button.enable()
-            progress_box.set_open(False)
+            show_progress(False)
             state["label"] = ""
 
 
@@ -878,8 +882,8 @@ def step_worksheet(ed: "Editor") -> None:
         pass
     with ui.dialog() as lane_dialog, ui.card().classes("min-w-[22rem]") as lane_card:
         pass
-    # Stays put while the results redraw; hosts the re-slice timers.
-    anchor = ui.element("div").classes("vi-if-filled")
+    # Stays put while the results redraw; hosts the re-slice timers. Takes no room (nor a gap) in the step.
+    anchor = ui.element("div").style("display: contents")
 
     def resliced(key: str) -> None:
         """Right after recording: slice just that recording."""
@@ -1050,7 +1054,7 @@ def step_worksheet(ed: "Editor") -> None:
             ui.label(f"A new velocity for {title}").classes("text-lg font-medium")
             suggestion = next((s for s in SUGGESTED_LANES[::-1] if s not in existing), "")
             name = ui.input("Name", value=suggestion).props("dense autofocus")
-            start = ui.number("Starts at velocity", value=min(127, bounds[-1][1] - 10 if bounds else 64),
+            start = NumberField("Starts at velocity", value=min(127, bounds[-1][1] - 10 if bounds else 64),
                               min=2, max=127, precision=0).props("dense")
             ui.label("Only this note gets it; the defaults in Dynamics stay as they are. The velocities stay "
                      "ordered by where they start.").classes("text-xs opacity-70")
@@ -1888,7 +1892,7 @@ def step_worksheet(ed: "Editor") -> None:
             return True
         state["busy"] = True
         button.disable()
-        progress_box.set_open(True)
+        show_progress(True)
 
         def report(i: int, n: int, title: str) -> None:
             state["progress"], state["label"] = (i / n if n else 1), f"{i}/{n} · {title}"
@@ -1910,7 +1914,7 @@ def step_worksheet(ed: "Editor") -> None:
         finally:
             state["busy"] = False
             button.enable()
-            progress_box.set_open(False)
+            show_progress(False)
             state["label"] = ""
         return True
 
@@ -1972,6 +1976,8 @@ def step_worksheet(ed: "Editor") -> None:
         """What needs slicing again, and the counts; redrawn with the results."""
         # Only offered when something needs it: takes recorded here are sliced right away.
         button.set_visibility(importing or bool(state["stale"]))
+        slice_row.set_visibility(button.visible or state.get("busy", False))
+        overview_box.set_visibility(bool(state["stale"]))
         if not importing:
             button.set_text("Update them" if state["edited"] else "Slice them")
             button.props(f"icon={'sync' if state['edited'] else 'content_cut'}")
@@ -1981,8 +1987,8 @@ def step_worksheet(ed: "Editor") -> None:
     # Buttons and the switch stay out of the redrawn parts: the switch keeps its animation.
     # The message gets a line of its own, however long; below it the button, and the progress bar
     # filling the rest with the take's name on one line of its own, so nothing moves as names change.
-    overview_box = ui.column().classes("vi-if-filled gap-0 w-full")
-    with ui.row().classes("vi-slice-row items-center gap-4 w-full no-wrap"):
+    overview_box = ui.column().classes("gap-0 w-full")
+    with ui.row().classes("items-center gap-4 w-full no-wrap") as slice_row:
         button = ui.button("Import & analyse" if importing else "Slice them",
                            icon="file_download" if importing else "content_cut",
                            on_click=lambda: update_edited() if state["edited"] else slice_all()) \
