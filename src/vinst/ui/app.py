@@ -674,7 +674,7 @@ def step_range(ed: Editor) -> None:
                         ed.changed()
                         strings_rows.refresh()
 
-                    ui.button(icon="delete", on_click=remove).props("flat round").classes("mt-2")
+                    ui.button(icon="delete", on_click=remove).props("flat round")
 
             def add() -> None:
                 top = max((s.open for s in rng.strings), default=55)
@@ -718,7 +718,7 @@ def step_range(ed: Editor) -> None:
                         ed.changed()
                         sound_rows.refresh()
 
-                    ui.button(icon="delete", on_click=remove).props("flat round").classes("mt-2")
+                    ui.button(icon="delete", on_click=remove).props("flat round")
 
             def add() -> None:
                 used = {s.key for s in rng.sounds}
@@ -794,7 +794,7 @@ def step_dynamics(ed: Editor) -> None:
                     ed.changed()
                     extras.refresh()
 
-                ui.button(icon="delete", on_click=remove).props("flat round").classes("mt-2")
+                ui.button(icon="delete", on_click=remove).props("flat round")
 
         def add() -> None:
             n = len(inst.extras) + 1

@@ -15,6 +15,7 @@ body {
   --vi-muted: #7d7870;
   --vi-hover: rgba(0, 0, 0, .05);
   --vi-focus: rgba(10, 110, 230, .35);
+  color-scheme: light;
   --q-primary: #0a6ee6 !important;
   --q-positive: #248a3d !important;
   --q-negative: #d70015 !important;
@@ -32,6 +33,7 @@ body.body--dark {
   --vi-muted: #9a958d;
   --vi-hover: rgba(255, 255, 255, .06);
   --vi-focus: rgba(10, 132, 255, .45);
+  color-scheme: dark;  /* scrollbars and other native widgets turn dark too */
   --q-primary: #0a84ff !important;
   --q-positive: #30d158 !important;
   --q-negative: #ff453a !important;
@@ -105,7 +107,7 @@ body.body--dark { background: var(--vi-bg); color: var(--vi-text); }
 .q-btn-group > .q-btn:not(.q-btn--round) { border-radius: 0; border: none; min-height: 26px; }
 .q-btn-group > .q-btn + .q-btn { border-left: 1px solid var(--vi-border-strong); }
 .q-btn-toggle > .q-btn:not(.bg-primary) { background: var(--vi-panel); color: var(--vi-text) !important; }
-/* One highlight slides to the chosen segment; SEGMENT_JS sets where. Without it, Quasar's own colours stay. */
+/* One highlight slides to the chosen segment; CONTROLS_JS sets where. Without it, Quasar's own colours stay. */
 @property --vi-seg-x { syntax: "<length>"; inherits: false; initial-value: 0px; }
 @property --vi-seg-w { syntax: "<length>"; inherits: false; initial-value: 0px; }
 .q-btn-toggle.vi-seg {
@@ -122,6 +124,7 @@ body.body--dark { background: var(--vi-bg); color: var(--vi-text); }
 /* Controls on one line are as tall as a field beside them. */
 .row:has(> .q-field) > .q-btn:not(.q-btn--round) { min-height: 36px; }
 .row:has(> .q-field) > .q-btn-group > .q-btn:not(.q-btn--round) { min-height: 34px; }  /* + its border */
+.row:has(> .q-field) > .q-btn--round:not(.q-btn--dense) { min-width: 36px; min-height: 36px; }
 
 /* Fields: a compact box with its label above-inside, as in a settings pane. */
 .q-field { font-size: 13px; }
@@ -141,6 +144,17 @@ body.body--dark { background: var(--vi-bg); color: var(--vi-text); }
 .q-field__label { color: var(--vi-muted); font-size: 13px; }
 .q-field__bottom { padding-top: 3px; font-size: 11.5px; }
 .q-textarea.q-field--dense .q-field__control { height: auto; }
+/* Number fields step with a quiet stepper (CONTROLS_JS) instead of the browser's spin buttons. */
+.q-field input.vi-stepped { appearance: textfield; -moz-appearance: textfield; }
+.q-field input.vi-stepped::-webkit-inner-spin-button,
+.q-field input.vi-stepped::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.vi-stepper { display: flex; flex-direction: column; justify-content: center; gap: 1px; align-self: center;
+              margin: 0 -5px 0 6px; }
+.vi-stepper button { display: flex; align-items: center; justify-content: center; width: 16px; height: 13px;
+                     padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--vi-muted);
+                     transition: background-color .15s, color .15s; }
+.vi-stepper button:hover { background: var(--vi-hover); color: var(--vi-text); }
+.vi-stepper button:active { background: var(--vi-border-strong); }
 
 /* macOS-style switches: the thumb inside the track. Quasar sizes them in em off a 40px font. */
 .q-toggle .q-toggle__inner { font-size: 20px; width: 34px; min-width: 34px; height: 20px; padding: 0; margin: 0 4px; }
@@ -190,26 +204,104 @@ body.body--dark .q-tooltip { background: rgba(84, 81, 77, .97); }  /* stands out
 .q-stepper__nav { padding: 16px 0 0; }
 """
 
-# Places each segmented control's highlight under its pressed segment. It only moves (animated) when the
+# Segmented controls: places the highlight under the pressed segment. It only moves (animated) when the
 # choice changes; on first sight and on resizes it's set in place, so nothing slides in from the left.
-SEGMENT_JS = """
+# Number fields: adds the stepper. Its buttons aren't in the tab order (the arrow keys step), keep the
+# field's focus, and repeat while held, as the native ones do.
+CONTROLS_JS = """
 (() => {
-  const seen = new WeakMap();
-  const sized = new ResizeObserver(entries => entries.forEach(e => place(e.target, false)));
-  function place(group, animate) {
-    if (!group.offsetWidth) return;
-    const on = [...group.children].find(b => b.getAttribute('aria-pressed') === 'true');
+  const seen = new WeakMap();  // group -> index of its pressed segment
+  const widths = new WeakMap();
+  // Where each control's highlight last was, by its labels: a redraw that replaces the control
+  // (a refreshed section) still slides from there.
+  const last = new Map();
+  const stepped = new WeakSet();
+  const pressedIndex = group => [...group.children].findIndex(b => b.getAttribute('aria-pressed') === 'true');
+  const labels = group => [...group.children].map(b => b.textContent.trim()).join('|');
+  function keyOf(group) {
+    const same = [...document.querySelectorAll('.q-btn-toggle')].filter(g => labels(g) === labels(group));
+    return labels(group) + '#' + same.indexOf(group);
+  }
+  function show(group, x, w, animate) {
     group.classList.add('vi-seg');
     group.classList.toggle('vi-seg-anim', animate);
-    group.style.setProperty('--vi-seg-x', (on ? on.offsetLeft : 0) + 'px');
-    group.style.setProperty('--vi-seg-w', (on ? on.offsetWidth : 0) + 'px');
+    group.style.setProperty('--vi-seg-x', x + 'px');
+    group.style.setProperty('--vi-seg-w', w + 'px');
+  }
+  const SLIDE_MS = 220;  // as the CSS transition
+  function place(group, animate, from) {
+    if (!group.offsetWidth) return;
+    const i = pressedIndex(group), on = group.children[i];
+    const x = on ? on.offsetLeft : 0, w = on ? on.offsetWidth : 0;
+    const key = keyOf(group), prev = from || last.get(key) || {x, w};
+    last.set(key, {i, x, w, t: animate ? performance.now() : 0, fromX: prev.x, fromW: prev.w});
+    show(group, x, w, animate);
+  }
+  function now(at) {  // where a highlight is at this moment, also partway through its slide
+    const p = at.t ? Math.min(1, (performance.now() - at.t) / SLIDE_MS) : 1;
+    return {x: at.fromX + (at.x - at.fromX) * p, w: at.fromW + (at.w - at.fromW) * p};
+  }
+  // Only real resizes re-place it: the first report comes right after observing, and would cut short
+  // a slide that has just started.
+  const sized = new ResizeObserver(entries => entries.forEach(e => {
+    const w = e.contentRect.width, known = widths.has(e.target);
+    if (known && widths.get(e.target) === w) return;
+    widths.set(e.target, w);
+    if (known) place(e.target, false);
+  }));
+  const chevron = d => '<svg viewBox="0 0 10 6" width="9" height="6" aria-hidden="true"><path d="' + d +
+    '" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  function step(input, dir) {
+    if (input.disabled || input.readOnly) return;
+    try { dir > 0 ? input.stepUp() : input.stepDown(); } catch (e) { return; }  // step="any" can't step
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+  }
+  function addStepper(input) {
+    stepped.add(input);
+    const control = input.closest('.q-field__control');
+    if (!control) return;
+    const box = document.createElement('div');
+    box.className = 'vi-stepper';
+    box.innerHTML =
+      '<button type="button" tabindex="-1" aria-label="Increase" data-dir="1">' + chevron('M1 5l4-4 4 4') + '</button>' +
+      '<button type="button" tabindex="-1" aria-label="Decrease" data-dir="-1">' + chevron('M1 1l4 4 4-4') + '</button>';
+    let timer;
+    const stop = () => clearTimeout(timer);
+    box.addEventListener('pointerdown', e => {
+      const button = e.target.closest('button');
+      if (!button || e.button !== 0) return;
+      e.preventDefault();
+      const dir = Number(button.dataset.dir);
+      step(input, dir);
+      const repeat = delay => { timer = setTimeout(() => { step(input, dir); repeat(70); }, delay); };
+      repeat(400);
+    });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(type => box.addEventListener(type, stop));
+    control.appendChild(box);
+    input.classList.add('vi-stepped');
   }
   function scan() {
+    document.querySelectorAll('.q-field input[type=number]').forEach(input => {
+      if (!stepped.has(input)) addStepper(input);
+    });
     document.querySelectorAll('.q-btn-toggle').forEach(group => {
-      const on = [...group.children].findIndex(b => b.getAttribute('aria-pressed') === 'true');
+      const on = pressedIndex(group);
       const before = seen.get(group);
-      if (before === undefined) sized.observe(group);
       seen.set(group, on);
+      if (before === undefined) {
+        sized.observe(group);
+        const was = last.get(keyOf(group));
+        const target = group.children[on];
+        if (was && target && group.offsetWidth) {
+          // The replaced control's click usually started the slide already: carry on from where it is.
+          const at = now(was);
+          if (Math.abs(at.x - target.offsetLeft) > 0.5 || Math.abs(at.w - target.offsetWidth) > 0.5) {
+            show(group, at.x, at.w, false);
+            requestAnimationFrame(() => place(group, true, at));
+            return;
+          }
+        }
+      }
       if (before !== on) place(group, before !== undefined);
     });
   }
@@ -239,4 +331,4 @@ def apply() -> None:
 def add_assets() -> None:
     """Once per page."""
     ui.add_css(CSS)
-    ui.add_body_html(f"<script>{SEGMENT_JS}</script>")
+    ui.add_body_html(f"<script>{CONTROLS_JS}</script>")
