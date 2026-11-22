@@ -10,7 +10,7 @@ from lxml import etree
 from vinst import bundle, defaults, preset, review, store
 from vinst.plan import layer_bounds, valid_splits
 from vinst.slicing import process
-from vinst.spec import InstrumentType, Preset
+from vinst.spec import ExtraKey, InstrumentType, Preset
 from vinst.synth import Mistakes, write_takes
 from vinst.validate import validate_bundle
 
@@ -195,28 +195,56 @@ def test_a_chuck_stops_ringing_notes_and_plays_its_hits_in_turn(built):
     assert all(g.get("silencedByTags") is None for g in doc.iter("group"))
 
 
-def test_chucks_down_and_up_on_keys_of_their_own(built):
+def test_more_keys_play_the_same_hits_from_another_one_on(built):
     inst, manifest = built
     chuck = next(x for x in inst.extras if x.id == "chuck")
-    chuck.stroke_keys = True
+    chuck.more_keys = [ExtraKey(key=51, start=2), ExtraKey(key=49, start=4)]
     take = next(t for t in manifest.takes if t.base == "x_chuck")
-    take.hits[2].rejected = True  # a down stroke: the ones after it stay where they are
+    take.hits[3].rejected = True  # where the D#2 key would start: it starts with the next one
     review.save(manifest, store.manifest_path(inst.meta.slug))
     store.save(inst)
     result = bundle.build(inst)
     assert result.report.ok, result.report.errors
     files = {h.files["piezo"]: h.index for h in take.hits}
-    down, up, both = (samples(result, f"Piezo Chuck / muted strum{s}") for s in (" down", " up", ""))
-    assert [files[s["path"].split("/")[-1]] for s in down] == [0, 4, 6, 8]
-    assert [files[s["path"].split("/")[-1]] for s in up] == [1, 3, 5, 7, 9]
-    assert {s["rootNote"] for s in down} == {"49"} and {s["rootNote"] for s in up} == {"51"}
-    assert [s["seqPosition"] for s in down] == ["1", "2", "3", "4"] and {s["seqLength"] for s in down} == {"4"}
-    assert len(both) == 9 and {s["rootNote"] for s in both} == {"48"}  # its own key keeps them all
+
+    def turn(suffix):
+        group = samples(result, f"Piezo Chuck / muted strum{suffix}")
+        return [files[s["path"].split("/")[-1]] for s in sorted(group, key=lambda s: int(s["seqPosition"]))]
+
+    assert turn("") == [0, 1, 2, 4, 5, 6, 7, 8, 9]
+    assert turn(" D#2") == [1, 2, 4, 5, 6, 7, 8, 9, 0]
+    assert turn(" C#2") == [4, 5, 6, 7, 8, 9, 0, 1, 2]
+    assert {s["rootNote"] for s in samples(result, "Piezo Chuck / muted strum D#2")} == {"51"}
     doc = etree.parse(str(result.preset_file))
     groups = {g.get("name"): g for g in doc.iter("group")}
-    assert preset.MUTE_TAG in groups["Piezo Chuck / muted strum up"].get("tags").split(",")
+    assert preset.MUTE_TAG in groups["Piezo Chuck / muted strum D#2"].get("tags").split(",")
+    assert groups["Piezo Chuck / muted strum D#2"].get("seqMode") == "round_robin"
     tinted = {c.get("loNote") for c in doc.iter("color")}
     assert {"48", "49", "51"} <= tinted
+
+
+def test_the_old_down_and_up_keys_become_keys_starting_with_hit_1_and_2():
+    from vinst.spec import Extra
+
+    x = Extra.model_validate({"id": "chuck", "name": "Chuck", "stroke_keys": True, "down_key": 50, "up_key": 52})
+    assert [(k.key, k.start) for k in x.more_keys] == [(50, 1), (52, 2)]
+    assert Extra.model_validate({"id": "chuck", "name": "Chuck", "down_key": 50}).more_keys == []
+
+
+def test_each_key_says_the_order_it_plays_its_hits_in():
+    from vinst.ui.build_steps import hit_turn
+
+    assert hit_turn(1, 10) == "Each press plays the next hit: 1, 2, 3, … 9, 10, then 1 again."
+    assert hit_turn(2, 10, own=True) == "Each press plays the next hit of its own turn: 2, 3, 4, … 10, 1, then 2 again."
+    assert hit_turn(3, 4) == "Each press plays the next hit: 3, 4, 1, 2, then 3 again."
+    assert hit_turn(1, 1) == "Each press plays its one hit."
+
+
+def test_an_extra_key_used_twice_is_reported():
+    inst = defaults.new_instrument("Uke", InstrumentType.PLUCKED)
+    key = next(x for x in inst.extras if x.use == "key")
+    key.more_keys = [ExtraKey(key=key.key)]
+    assert any(p.startswith("Duplicate key for extras") for p in inst.problems())
 
 
 def test_older_instruments_get_a_muting_chuck():

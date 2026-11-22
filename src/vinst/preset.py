@@ -9,6 +9,7 @@ import numpy as np
 from lxml import etree
 
 from vinst import aims, eq, reverb_send, velocity
+from vinst.notes import name as note_name
 from vinst.plan import Pass, Take, lane_bounds, note_lanes, plan_takes, recording_passes
 from vinst.review import Hit, Manifest, lane_of, loudness
 from vinst.spec import (CONTROLS, FX_TAG, LOW_TAG, NOTES_TAG, RELEASE_TAG, SUSTAINED_TYPES, Instrument, Signal,
@@ -51,7 +52,7 @@ class Entry:
     sample_rate: int | None = None
     extra: str = ""  # an extra on its own key: its id, for a group of its own
     mutes: bool = False  # that extra stops the notes still ringing
-    stroke: str = ""  # "down" or "up": its strokes alone, on a key of their own
+    turn: str = ""  # an extra's further key: the note it's on, for a group (and a turn) of its own
     removed: str = ""  # the file with what the low cut took out of this one, for the Low cut knob
 
 
@@ -269,19 +270,19 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
             if extra.use == "release":
                 m.release += [Entry(sig, h.files[sig], 60, 0, 0) for h in hits for sig in signals]
             else:
-                # By its place in the recording, so a rejected hit doesn't swap down and up after it.
-                strokes = [("", extra.key, hits)]
-                if extra.stroke_keys:
-                    strokes += [("down", extra.down_key, [h for h in hits if h.index % 2 == 0]),
-                                ("up", extra.up_key, [h for h in hits if h.index % 2 == 1])]
-                for stroke, key, stroke_hits in strokes:
-                    if stroke_hits and key not in m.fx_keys:
+                # Each key its own turn through all the hits, from its start on. The start goes by
+                # the hit's place in the recording, so a rejected hit doesn't shift the ones after it.
+                turns = [("", extra.key, 1), *((note_name(k.key), k.key, k.start) for k in extra.more_keys)]
+                for turn, key, start in turns:
+                    first = next((i for i, h in enumerate(hits) if h.index >= (start - 1) % max(1, len(t.hits))), 0)
+                    in_turn = hits[first:] + hits[:first]
+                    if in_turn and key not in m.fx_keys:
                         m.fx_keys.append(key)
-                    for pos, h in enumerate(stroke_hits, 1):
+                    for pos, h in enumerate(in_turn, 1):
                         for sig in signals:
                             m.keys.append(Entry(sig, h.files[sig], key, key, key, seq_pos=pos,
-                                                seq_len=len(stroke_hits), extra=extra.id, mutes=extra.mutes,
-                                                stroke=stroke))
+                                                seq_len=len(in_turn), extra=extra.id, mutes=extra.mutes,
+                                                turn=turn))
     # A recording with every hit rejected is fine while its velocity keeps others.
     for (pass_id, midi, lane), name in played.items():
         kept = notes.get(pass_id, {}).get(midi, {})
@@ -739,10 +740,10 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
     # and up), and a group's rotation would mix the extras' hits.
     names = {x.id: x.name for x in inst.extras}
     for sig in inst.signals:
-        for extra_id, stroke in dict.fromkeys((e.extra, e.stroke) for e in mapping.keys):
-            entries = [e for e in mapping.keys if e.signal == sig.id and e.extra == extra_id and e.stroke == stroke]
+        for extra_id, turn in dict.fromkeys((e.extra, e.turn) for e in mapping.keys):
+            entries = [e for e in mapping.keys if e.signal == sig.id and e.extra == extra_id and e.turn == turn]
             more = [MUTE_TAG] if entries and entries[0].mutes else []
-            name = " ".join(filter(None, [sig.name, names.get(extra_id, "effects"), stroke]))
+            name = " ".join(filter(None, [sig.name, names.get(extra_id, "effects"), turn]))
             add_group(name, tags(sig, FX_TAG, *more), entries,
                       enabled=enabled(sig), seqMode="round_robin", pitchKeyTrack=0.0)
 
