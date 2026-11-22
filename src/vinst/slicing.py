@@ -300,6 +300,11 @@ def cleanup_setup(inst: Instrument) -> str:
     return f"denoise {p.denoise_reduction_db:g}" if p.denoise else ""
 
 
+def has_samples(manifest: Manifest) -> bool:
+    """Whether any sample was sliced; the noise floor makes none."""
+    return any(t.hits for t in manifest.takes)
+
+
 def cut_in_samples(manifest: Manifest) -> bool:
     """Whether the sliced samples have a low cut in them: it was applied when slicing for a while."""
     return "low cut" in manifest.cleanup
@@ -606,8 +611,10 @@ def process_one(inst: Instrument, previous: Manifest, key: str) -> Manifest:
     take = next((t for t in recordings(inst, takes_dir) if t.key == key), None)
     # Samples sliced with the low cut in them (as it was for a while) and a new one without it would
     # sound different, and the build can't tell which is which: slice them all, so none has it.
+    # Without samples yet there's little to slice again, and the results then record the current hit
+    # finder and clean-up.
     if take is None or inst.recording.source == "samples" or previous.setup != slicing_setup(inst) \
-            or cut_in_samples(previous):
+            or cut_in_samples(previous) or not has_samples(previous):
         return process(inst, previous)
     old = next((t for t in previous.takes if t.key == key), None)
     out_dir = Path(previous.samples_dir)

@@ -517,6 +517,18 @@ def test_results_remember_which_hit_finding_made_them(uke):
     assert process_one(uke, m, f.key).finder == 0  # one recording sliced again; the others are still older
 
 
+def test_the_first_sample_is_sliced_as_set_now(uke):
+    from vinst.slicing import HIT_FINDER
+
+    m = process(uke).model_copy(update={"finder": 0, "cleanup": "denoise 12"})  # nothing recorded yet
+    assert not slicing.has_samples(m)
+    p = lane(uke, "p")
+    write(uke, p.files[0], take_audio(p, (0.3, 0.32)), grid=[0.5, 3.5])
+    again = process_one(uke, m, p.key)
+    assert slicing.has_samples(again)
+    assert (again.finder, again.cleanup) == (HIT_FINDER, slicing.cleanup_setup(uke))
+
+
 def test_a_tail_ends_before_the_next_sound_not_at_its_attack():
     rng = np.random.default_rng(5)
     ref = rng.normal(0, 1e-4, 5 * SR)

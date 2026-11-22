@@ -1879,12 +1879,14 @@ def step_worksheet(ed: "Editor") -> None:
                 all((takes_dir / f).exists() for f in t.files) for t in slicing.recordings(inst, takes_dir))
             found["stale"] = "Takes in the folder aren't sliced yet." if there else ""
             return found
-        if manifest.setup != slicing_setup(inst):
-            return {**found, "stale": STALE_MESSAGE}
-        if manifest.finder != slicing.HIT_FINDER and manifest.source == "takes":
-            return {**found, "stale": FINDER_MESSAGE}
-        if slicing.sliced_cleanup(inst, manifest) != slicing.cleanup_setup(inst) and manifest.source == "takes":
-            return {**found, "stale": CLEANUP_MESSAGE}
+        # Without samples, none can be out of date.
+        if slicing.has_samples(manifest):
+            if manifest.setup != slicing_setup(inst):
+                return {**found, "stale": STALE_MESSAGE}
+            if manifest.finder != slicing.HIT_FINDER and manifest.source == "takes":
+                return {**found, "stale": FINDER_MESSAGE}
+            if slicing.sliced_cleanup(inst, manifest) != slicing.cleanup_setup(inst) and manifest.source == "takes":
+                return {**found, "stale": CLEANUP_MESSAGE}
         changed = slicing.changed_takes(inst, manifest)
         if not changed:
             eq_changed = slicing.eq_changed_takes(inst, manifest)
