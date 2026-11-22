@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 SILENCE_WARNING_S = 2.0
 MAX_HITS = 12
+SCALE_HITS = 3  # on each note of a recorded scale
 
 CSS = """
 .vi-rec { display: flex; flex-direction: column; align-items: center; gap: 6px; min-height: 330px; }
@@ -195,6 +196,20 @@ def record_more(ed: "Editor", take_key: str, count: int, on_saved: Saved | None 
                 (lambda: on_saved(key)) if on_saved else None, loudest_velocity(ed, take), aim_for(ed, take))
 
 
+def record_scale(ed: "Editor", pass_id: str, folder: Path, then: Callable[[], None]) -> None:
+    """The whole scale of a pass in one recording, into `folder`, one file per signal named after it
+    (as split.pass_for tells them apart); `then` splits it into the notes' takes."""
+    p = next((x for x in recording_passes(ed.inst) if x.id == pass_id), None)
+    if p is None or not guides.scale_notes(ed.inst, pass_id):
+        return
+    takes_folder(ed)
+    paths = {s.id: folder / f"scale_{s.id}.wav" for s in p.signals}
+    title = "The whole scale" + (f" · {p.name}" if len(recording_passes(ed.inst)) > 1 else "")
+    open_dialog(ed, title, list(p.signals), paths, lambda n: guides.scale_guide(ed.inst, pass_id, n or SCALE_HITS),
+                SCALE_HITS, then, "Split by pitch",
+                next_icon="call_split", click_grid=False)
+
+
 def peak_dbfs(path: Path) -> float:
     audio, _ = sf.read(str(path), always_2d=True, dtype="float64")
     return float(20 * np.log10(max(float(np.max(np.abs(audio))), 1e-10)))
@@ -228,10 +243,11 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
                 guide_for: Callable[[int | None], guides.Guide], count: int | None,
                 on_next: Callable[[], None] | None, next_label: str,
                 on_saved: Callable[[], None] | None = None, judge_level: bool = False,
-                aim: str | None = None) -> None:
+                aim: str | None = None, next_icon: str = "skip_next", click_grid: bool = True) -> None:
     """`count`: how many hits to ask for, which the player can change before recording; None for
     takes recorded as planned. `judge_level`: a take of the loudest velocity, whose level says how
-    to set the input gain. `aim`: how loud to play a soft velocity."""
+    to set the input gain. `aim`: how loud to play a soft velocity. `click_grid`: keep where the
+    hits were asked for, for slicing (see takes_meta)."""
     inst = ed.inst
     # Re-read the devices: the interface's sample rate may have changed since the app started.
     device, _, name = current_device(rescan=True)
@@ -296,7 +312,7 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
                 ui.space()
             cancel_btn = ui.button("Cancel", on_click=lambda: finish(False)).props("flat")
             keep_btn = ui.button("Stop and keep", on_click=lambda: finish(True)).props("outline")
-            next_btn = ui.button(next_label or "Next", icon="skip_next", on_click=lambda: go_next()) \
+            next_btn = ui.button(next_label or "Next", icon=next_icon, on_click=lambda: go_next()) \
                 .props("outline")
             start_btn = ui.button("Record", icon="fiber_manual_record", on_click=lambda: start()).props("color=red")
 
@@ -339,7 +355,7 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
         guide = state["guide"]
         # A take that ran its full time must have about that much audio; less means the interface stopped.
         result = rec.stop(keep, min_seconds=guide.total - guide.skip - 1 if complete else 0)
-        for f in result.files:
+        for f in result.files if click_grid else []:
             takes_meta.save(inst.meta.slug, f, guide.hits_at())
         ui.run_javascript(f"viRec.stop(); viRec.preview({json.dumps(root_id)}, {json.dumps(guide.to_dict())})")
         with outcome:
