@@ -372,7 +372,7 @@ def test_switch_mode_builds_a_sound_menu(two_passes):
     groups = {g.get("name"): g for g in doc.iter("group")}
     assert groups["Piezo"].get("enabled") is None and groups["Internal mic"].get("enabled") == "false"
     assert "pass-mic" in groups["Internal mic"].get("tags")
-    assert not any(k.get("label") == "Mix" for k in doc.iter("labeled-knob"))
+    assert not any(k.get("tags") == "knob-mix" for k in doc.iter("labeled-knob"))
 
 
 def test_layer_mode_mixes_the_passes(two_passes):
@@ -381,8 +381,24 @@ def test_layer_mode_mixes_the_passes(two_passes):
     assert result.report.ok, result.report.errors
     doc = etree.parse(str(result.preset_file))
     assert doc.find(".//menu") is None
-    assert any(k.get("label") == "Mix" for k in doc.iter("labeled-knob"))
+    blend = next(k for k in doc.iter("labeled-knob") if k.get("tags") == "knob-mix")
+    # Named after the signal it turns up; "Internal mic %" would not fit under the knob.
+    assert blend.get("label") == "Internal mic"
+    assert (float(blend.get("minValue")), float(blend.get("maxValue")), float(blend.get("value"))) == (0, 100, 50)
+    tables = {b.get("identifier"): b.get("translationTable").split(";") for b in blend.iter("binding")}
+    assert tables["piezo"][0] == "0,1.000" and tables["piezo"][-1] == "100.01,0.000"
+    assert tables["mic"][0] == "0,0.000" and tables["mic"][-1] == "100.01,1.000"
     assert all(g.get("enabled") is None for g in doc.iter("group"))
+
+
+def test_blend_knob_shows_its_unit_where_it_fits(two_passes):
+    two_passes.preset.pass_mode = "layer"
+    two_passes.signals[1].name = "Drive"
+    controls = ["mix", "tone"]
+    knob = preset.knobs_for(two_passes, controls, preset.effects_for(two_passes, controls))[0]
+    assert (knob.label, knob.unit) == ("Drive", "%")
+    assert knob.shown_label(preset.KNOB_W) == "Drive %"
+    assert knob.shown_label(50) == "Drive"  # a row of many knobs shrinks them
 
 
 def test_build_refuses_hits_sliced_under_another_setup(built):

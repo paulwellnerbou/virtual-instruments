@@ -73,7 +73,7 @@ def knob(x: float, y: float, size: float, k: preset.Knob, accent: str, text: str
     lit = (f"<path d='{_arc(cx, cy, 46 * u, -135, angle)}' stroke='{accent}' stroke-width='{6 * u:.2f}' "
            f"fill='none' stroke-linecap='round' filter='url(#glow)'/>") if share > 0.005 else ""
     return (f"<text x='{cx:.1f}' y='{y + 9:.1f}' text-anchor='middle' font-size='7.5' fill='{text}' "
-            f"opacity='.8'>{escape(k.label)}</text>"
+            f"opacity='.8'>{escape(k.shown_label(size))}</text>"
             f"<path d='{_arc(cx, cy, 46 * u, -135, 135)}' stroke='rgba(255,255,255,.13)' "
             f"stroke-width='{6 * u:.2f}' fill='none' stroke-linecap='round'/>{lit}"
             f"<circle cx='{cx:.1f}' cy='{cy:.1f}' r='{34 * u:.2f}' fill='url(#cap)' filter='url(#shadow)'/>"
