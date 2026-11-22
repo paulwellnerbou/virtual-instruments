@@ -69,3 +69,35 @@ def test_artwork_route_answers_404_for_an_unknown_instrument(tmp_path, monkeypat
     with pytest.raises(HTTPException) as err:
         artwork_image("no-such-instrument", "cover_art")
     assert err.value.status_code == 404
+
+
+def test_the_editor_moves_extras_from_their_own_keys_as_the_range_changes():
+    inst = defaults.new_instrument("Uke", InstrumentType.PLUCKED)  # G2 (55) up; chuck C2, knock D2
+    inst.range.mode, inst.range.low, inst.range.high = "notes", 55, 81
+    chuck, knock = inst.extras[1], inst.extras[2]
+    editor = Editor(inst)
+    assert editor.follow_range() == []
+    inst.range.low = 4  # typing "40": the "4" comes first
+    editor.changed()
+    assert (chuck.key, knock.key) == (2, 3)
+    inst.range.low = 40
+    editor.changed()
+    assert (chuck.key, knock.key) == (38, 39)  # from C2 and D2, not from where "4" put them
+    inst.range.low = 55
+    editor.changed()
+    assert (chuck.key, knock.key) == (48, 50)  # back where they were set
+    knock.key = 52  # set by hand: from now on its own key
+    inst.range.low = 50
+    editor.changed()
+    assert knock.key == 49
+    inst.range.low = 55
+    editor.changed()
+    assert knock.key == 52
+
+
+def test_opening_an_instrument_moves_extras_off_the_notes():
+    inst = defaults.new_instrument("Bari", InstrumentType.PLUCKED)
+    inst.range.strings = defaults.tuning_strings("Baritone ukulele (D G B E)")  # from D2, the knock's key
+    editor = Editor(inst)
+    assert [x.name for x in editor.follow_range()] == ["Body knock"]
+    assert inst.extras[2].key == 49 and not inst.problems()

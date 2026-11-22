@@ -10,6 +10,8 @@ from typing import Any, Literal
 import tomli_w
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 
+from vinst import notes
+
 
 class InstrumentType(StrEnum):
     PLUCKED = "plucked"
@@ -263,7 +265,7 @@ def default_eq() -> list[EqBand]:
 
 
 class Preset(BaseModel):
-    """How the DecentSampler instrument plays and looks (wizard step 7)."""
+    """How the DecentSampler instrument plays and looks (wizard step 6)."""
 
     tuning: Literal["off", "partial", "full"] = "full"
     tuning_amount: float = Field(default=0.5, ge=0, le=1, description="share corrected when partial")
@@ -336,6 +338,68 @@ class Instrument(BaseModel):
     # Notes with their own velocity lanes, by note (its base name, e.g. "060_C-0").
     note_lanes: dict[str, NoteLanes] = {}
 
+    def playable_keys(self) -> tuple[int, int] | None:
+        """The keys the notes play on, stretching included; None where extras can't land on a note:
+        sounds sit on keys of their own, and imported samples bring their notes along."""
+        span = self.range.span()
+        if span is None or self.range.mode == "sounds" or self.recording.source != "takes":
+            return None
+        return max(0, span[0] - self.preset.extend_below), min(127, span[1] + self.preset.extend_above)
+
+    def extra_key_problem(self, key: int) -> str | None:
+        playable = self.playable_keys()
+        if playable is None or not playable[0] <= key <= playable[1]:
+            return None
+        return f"inside the playable keys {notes.name(playable[0])}–{notes.name(playable[1])}"
+
+    def note_keys(self) -> set[int]:
+        """The keys the notes or sounds play on, where no extra may go."""
+        playable = self.playable_keys()
+        keys = set(range(playable[0], playable[1] + 1)) if playable else set()
+        if self.range.mode == "sounds":
+            keys |= {s.key for s in self.range.sounds}
+        return keys
+
+    def free_extra_key(self, near: int | None = None) -> int:
+        """A key for one more extra, on no note and no other extra's key: the free one nearest `near`,
+        by default just below the notes (C2 while there are none)."""
+        notes_keys = self.note_keys()
+        taken = notes_keys | {k for x in self.extras if x.use == "key" for k in x.keys()}
+        return _nearest_free(taken, min(notes_keys, default=49) - 1 if near is None else near)
+
+    def place_extra(self, x: Extra) -> bool:
+        """Move the keys of an extra just given keys of its own off the notes and the other extras'
+        keys, each to the nearest free one. Whether any moved."""
+        taken = self.note_keys() | {k for o in self.extras if o.use == "key" and o is not x for k in o.keys()}
+        moved = False
+        for slot in [x, *x.more_keys]:
+            if slot.key in taken:
+                slot.key = _nearest_free(taken, slot.key)
+                moved = True
+            taken.add(slot.key)
+        return moved
+
+    def move_extras_outside(self) -> bool:
+        """Move the extras' keys the notes play on to the nearest free keys below them (above where
+        there's no room), keeping their order. Whether any moved."""
+        playable = self.playable_keys()
+        if playable is None:
+            return False
+        lo, hi = playable
+        slots = sorted(((k, x, i) for x in self.extras if x.use == "key" for i, k in enumerate(x.keys())
+                        if lo <= k <= hi), key=lambda s: s[0])
+        if not slots:
+            return False
+        taken = {k for x in self.extras if x.use == "key" for k in x.keys()}
+        below = [k for k in range(lo) if k not in taken][-len(slots):]
+        above = [k for k in range(hi + 1, 128) if k not in taken][:len(slots) - len(below)]
+        for (_, x, i), key in zip(slots, below + above):
+            if i == 0:
+                x.key = key
+            else:
+                x.more_keys[i - 1].key = key
+        return True
+
     def problems(self) -> list[str]:
         """Soft validation shown in the UI; an instrument with problems can still be saved."""
         out: list[str] = []
@@ -370,22 +434,16 @@ class Instrument(BaseModel):
         for color in (self.preset.bg_color, self.preset.text_color, self.preset.accent_color):
             if not re.fullmatch(r"[0-9A-Fa-f]{8}", color):
                 out.append(f"Colour “{color}” must be 8 hex digits (AARRGGBB).")
-        keys = [x.key for x in self.extras if x.use == "key"]
-        _dupes(out, "extra key", [str(k) for k in keys])
         if self.recording.source == "samples":
             if not self.recording.import_dir:
                 out.append("Choose the folder with the samples to import (step 5).")
             if any(sig.recorded == "separate" for sig in self.signals):
                 out.append("Imported samples can't be in separate recording passes; set all signals to "
                            "“Together” (step 2).")
-        span = self.range.span()
-        if span is not None and self.range.mode != "sounds" and self.recording.source == "takes":
-            lo, hi = span[0] - self.preset.extend_below, span[1] + self.preset.extend_above
-            for x in self.extras:
-                for key in x.keys() if x.use == "key" else []:
-                    if lo <= key <= hi:
-                        out.append(f"Extra “{x.name}” is on key {key}, inside the playable range {lo}–{hi}; "
-                                   "move it outside (step 6).")
+        for x in self.extras:
+            for key in x.keys() if x.use == "key" else []:
+                if inside := self.extra_key_problem(key):
+                    out.append(f"Extra “{x.name}” is on key {notes.name(key)}, {inside}; move it outside (step 4).")
         for sig in self.signals:
             if sig.id in RESERVED_SIGNAL_IDS or sig.id.startswith("pass-"):
                 out.append(f"Signal id “{sig.id}” is reserved; choose another.")
@@ -412,6 +470,12 @@ class Instrument(BaseModel):
     @classmethod
     def load(cls, path: Path) -> "Instrument":
         return cls.from_toml(path.read_text(encoding="utf-8"))
+
+
+def _nearest_free(taken: set[int], near: int) -> int:
+    """The MIDI key nearest `near` that isn't taken, the lower one on a tie."""
+    free = [k for k in range(128) if k not in taken]
+    return min(free, key=lambda k: (abs(k - near), k)) if free else 127
 
 
 def _dupes(out: list[str], what: str, values: list[str]) -> None:

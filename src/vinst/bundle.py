@@ -220,7 +220,7 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
 
     manifest = review.load(store.manifest_path(inst.meta.slug))
     if manifest is None:
-        raise ValueError("Nothing sliced yet (step 6).")
+        raise ValueError("Nothing sliced yet (step 5).")
     problems = inst.problems()
     if problems:
         raise ValueError("Fix these first: " + " ".join(problems))

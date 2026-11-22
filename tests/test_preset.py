@@ -403,9 +403,68 @@ def test_build_refuses_hits_sliced_under_another_setup(built):
 def test_extra_keys_inside_the_range_are_reported():
     inst = defaults.new_instrument("Bari", InstrumentType.PLUCKED)
     inst.range.strings = defaults.tuning_strings("Baritone ukulele (D G B E)")
-    assert any("Body knock" in p and "inside the playable range" in p for p in inst.problems())
+    assert any("Body knock" in p and "inside the playable keys D2–A#4" in p and "(step 4)" in p
+               for p in inst.problems())
     inst.extras[2].key = 40
-    assert not any("inside the playable range" in p for p in inst.problems())
+    assert not any("inside the playable keys" in p for p in inst.problems())
+
+
+def test_extras_move_below_a_range_that_grows_over_them():
+    inst = defaults.new_instrument("Bari", InstrumentType.PLUCKED)
+    chuck, knock = inst.extras[1], inst.extras[2]
+    assert (chuck.key, knock.key) == (48, 50)  # C2 and D2, below a low-G ukulele
+    chuck.more_keys = [ExtraKey(key=49, start=2)]
+    inst.range.strings = defaults.tuning_strings("Baritone ukulele (D G B E)")  # from D2 (50)
+    assert inst.move_extras_outside()
+    assert (chuck.key, chuck.more_keys[0].key, knock.key) == (48, 49, 47)
+    inst.preset.extend_below = 3  # now from B1 (47): all three move, keeping their order on the keyboard
+    assert inst.move_extras_outside()
+    assert (chuck.key, chuck.more_keys[0].key, knock.key) == (45, 46, 44)
+    assert not inst.move_extras_outside() and not inst.problems()
+
+
+def test_extras_go_above_when_there_is_no_room_below():
+    inst = defaults.new_instrument("Low", InstrumentType.PLUCKED)
+    inst.range.mode, inst.range.low, inst.range.high = "notes", 1, 60
+    inst.extras[1].key, inst.extras[2].key = 10, 20
+    assert inst.move_extras_outside()
+    assert (inst.extras[1].key, inst.extras[2].key) == (0, 61)
+
+
+def test_a_new_extra_key_is_the_nearest_free_one_outside_the_notes():
+    inst = defaults.new_instrument("Uke", InstrumentType.PLUCKED)  # G2 (55) up; chuck C2, knock D2
+    assert inst.free_extra_key() == 54
+    assert inst.free_extra_key(near=49) == 49
+    inst.extras[1].key = 54
+    assert inst.free_extra_key() == 53
+    assert inst.free_extra_key(near=55) == 53  # its own side of the range, not above A4 (81)
+
+
+def test_without_a_range_of_notes_a_new_extra_avoids_the_sounds():
+    drums = defaults.new_instrument("Drums", InstrumentType.UNPITCHED)  # one sound, on C3 (60)
+    assert drums.free_extra_key() == 59
+    drums.range.sounds[0].key = 59
+    assert drums.free_extra_key() == 58
+    drums.range.mode = "notes"
+    drums.range.low, drums.range.high = 70, 60  # incomplete: low above high
+    assert drums.free_extra_key() == 48
+
+
+def test_an_extra_given_its_own_key_moves_off_the_notes_and_other_extras():
+    inst = defaults.new_instrument("Uke", InstrumentType.PLUCKED)
+    release, chuck = inst.extras[0], inst.extras[1]
+    assert release.use == "release" and release.key == chuck.key == 48
+    assert inst.place_extra(release)
+    assert release.key == 47  # beside the chuck's C2, the lower one on a tie
+    assert not inst.place_extra(release)
+    release.key = 60  # on a note
+    assert inst.place_extra(release) and release.key == 54
+
+
+def test_new_instruments_start_with_their_extras_outside_the_range():
+    for kind in InstrumentType:
+        inst = defaults.new_instrument("X", kind)
+        assert not any("inside the playable keys" in p for p in inst.problems())
 
 
 def test_reserved_signal_ids_are_reported():

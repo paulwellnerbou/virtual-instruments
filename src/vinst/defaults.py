@@ -128,6 +128,7 @@ def new_instrument(name: str, kind: InstrumentType, author: str | None = None) -
         recording=rec,
     )
     inst.processing.loops = kind in SUSTAINED_TYPES
+    inst.move_extras_outside()
     return inst
 
 
