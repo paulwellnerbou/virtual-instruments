@@ -8,7 +8,7 @@ from conftest import lane_ranges, piezo_and_mic
 from lxml import etree
 
 from vinst import bundle, defaults, preset, review, store
-from vinst.plan import layer_bounds
+from vinst.plan import layer_bounds, valid_splits
 from vinst.slicing import process
 from vinst.spec import InstrumentType, Preset
 from vinst.synth import Mistakes, write_takes
@@ -18,6 +18,14 @@ from vinst.validate import validate_bundle
 def test_layer_bounds_cover_all_velocities():
     assert layer_bounds(3) == [(1, 42), (43, 85), (86, 127)]
     assert layer_bounds(1) == [(1, 127)]
+
+
+def test_splits_must_leave_every_velocity_lane_a_velocity():
+    assert valid_splits(3, [2, 127])
+    assert layer_bounds(3, [2, 127]) == [(1, 1), (2, 126), (127, 127)]
+    for bad in ([86, 43], [43, 43], [1, 86], [43, 128], [43], [43, 86, 100]):
+        assert not valid_splits(3, bad)
+        assert layer_bounds(3, bad) == layer_bounds(3)  # an unusable split falls back to an even one
 
 
 def test_missing_layer_borrows_from_below_then_above():

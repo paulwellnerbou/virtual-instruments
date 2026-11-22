@@ -36,7 +36,7 @@ Note names follow DecentSampler: middle C is C3 (MIDI 60).
 
 ## 4. Dynamics and extras
 
-- **Velocities:** the dynamics every note is recorded at, quietest first, e.g. p and f, each in its own take. A slider sets where each starts ("f starts at velocity 80").
+- **Velocities:** the dynamics every note is recorded at, quietest first, e.g. p and f, each in its own take. Drag the knobs on the bar of velocities to set where each starts ("f 80–127"); **Even split** spaces them evenly.
 - **Variations per velocity:** hits of each note and velocity; DecentSampler alternates them so repeats don't sound mechanical.
 - Both are **defaults**: a note can get its own velocities in the worksheet.
 - The instrument sets **loudness by velocity** itself (step 6), so velocities only need to *sound* different. Two or three dynamics you can play evenly, e.g. p and mf, are enough, even for pianissimo to fortissimo.

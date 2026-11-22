@@ -10,10 +10,11 @@ from fastapi.responses import FileResponse
 from nicegui import app, run, ui
 
 from vinst import bundle, lowcut, preset, reverb_send, review, sf2, store
-from vinst.plan import layer_bounds, recording_passes
+from vinst.plan import layer_bounds, recording_passes, valid_splits
 from vinst.preset import mixable_signals
 from vinst.spec import CONTROLS, Extra
 from vinst.ui.anim import Collapse
+from vinst.ui.controls import NumberField, Segmented, VelocitySplits
 from vinst.ui import preview
 from vinst.ui.equalizer import equalizer
 from vinst.ui.finder import reveal
@@ -95,7 +96,7 @@ LAYER_COLOURS = ["#90caf9", "#42a5f5", "#1e88e5", "#1565c0", "#0d47a1"]
 def velocity_layers(ed: "Editor") -> None:
     """Where each recorded dynamic takes over, e.g. when f kicks in, as velocity boundaries.
 
-    Rebuilt when the layers change in step 4, so there is always one slider per boundary.
+    Rebuilt when the layers change in step 4, so there is always one knob per boundary.
     """
     inst, p = ed.inst, ed.inst.preset
     shown = {"layers": list(inst.dynamics.layers)}
@@ -110,52 +111,29 @@ def velocity_layers(ed: "Editor") -> None:
         def starts() -> list[int]:
             return [lo for lo, _ in layer_bounds(len(layers), p.velocity_splits)][1:]
 
-        def moved(i: int, value: int) -> None:
-            values = starts()
-            values[i] = int(value)
-            # Keep the layers in order and at least one velocity wide.
-            for k in range(i + 1, len(values)):
-                values[k] = max(values[k], values[k - 1] + 1)
-            for k in range(i - 1, -1, -1):
-                values[k] = min(values[k], values[k + 1] - 1)
-            values = [min(max(v, 2 + k), 127 - (len(values) - 1 - k)) for k, v in enumerate(values)]
-            ed.set(p, "velocity_splits", values)
-            show()
+        def moved(e: Any) -> None:
+            try:
+                values = [int(v) for v in e.value]
+            except (TypeError, ValueError):
+                values = []
+            if not valid_splits(len(layers), values):
+                splits.set_value(starts())  # e.g. sent for another number of velocities
+            elif values != starts():  # also called for "Even split", which only shows the even starts
+                ed.set(p, "velocity_splits", values)
 
         def even() -> None:
             ed.set(p, "velocity_splits", [])
-            show()
+            splits.set_value(starts())
 
-        def show() -> None:
-            for slider, value in zip(sliders, starts()):
-                slider.set_value(value)
-            bar.refresh()
-
-        ui.label("Where each velocity starts").classes("text-sm font-medium mt-2")
-        sliders: list[ui.slider] = []
-        with ui.column().classes("gap-1 w-full max-w-3xl"):
-            for i, layer in enumerate(layers[1:]):
-                with ui.row().classes("items-center gap-3 w-full no-wrap"):
-                    ui.label(f"{layer} starts at velocity").classes("whitespace-nowrap w-44")
-                    slider = ui.slider(min=2, max=127, step=1, value=starts()[i]).props("label").classes("grow")
-                    slider.on("change", lambda e, k=i: moved(k, e.args))
-                    sliders.append(slider)
-                    ui.label().bind_text_from(slider, "value", lambda v: f"{int(v)}").classes("w-8 text-right")
-
-            @ui.refreshable
-            def bar() -> None:
-                bounds = layer_bounds(len(layers), p.velocity_splits)
-                with ui.row().classes("w-full gap-0 no-wrap rounded overflow-hidden text-xs text-white"):
-                    for k, (layer, (lo, hi)) in enumerate(zip(layers, bounds)):
-                        ui.label(f"{layer} {lo}–{hi}").classes("text-center py-1 overflow-hidden whitespace-nowrap") \
-                            .style(f"width:{(hi - lo + 1) / 127 * 100:.2f}%;"
-                                   f"background:{LAYER_COLOURS[k % len(LAYER_COLOURS)]};transition:width .2s ease")
-
-            bar()
-            with ui.row().classes("items-center gap-2"):
+        with ui.column().classes("gap-2 w-full max-w-3xl"):
+            with ui.row().classes("items-center w-full mt-2"):
+                ui.label("Where each velocity starts").classes("text-sm font-medium")
+                ui.space()
                 ui.button("Even split", on_click=even).props("flat dense")
-                ui.label("Play your keyboard softly and firmly in DecentSampler to find where the louder "
-                         "samples should take over. Changes need a new build, never new slicing.").classes("text-xs opacity-70")
+            splits = VelocitySplits(layers, LAYER_COLOURS, value=starts(), on_change=moved).classes("w-full")
+            ui.label("Drag a knob to where the next velocity takes over. Play your keyboard softly and firmly in "
+                     "DecentSampler to find the place. Changes need a new build, never new slicing.") \
+                .classes("text-xs opacity-70")
 
     section()
     ed.on_change_hooks.append(lambda: shown["layers"] != list(inst.dynamics.layers) and section.refresh())
@@ -170,7 +148,7 @@ def step_sound(ed: "Editor") -> None:
             ed.set(p, "tuning", e.value)
             partial.set_open(e.value == "partial")
 
-        ui.toggle({"off": "Off", "partial": "Partial", "full": "Full"}, value=p.tuning, on_change=tuning_changed)
+        Segmented({"off": "Off", "partial": "Partial", "full": "Full"}, value=p.tuning, on_change=tuning_changed)
         with Collapse(p.tuning == "partial", axis="x", inner_classes="flex items-center gap-4 pr-2") as partial:
             ui.slider(min=0, max=1, step=0.05, value=p.tuning_amount,
                       on_change=lambda e: ed.set(p, "tuning_amount", e.value)).classes("w-48")
@@ -180,7 +158,7 @@ def step_sound(ed: "Editor") -> None:
     if len(recording_passes(inst)) > 1:
         ui.separator()
         ui.label("Recording passes").classes("text-base font-medium")
-        ui.toggle({"switch": "Switch (menu in the instrument)", "layer": "Layer (play together)"},
+        Segmented({"switch": "Switch (menu in the instrument)", "layer": "Layer (play together)"},
                   value=p.pass_mode, on_change=lambda e: ed.set(p, "pass_mode", e.value))
         ui.label("Passes are separate performances. Switch plays one at a time; Layer plays them together, "
                  "which sounds like two players in unison (doubled, slightly chorused).").classes(
@@ -193,7 +171,7 @@ def step_sound(ed: "Editor") -> None:
         for field, label in (("neighbours_below", "Notes below (pitched up)"),
                              ("neighbours_above", "Notes above (pitched down)")):
             ui.label(label)
-            ui.toggle({0: "Off", 1: "1 semitone", 2: "2 semitones"}, value=getattr(p, field),
+            Segmented({0: "Off", 1: "1 semitone", 2: "2 semitones"}, value=getattr(p, field),
                       on_change=lambda e, f=field: ed.set(p, f, e.value))
     ui.label("Keys between recorded notes play the recorded note above them, pitched down (pitched up, a "
              "sample soon sounds thin; only above the highest note is it pitched up). Neighbour round robins "
@@ -257,7 +235,7 @@ def step_sound(ed: "Editor") -> None:
         def vel_changed(e: Any) -> None:
             ed.set(p, "vel_track", None if e.value in (None, "") else float(e.value))
 
-        ui.number("Velocity sensitivity", value=p.vel_track, min=0, max=1, step=0.05, placeholder="auto",
+        NumberField("Velocity sensitivity", value=p.vel_track, min=0, max=1, step=0.05, placeholder="auto",
                   on_change=vel_changed).classes("w-44").props('hint="empty: auto"')
 
     ui.separator()
@@ -557,7 +535,7 @@ def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
     settings = None
     with ui.column().classes("gap-0 py-1 w-full"):
         switches[key] = ui.switch(name, value=on, on_change=switched)
-        ui.label(CONTROL_TEXT[key]).classes("text-xs opacity-70 pl-12 -mt-2")
+        ui.label(CONTROL_TEXT[key]).classes("text-xs opacity-70 pl-12")
         if key == "eq":
             with Collapse(on, inner_classes="flex flex-col gap-1 pl-12 pt-2") as settings:
                 ui.label("Drag a band's point on the curve, or type its values. In the instrument, each peak "
@@ -570,10 +548,10 @@ def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
             with Collapse(on, inner_classes="flex flex-col gap-1 pl-12 pt-2") as settings:
                 with ui.row().classes("items-center gap-2"):
                     if key == "lowcut":
-                        ui.number("Below", value=round(proc.low_cut_below * 100), min=30, max=100, step=5,
+                        NumberField("Below", value=round(proc.low_cut_below * 100), min=30, max=100, step=5,
                                   precision=0, suffix="% of the pitch",
                                   on_change=lambda e: e.value and ed.set(proc, "low_cut_below",
-                                                                         float(e.value) / 100)).classes("w-40")
+                                                                         float(e.value) / 100)).classes("w-44")
                         ed.number("By", proc, "low_cut_db", cast=float, min=1, max=40, step=1,
                                   suffix="dB").classes("w-24")
 

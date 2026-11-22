@@ -25,6 +25,7 @@ from vinst.plan import Take, more_base, more_file, note_lanes, plan_takes, recor
 from vinst.plan import take_key as take_key_of
 from vinst.spec import Signal
 from vinst.ui import form
+from vinst.ui.controls import NumberField
 
 if TYPE_CHECKING:
     from vinst.ui.app import Editor
@@ -289,7 +290,7 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
         with ui.row().classes("w-full items-center justify-end"):
             hits_input = None
             if count is not None:
-                hits_input = ui.number("Hits", value=count, min=1, max=MAX_HITS, step=1, precision=0,
+                hits_input = NumberField("Hits", value=count, min=1, max=MAX_HITS, step=1, precision=0,
                                        on_change=lambda e: set_count(e.value)) \
                     .props("dense outlined").classes("w-24")
                 ui.space()

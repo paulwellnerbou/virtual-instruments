@@ -41,6 +41,7 @@ from vinst.review import FLAGS, Hit, Manifest, TakeResult, lane_of, loudness, se
 from vinst.spec import AUDIO_SUFFIXES, SAFE_NAME as SAFE_LANE, SUSTAINED_TYPES, CleanupEq, EqFilter, Instrument, NoteLanes
 from vinst.ui import form, open_with, recording
 from vinst.ui.anim import Collapse
+from vinst.ui.controls import NumberField, Segmented
 from vinst.ui.finder import can_choose_folder, choose_folder, ensure_folder, reveal
 
 if TYPE_CHECKING:
@@ -349,15 +350,15 @@ def hit_wave(take: TakeResult, hit: Hit, height: int, loudest_db: float) -> str:
 
 
 CSS = """
-.vi-vel { position: relative; width: 14px; margin: 4px 30px 4px 4px; border-radius: 7px; background: #eee; }
+.vi-vel { position: relative; width: 6px; margin: 4px 34px 4px 8px; border-radius: 3px; background: var(--vi-border); }
 /* Clips the segments to the track's rounded ends; the dots sit outside it, so they aren't cut. */
-.vi-vel-segs { position: absolute; inset: 0; border-radius: 7px; overflow: hidden; }
+.vi-vel-segs { position: absolute; inset: 0; border-radius: 3px; overflow: hidden; }
 .vi-vel-seg { position: absolute; left: 0; right: 0; transition: top .15s, height .15s; }
-.vi-vel-dot { position: absolute; left: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%;
-              background: white; border: 2px solid #1565c0; cursor: ns-resize; touch-action: none;
-              box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .1s; }
-.vi-vel-dot.active { transform: scale(1.2); }
-.vi-vel-dot span { position: absolute; left: 22px; top: -1px; font-size: 11px; opacity: .75; pointer-events: none; }
+.vi-vel-dot { position: absolute; left: 50%; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%;
+              background: white; border: .5px solid rgba(0,0,0,.2); cursor: ns-resize; touch-action: none;
+              box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .1s; }
+.vi-vel-dot.active { transform: scale(1.15); }
+.vi-vel-dot span { position: absolute; left: 20px; top: -1px; font-size: 11px; opacity: .75; pointer-events: none; }
 .vi-lane { border-radius: 6px; padding: 2px 4px; transition: background-color .15s; }
 .vi-hits { display: flex; flex-wrap: nowrap; gap: 6px; width: 100%; }
 /* As wide as the hit is long; when a row runs out of room, all shrink alike and stay to scale. */
@@ -569,7 +570,7 @@ def settings_cards(ed: "Editor") -> None:
                     .classes("grow min-w-0")
                 ui.select({b: f"{b}-bit" for b in (16, 24, 32)}, value=rec.bit_depth,
                           on_change=lambda e: ed.set(rec, "bit_depth", e.value)).props("dense outlined") \
-                    .classes("w-24 shrink-0")
+                    .classes("w-28 shrink-0")
 
         source()
         if not importing:
@@ -607,7 +608,7 @@ def settings_cards(ed: "Editor") -> None:
                       on_change=lambda e: (ed.set(proc, "loops", e.value), crossfade.set_open(e.value)))
             with Collapse(proc.loops, axis="x") as crossfade:
                 ed.number("", proc, "loop_crossfade_ms", cast=float, min=0, max=500, step=5,
-                          suffix="ms crossfade").props("dense outlined").classes("w-40")
+                          suffix="ms crossfade").props("dense outlined").classes("w-44")
 
 
 def eq_summary(inst: Instrument, eq: CleanupEq) -> str:
@@ -705,8 +706,8 @@ def cleanup_eqs(ed: "Editor") -> None:
                               multiple=True, label="Signals (none: all)",
                               on_change=lambda e: (ed.set(eq, "signals", list(e.value or [])), gone.set_visibility(False))) \
                         .props("dense outlined use-chips").classes("grow min-w-0")
-                ui.toggle({False: "Takes I pick", True: "Every take"}, value=eq.every_take,
-                          on_change=lambda e: ed.set(eq, "every_take", bool(e.value))).props("dense no-caps")
+                Segmented({False: "Takes I pick", True: "Every take"}, value=eq.every_take,
+                          on_change=lambda e: ed.set(eq, "every_take", bool(e.value)))
             missing = cleanup_eq.missing_signals(inst, eq)
             gone = ui.label(f"It was also for {', '.join(f'“{m}”' for m in missing)}, which this instrument no "
                             "longer has. " + ("It works on the signals chosen above." if len(missing) < len(eq.signals)
@@ -722,13 +723,13 @@ def cleanup_eqs(ed: "Editor") -> None:
                                   on_change=lambda e, f=f: kind(f, e.value)).props("dense outlined") \
                             .classes("w-48 shrink-0")
                         watched = [ed.number("", f, "hz", cast=float, min=10, max=40000, step=1, suffix="Hz")
-                                   .props("dense outlined").classes("w-28")]
+                                   .props("dense outlined").classes("w-32")]
                         if f.kind in cleanup_eq.HAS_GAIN:
                             ed.number("", f, "gain_db", cast=float, min=-60, max=24, step=1, suffix="dB") \
                                 .props("dense outlined").classes("w-24")
                         if f.kind not in ("highpass", "lowpass"):
                             ed.number("", f, "q", cast=float, min=0.1, max=100, step=0.5, prefix="Q") \
-                                .props("dense outlined").classes("w-24") \
+                                .props("dense outlined").classes("w-28") \
                                 .tooltip("Higher is narrower")
                         if f.kind == "hum":
                             watched.append(ed.number("", f, "harmonics", min=1, max=40, step=1, suffix="×")
@@ -825,6 +826,16 @@ def step_worksheet(ed: "Editor") -> None:
 
     ui.timer(0.25, tick)
 
+    def show_progress(on: bool) -> None:
+        """The progress bar beside the slice button. Their row is only there with one of them in it: empty,
+        it would still take a gap in the step. Closing, the bar slides shut first (anim.Collapse takes .25 s)."""
+        progress_box.set_open(on)
+        if on:
+            slice_row.set_visibility(True)
+        else:
+            with anchor:
+                ui.timer(0.3, lambda: slice_row.set_visibility(button.visible or state["busy"]), once=True)
+
     async def slice_all(only: str | None = None) -> None:
         """Slice everything, or with `only` just that recording (right after recording it). While a slice
         runs, this one waits for it: a change made meanwhile (a recording moved, a cut set) is sliced too."""
@@ -835,7 +846,7 @@ def step_worksheet(ed: "Editor") -> None:
         ed.autosave()
         state["busy"] = True
         button.disable()
-        progress_box.set_open(True)
+        show_progress(True)
 
         def report(i: int, n: int, title: str) -> None:
             state["progress"], state["label"] = (i / n if n else 1), f"{i}/{n} · {title}"
@@ -866,7 +877,7 @@ def step_worksheet(ed: "Editor") -> None:
         finally:
             state["busy"] = False
             button.enable()
-            progress_box.set_open(False)
+            show_progress(False)
             state["label"] = ""
 
 
@@ -875,7 +886,8 @@ def step_worksheet(ed: "Editor") -> None:
         pass
     with ui.dialog() as lane_dialog, ui.card().classes("min-w-[22rem]") as lane_card:
         pass
-    anchor = ui.element("div")  # stays put while the results redraw; hosts the re-slice timers
+    # Stays put while the results redraw; hosts the re-slice timers. Takes no room (nor a gap) in the step.
+    anchor = ui.element("div").style("display: contents")
 
     def resliced(key: str) -> None:
         """Right after recording: slice just that recording."""
@@ -1046,7 +1058,7 @@ def step_worksheet(ed: "Editor") -> None:
             ui.label(f"A new velocity for {title}").classes("text-lg font-medium")
             suggestion = next((s for s in SUGGESTED_LANES[::-1] if s not in existing), "")
             name = ui.input("Name", value=suggestion).props("dense autofocus")
-            start = ui.number("Starts at velocity", value=min(127, bounds[-1][1] - 10 if bounds else 64),
+            start = NumberField("Starts at velocity", value=min(127, bounds[-1][1] - 10 if bounds else 64),
                               min=2, max=127, precision=0).props("dense")
             ui.label("Only this note gets it; the defaults in Dynamics stay as they are. The velocities stay "
                      "ordered by where they start.").classes("text-xs opacity-70")
@@ -1884,7 +1896,7 @@ def step_worksheet(ed: "Editor") -> None:
             return True
         state["busy"] = True
         button.disable()
-        progress_box.set_open(True)
+        show_progress(True)
 
         def report(i: int, n: int, title: str) -> None:
             state["progress"], state["label"] = (i / n if n else 1), f"{i}/{n} · {title}"
@@ -1906,7 +1918,7 @@ def step_worksheet(ed: "Editor") -> None:
         finally:
             state["busy"] = False
             button.enable()
-            progress_box.set_open(False)
+            show_progress(False)
             state["label"] = ""
         return True
 
@@ -1968,6 +1980,8 @@ def step_worksheet(ed: "Editor") -> None:
         """What needs slicing again, and the counts; redrawn with the results."""
         # Only offered when something needs it: takes recorded here are sliced right away.
         button.set_visibility(importing or bool(state["stale"]))
+        slice_row.set_visibility(button.visible or state.get("busy", False))
+        overview_box.set_visibility(bool(state["stale"]))
         if not importing:
             button.set_text("Update them" if state["edited"] else "Slice them")
             button.props(f"icon={'sync' if state['edited'] else 'content_cut'}")
@@ -1978,7 +1992,7 @@ def step_worksheet(ed: "Editor") -> None:
     # The message gets a line of its own, however long; below it the button, and the progress bar
     # filling the rest with the take's name on one line of its own, so nothing moves as names change.
     overview_box = ui.column().classes("gap-0 w-full")
-    with ui.row().classes("items-center gap-4 w-full no-wrap"):
+    with ui.row().classes("items-center gap-4 w-full no-wrap") as slice_row:
         button = ui.button("Import & analyse" if importing else "Slice them",
                            icon="file_download" if importing else "content_cut",
                            on_click=lambda: update_edited() if state["edited"] else slice_all()) \

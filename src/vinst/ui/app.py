@@ -30,6 +30,7 @@ from vinst.spec import (
     slugify,
 )
 from vinst.ui import anim, keyboard, recording, theme
+from vinst.ui.controls import NumberField, Segmented
 from vinst.ui.build_steps import step_build, step_sound, velocity_layers
 from vinst.ui.finder import can_choose_folder, choose_folder, trash
 from vinst.ui.worksheet import settings_cards, step_worksheet
@@ -84,7 +85,8 @@ STEPS_CSS = """
 .vi-side.vi-side-sticky { position: sticky; top: 5rem; }
 .vi-side .vi-collapse.vi-open > .vi-collapse-inner { overflow: visible; }
 .vi-steps .q-stepper__header { flex-wrap: wrap; justify-content: flex-start; }
-.vi-steps .q-stepper__tab { flex: 0 0 25%; max-width: 25%; }
+.vi-steps .q-stepper__tab { flex: 0 0 auto; }
+@media (min-width: 1024px) { .vi-steps .q-stepper__title { white-space: nowrap; } }
 /* Chrome anchors the scroll position to the focused element (a chip being dragged, the button just
    clicked); a redraw replaces it and the page jumps. The steps redraw in place, so no anchoring. */
 .vi-steps .q-stepper__step-inner { overflow-anchor: none; }
@@ -117,7 +119,7 @@ STEPS_CSS = """
   .vi-setting > .row:first-child { width: auto; }
   .vi-setting > .row:last-child { flex-basis: 100%; }
 }
-"""  # wide screens: seven steps, four on the first line, then the worksheet starts the second
+"""
 
 
 def header() -> None:
@@ -125,11 +127,11 @@ def header() -> None:
     ui.add_css(STEPS_CSS)
     theme.add_css()
     recording.add_assets()
-    with ui.header().classes("items-center justify-between"):
-        ui.link(APP_TITLE, "/").classes("text-white text-lg no-underline")
-        with ui.row().classes("items-center gap-1 text-sm"):
+    with ui.header().classes("items-center justify-between px-4 py-0"):
+        ui.link(APP_TITLE, "/").classes("text-inherit font-semibold no-underline")
+        with ui.row().classes("items-center gap-1 text-sm opacity-80"):
             ui.label("Builds instruments for")
-            ui.link("DecentSampler", DECENTSAMPLER_URL, new_tab=True).classes("text-white font-medium")
+            ui.link("DecentSampler", DECENTSAMPLER_URL, new_tab=True).classes("text-inherit")
             ui.icon("open_in_new").classes("text-sm")
 
 
@@ -311,15 +313,16 @@ class Editor:
     # Field helpers bound to model attributes.
 
     def text(self, label: str, obj: Any, attr: str, **kw: Any) -> ui.input:
-        return ui.input(label, value=getattr(obj, attr),
+        # An empty label would still reserve its line and push the value down.
+        return ui.input(label or None, value=getattr(obj, attr),
                         on_change=lambda e: self.set(obj, attr, e.value), **kw)
 
-    def number(self, label: str, obj: Any, attr: str, *, cast: type = int, **kw: Any) -> ui.number:
+    def number(self, label: str, obj: Any, attr: str, *, cast: type = int, **kw: Any) -> NumberField:
         def handle(e: Any) -> None:
             if e.value is not None:
                 self.set(obj, attr, cast(e.value))
 
-        return ui.number(label, value=getattr(obj, attr), on_change=handle, **kw)
+        return NumberField(label or None, value=getattr(obj, attr), on_change=handle, **kw)
 
     def folder(self, label: str, obj: Any, attr: str, prompt: str, **kw: Any) -> ui.input:
         """A path field with a "Choose…" button that opens the system's folder dialog."""
@@ -467,8 +470,7 @@ def step_instrument(ed: Editor) -> None:
     inst, meta = ed.inst, ed.inst.meta
     with ui.column().classes("w-full max-w-xl"):
         ed.text("Name", meta, "name").classes("w-full")
-        ed.text("Subtitle", meta, "subtitle", placeholder="e.g. Hawaiian koa").classes("w-full") \
-            .props('hint="Under the name in the instrument"')
+        ed.text("Subtitle", meta, "subtitle", placeholder="e.g. Hawaiian koa").classes("w-full")
 
         def author_changed(e: Any) -> None:
             # A copyright still as it was filled in follows the author (also through an emptied
@@ -495,7 +497,7 @@ def step_instrument(ed: Editor) -> None:
             ui.navigate.reload()
 
         ui.label("Samples").classes("text-sm opacity-70 mt-2")
-        ui.toggle({"takes": "Record new takes", "samples": "Import existing samples"},
+        Segmented({"takes": "Record new takes", "samples": "Import existing samples"},
                   value=inst.recording.source, on_change=source_changed)
 
         async def type_changed(e: Any) -> None:
@@ -592,7 +594,7 @@ def step_range(ed: Editor) -> None:
         ed.changed()
         body.refresh()
 
-    ui.toggle(MODE_LABELS, value=rng.mode, on_change=mode_changed)
+    Segmented(MODE_LABELS, value=rng.mode, on_change=mode_changed)
 
     @ui.refreshable
     def body() -> None:
@@ -646,7 +648,7 @@ def step_range(ed: Editor) -> None:
         with ui.row().classes("items-end max-w-full"):
             preset = ui.select(list(defaults.TUNINGS), label="Tuning preset",
                                value=None).classes("w-80 max-w-full")
-            frets = ui.number("Frets", value=rng.strings[0].frets if rng.strings else 12, min=0, max=36,
+            frets = NumberField("Frets", value=rng.strings[0].frets if rng.strings else 12, min=0, max=36,
                               precision=0).classes("w-24")
 
             def apply() -> None:
@@ -672,7 +674,7 @@ def step_range(ed: Editor) -> None:
                         ed.changed()
                         strings_rows.refresh()
 
-                    ui.button(icon="delete", on_click=remove).props("flat round").classes("mt-2")
+                    ui.button(icon="delete", on_click=remove).props("flat round")
 
             def add() -> None:
                 top = max((s.open for s in rng.strings), default=55)
@@ -716,7 +718,7 @@ def step_range(ed: Editor) -> None:
                         ed.changed()
                         sound_rows.refresh()
 
-                    ui.button(icon="delete", on_click=remove).props("flat round").classes("mt-2")
+                    ui.button(icon="delete", on_click=remove).props("flat round")
 
             def add() -> None:
                 used = {s.key for s in rng.sounds}
@@ -739,11 +741,19 @@ def step_dynamics(ed: Editor) -> None:
              "defaults: in the worksheet, single notes can get their own velocities and ranges.") \
         .classes("text-sm opacity-70 max-w-3xl")
 
-    @ui.refreshable
-    def layers() -> None:
-        with ui.row().classes("items-center"):
-            ui.toggle({n: str(n) for n in LAYER_PRESETS}, value=len(dyn.layers) if len(dyn.layers) in LAYER_PRESETS
-                      else None, on_change=lambda e: set_layers(LAYER_PRESETS[e.value]) if e.value else None)
+    def set_layers(names: list[str]) -> None:
+        if names != dyn.layers:
+            dyn.layers = list(names)
+            ed.changed()
+            layer_names.refresh()
+
+    # Only the names are redrawn: the count stays the same control, so its highlight slides.
+    with ui.row().classes("items-center"):
+        Segmented({n: str(n) for n in LAYER_PRESETS}, value=len(dyn.layers) if len(dyn.layers) in LAYER_PRESETS
+                  else None, on_change=lambda e: set_layers(LAYER_PRESETS[e.value]) if e.value else None)
+
+        @ui.refreshable
+        def layer_names() -> None:
             for i in range(len(dyn.layers)):
                 def rename(e: Any, i: int = i) -> None:
                     dyn.layers[i] = e.value
@@ -751,13 +761,7 @@ def step_dynamics(ed: Editor) -> None:
 
                 ui.input(value=dyn.layers[i], on_change=rename).classes("w-20").props("dense")
 
-    def set_layers(names: list[str]) -> None:
-        if names != dyn.layers:
-            dyn.layers = list(names)
-            ed.changed()
-            layers.refresh()
-
-    layers()
+        layer_names()
     if inst.recording.source == "samples":
         velocity_layers(ed)
         ui.label("When importing: a sample whose file name contains a velocity name (e.g. “_mf_”) goes to that "
@@ -792,7 +796,7 @@ def step_dynamics(ed: Editor) -> None:
                     ed.changed()
                     extras.refresh()
 
-                ui.button(icon="delete", on_click=remove).props("flat round").classes("mt-2")
+                ui.button(icon="delete", on_click=remove).props("flat round")
 
         def add() -> None:
             n = len(inst.extras) + 1
