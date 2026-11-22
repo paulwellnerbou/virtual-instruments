@@ -251,7 +251,7 @@ def process(inst: Instrument, previous: Manifest | None = None, progress: Progre
     if out_dir.resolve() == folder.resolve() or out_dir.resolve().is_relative_to(folder.resolve()):
         # The copies would be imported again next time, as extra round robins.
         raise ValueError(f"The copies would go into the folder you import from ({out_dir}). "
-                         "Choose another folder for them (step 6, Change…) or use the default.")
+                         "Choose another folder for them (step 5, Change…) or use the default.")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     samples, problems = group_files(folder, inst)

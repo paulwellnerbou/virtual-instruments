@@ -31,7 +31,7 @@ from vinst.spec import (
 )
 from vinst.ui import anim, keyboard, recording, theme
 from vinst.ui.controls import NumberField, Segmented
-from vinst.ui.build_steps import step_build, step_sound, velocity_layers
+from vinst.ui.build_steps import extra_use, step_build, step_sound, velocity_layers
 from vinst.ui.finder import can_choose_folder, choose_folder, trash
 from vinst.ui.worksheet import settings_cards, step_worksheet
 
@@ -56,7 +56,7 @@ def imported_notes(inst: Instrument) -> dict[int, int] | None:
     """note -> number of samples, from the last import; None if nothing was imported yet."""
     try:
         manifest = review.load(store.manifest_path(inst.meta.slug))
-    except Exception:  # unreadable hits.json is reported in step 6
+    except Exception:  # unreadable hits.json is reported in step 5
         return None
     if manifest is None or manifest.source != "samples":  # e.g. sliced takes from before switching
         return None
@@ -90,6 +90,8 @@ STEPS_CSS = """
 /* Chrome anchors the scroll position to the focused element (a chip being dragged, the button just
    clicked); a redraw replaces it and the page jumps. The steps redraw in place, so no anchoring. */
 .vi-steps .q-stepper__step-inner { overflow-anchor: none; }
+/* An extra's key field is narrow; its warning runs on below the switch beside it. */
+.vi-extra-map .q-field__messages { white-space: nowrap; overflow: visible; }
 /* Too narrow for the side column beside the steps, and for seven step titles. */
 @media (max-width: 1023px) {
   .vi-editor.vi-editor { flex-direction: column; flex-wrap: nowrap; align-items: stretch; }
@@ -110,8 +112,7 @@ STEPS_CSS = """
   .vi-extra > .q-field { flex: 1 1 4rem; width: auto; }
   .vi-extra > .q-field:first-child { flex-grow: 3; }
   .vi-extra > .vi-extra-text { flex-basis: calc(100% - 4rem); }
-  .vi-extra-map > .row { flex-wrap: wrap; }
-  .vi-extra-map .vi-collapse-inner { padding-left: 0; }
+  .vi-extra-map .row { flex-wrap: wrap; }
   .vi-build-progress.vi-build-progress { min-width: 0; }
 }
 @media (max-width: 479px) {
@@ -275,16 +276,50 @@ class Editor:
         self.dirty = False
         self.status: ui.label | None = None
         self.on_change_hooks: list[Callable[[], None]] = []
+        self.on_range_changed: list[Callable[[], None]] = []
+        self.playable = inst.playable_keys()
+        # Each extra key by id(): the key the user gave it, and where the range last put it. Going
+        # from the user's key each time, a range passing through other values on its way (typing
+        # "40" passes "4") leaves no trace, and a range shrinking back returns the extras.
+        self.extra_homes: dict[int, int] = {}
+        self.extra_placed: dict[int, int] = {}
 
     def changed(self) -> None:
         self.dirty = True
+        if (playable := self.inst.playable_keys()) != self.playable:
+            self.playable = playable
+            self.follow_range()
+            for hook in self.on_range_changed:
+                hook()
         if self.status:
             self.status.set_text("Unsaved…")
         self.refresh()
 
+    def follow_range(self) -> list[Extra]:
+        """Extras off the keys the notes play on: each from the key the user gave it, moved aside
+        where the range covers it. Only on a range change and on opening (an instrument with one
+        can't be built), so a key typed into the range stays put with its warning beside it.
+        The extras that moved."""
+        slots = [(x, k) for x in self.inst.extras if x.use == "key" for k in [x, *x.more_keys]]
+        before = [k.key for _, k in slots]
+        homes = {id(k): k.key if self.extra_placed.get(id(k)) != k.key else self.extra_homes.get(id(k), k.key)
+                 for _, k in slots}
+        used = set(before)
+        for _, k in slots:
+            home = homes[id(k)]
+            if home != k.key and home not in used:
+                used.discard(k.key)
+                k.key = home
+                used.add(home)
+        self.inst.move_extras_outside()
+        self.extra_homes = homes
+        self.extra_placed = {id(k): k.key for _, k in slots}
+        moved = [x for (x, k), key in zip(slots, before) if k.key != key]
+        return [x for i, x in enumerate(moved) if all(x is not y for y in moved[:i])]
+
     def refresh(self) -> None:
         """Redraw what depends on the instrument, e.g. after hits.json changed."""
-        for hook in self.on_change_hooks:
+        for hook in list(self.on_change_hooks):  # a hook may remove itself
             hook()
 
     def set(self, obj: Any, attr: str, value: Any) -> None:
@@ -328,13 +363,14 @@ class Editor:
         """A path field with a "Choose…" button that opens the system's folder dialog."""
         return folder_field(label, getattr(obj, attr), lambda v: self.set(obj, attr, v), prompt, **kw)
 
-    def note(self, label: str, obj: Any, attr: str, **kw: Any) -> ui.input:
+    def note(self, label: str, obj: Any, attr: str, problem: Callable[[int], str | None] | None = None,
+             **kw: Any) -> ui.input:
         def check(v: str) -> str | None:
             try:
-                notes.parse(v)
+                midi = notes.parse(v)
             except ValueError:
                 return "e.g. G2, C#3 or 60"
-            return None
+            return problem(midi) if problem else None
 
         inp = ui.input(label, value=notes.name(getattr(obj, attr)), validation=check, **kw)
         inp.props(f'hint="MIDI {getattr(obj, attr)}"')
@@ -348,6 +384,8 @@ class Editor:
             self.set(obj, attr, midi)
 
         inp.on_value_change(handle)
+        if problem:  # shown from the start, not only once typed in
+            inp.validate()
         return inp
 
 
@@ -360,6 +398,13 @@ def editor_page(slug: str) -> None:
             # Instruments from before the recordings-folder setting: use its default, as new ones do.
             ed.inst.recording.takes_dir = store.default_takes_dir(ed.inst.meta.name)
             ed.dirty = True
+        if moved := ed.follow_range():
+            ed.dirty = True
+            lo, hi = ed.playable or (0, 0)
+            message = (f"Moved off the notes ({notes.name(lo)}–{notes.name(hi)}): "
+                       + ", ".join(f"{x.name} to {', '.join(notes.name(k) for k in x.keys())}" for x in moved) + ".")
+            # Once the page is shown: a notification sent while it's still being built is lost.
+            ui.timer(0.5, lambda: ui.notify(message, multi_line=True), once=True)
     except Exception as e:  # missing or hand-edited spec that doesn't validate
         with ui.column().classes("w-full max-w-4xl mx-auto"):
             ui.label(f"Can't open “{slug}”").classes("text-2xl")
@@ -377,30 +422,32 @@ def editor_page(slug: str) -> None:
                 ed.status = ui.label("Saved").classes("text-sm opacity-60")
             ed.on_change_hooks.append(lambda: title.set_text(inst.meta.name))
 
-            with ui.stepper().props("header-nav animated flat").classes("w-full vi-steps") as stepper:
-                with ui.step("Instrument", icon="music_note"):
+            # Numbered, as messages point to steps by number: no check or pencil in place of a number.
+            with ui.stepper().props('header-nav animated flat active-icon="none" done-icon="none"') \
+                    .classes("w-full vi-steps") as stepper:
+                with ui.step("Instrument").props('prefix="1"'):
                     step_instrument(ed)
                     nav(stepper, first=True)
-                with ui.step("Signals", icon="settings_input_component"):
+                with ui.step("Signals").props('prefix="2"'):
                     step_signals(ed)
                     nav(stepper)
                 importing = inst.recording.source == "samples"
-                with ui.step("Range", icon="piano"):
+                with ui.step("Range").props('prefix="3"'):
                     if importing:
                         not_needed("Not needed when importing: the notes come from the samples (step 5).")
                     else:
                         step_range(ed)
                     nav(stepper)
-                with ui.step("Dynamics & extras", icon="graphic_eq"):
+                with ui.step("Dynamics & extras").props('prefix="4"'):
                     step_dynamics(ed)
                     nav(stepper)
-                with ui.step(WORKSHEET, icon="view_list"):
+                with ui.step(WORKSHEET).props('prefix="5"'):
                     step_worksheet(ed)
                     nav(stepper)
-                with ui.step("Sound & look", icon="tune"):
+                with ui.step("Sound & look").props('prefix="6"'):
                     step_sound(ed)
                     nav(stepper)
-                with ui.step("Build", icon="inventory_2"):
+                with ui.step("Build").props('prefix="7"'):
                     step_build(ed)
                     nav(stepper, last=True)
 
@@ -536,7 +583,7 @@ def step_signals(ed: Editor) -> None:
         "- **Own pass**: recorded separately, e.g. piezo and internal mic that share one output and are "
         "switched by a knob inside the instrument. Every take is recorded once more for this signal. "
         "Because it's a different performance, the instrument switches between passes (or layers them, "
-        "step 7) instead of blending."
+        "step 6) instead of blending."
     ).classes("max-w-3xl")
 
     @ui.refreshable
@@ -779,8 +826,8 @@ def step_dynamics(ed: Editor) -> None:
 
     ui.separator()
     ui.label("Extras").classes("text-base font-medium")
-    ui.label("Non-note recordings: release noises, chucks, body knocks, … Each becomes its own take."
-             ).classes("text-sm opacity-70")
+    ui.label("Non-note recordings: release noises, chucks, body knocks, … Each becomes its own take, played "
+             "on note release or on keys of its own outside the notes.").classes("text-sm opacity-70 max-w-3xl")
 
     @ui.refreshable
     def extras() -> None:
@@ -797,16 +844,19 @@ def step_dynamics(ed: Editor) -> None:
                     extras.refresh()
 
                 ui.button(icon="delete", on_click=remove).props("flat round")
+            extra_use(ed, x)
 
         def add() -> None:
             n = len(inst.extras) + 1
-            inst.extras.append(Extra(id=f"extra{n}", name=f"Extra {n}"))
+            inst.extras.append(Extra(id=f"extra{n}", name=f"Extra {n}", key=inst.free_extra_key()))
             ed.changed()
             extras.refresh()
 
         ui.button("+ Extra", on_click=add).props("outline dense")
 
     extras()
+    # Their keys may have moved, and the warnings beside them changed.
+    ed.on_range_changed.append(extras.refresh)
 
 
 def run(port: int = 8080, show: bool = True, idle_exit: float = 0) -> None:

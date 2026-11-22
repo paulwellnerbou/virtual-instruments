@@ -1,4 +1,4 @@
-"""Wizard steps 7 (sound & look) and 8 (build, install, package)."""
+"""Wizard steps 6 (sound & look) and 7 (build, install, package), and the extras' keys of step 4."""
 
 import re
 from pathlib import Path
@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 from nicegui import app, run, ui
 
-from vinst import bundle, lowcut, preset, reverb_send, review, sf2, store
+from vinst import bundle, lowcut, notes, preset, reverb_send, review, sf2, store
 from vinst.plan import layer_bounds, recording_passes, valid_splits
 from vinst.preset import mixable_signals
 from vinst.spec import CONTROLS, Extra, ExtraKey
@@ -153,7 +153,8 @@ def step_sound(ed: "Editor") -> None:
             ui.slider(min=0, max=1, step=0.05, value=p.tuning_amount,
                       on_change=lambda e: ed.set(p, "tuning_amount", e.value)).classes("w-48")
             ui.label().bind_text_from(p, "tuning_amount", lambda v: f"corrects {v:.0%}").classes("whitespace-nowrap")
-    ui.label("Uses the cents measured in step 6. Partial keeps some natural detune.").classes("text-xs opacity-70")
+    ui.label("Uses the cents measured in the worksheet (step 5). Partial keeps some natural detune.") \
+        .classes("text-xs opacity-70")
 
     if len(recording_passes(inst)) > 1:
         ui.separator()
@@ -218,13 +219,6 @@ def step_sound(ed: "Editor") -> None:
              "range; its variations keep up to half the allowed difference above between them. Off: the "
              "samples play as recorded, and velocity changes their volume only a little (Velocity "
              "sensitivity, under Envelope).").classes("text-xs opacity-70 max-w-3xl")
-
-    ui.separator()
-    ui.label("Extras").classes("text-base font-medium")
-    for x in inst.extras:
-        extra_row(ed, x)
-    if not inst.extras:
-        ui.label("No extras (step 4).").classes("text-sm opacity-70")
 
     ui.separator()
     ui.label("Envelope").classes("text-base font-medium")
@@ -599,27 +593,33 @@ def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
                              "low resonance play louder with the knob turned down.").classes("text-xs opacity-70 max-w-3xl")
 
 
-def extra_row(ed: "Editor", x: Extra) -> None:
-    with ui.column().classes("vi-extra-map gap-0"):
-        with ui.row().classes("items-center gap-4 no-wrap"):
-            ui.label(x.name).classes("w-48")
+def extra_use(ed: "Editor", x: Extra) -> None:
+    """How the instrument plays an extra: on note release, on keys of its own, or not at all."""
+    with ui.column().classes("vi-extra-map gap-0 w-full pb-2") as box:
+        def use_changed(e: Any) -> None:
+            # Its keys were left as they were while it played on release: off the notes and the
+            # other extras' keys now.
+            if e.value == "key" and ed.inst.place_extra(x):
+                key_field.set_value(notes.name(x.key))
+                more_keys.refresh()
+            ed.set(x, "use", e.value)
+            key.set_open(e.value == "key")
 
-            def use_changed(e: Any) -> None:
-                ed.set(x, "use", e.value)
-                key.set_open(e.value == "key")
-
-            ui.select({"release": "Play on key release", "key": "Own key", "off": "Don't use"}, value=x.use,
-                      label="Use", on_change=use_changed).classes("w-52")
-        # Below the row, not beside it: closed, it takes no room even where the row would wrap.
-        with Collapse(x.use == "key", inner_classes="flex flex-col gap-2 pl-52 pt-2") as key:
+        ui.select({"release": "Play on key release", "key": "Own key", "off": "Don't use"}, value=x.use,
+                  label="Use", on_change=use_changed).classes("w-52")
+        # Below the select, not beside it: closed, it takes no room even where the row would wrap.
+        with Collapse(x.use == "key", inner_classes="flex flex-col gap-2 pt-2") as key:
             turns: list[tuple[ui.label, Callable[[], int]]] = []
 
             def show_turns() -> None:
+                if box.is_deleted:  # the extras were redrawn
+                    ed.on_change_hooks.remove(show_turns)
+                    return
                 for i, (label, start) in enumerate(turns):
                     label.set_text(hit_turn(start(), x.hits, own=i > 0))
 
             with ui.row().classes("items-start gap-4"):
-                ed.note("Key", x, "key").classes("w-28")
+                key_field = ed.note("Key", x, "key", problem=ed.inst.extra_key_problem).classes("w-28")
                 ui.switch("Stops ringing notes", value=x.mutes, on_change=lambda e: ed.set(x, "mutes", e.value)) \
                     .classes("mt-2").tooltip("As a chuck mutes the strings: playing it fades out the notes still ringing")
             turns.append((ui.label().classes("text-xs opacity-70 -mt-1"), lambda: 1))
@@ -629,7 +629,7 @@ def extra_row(ed: "Editor", x: Extra) -> None:
                 del turns[1:]
                 for k in x.more_keys:
                     with ui.row().classes("items-start gap-4"):
-                        ed.note("Key", k, "key").classes("w-28")
+                        ed.note("Key", k, "key", problem=ed.inst.extra_key_problem).classes("w-28")
                         ed.number("Starts with hit", k, "start", min=1, max=x.hits, precision=0).classes("w-32")
                         ui.button(icon="delete", on_click=lambda k=k: remove(k)).props("flat round") \
                             .tooltip("Remove this key")
@@ -637,9 +637,8 @@ def extra_row(ed: "Editor", x: Extra) -> None:
                 show_turns()
 
             def add() -> None:
-                taken = {k for other in ed.inst.extras if other.use == "key" for k in other.keys()}
-                free = next((k for k in range(max(x.keys()) + 1, 128) if k not in taken), 127)
-                x.more_keys.append(ExtraKey(key=free, start=min(x.hits, len(x.keys()) + 1)))
+                x.more_keys.append(ExtraKey(key=ed.inst.free_extra_key(near=max(x.keys()) + 1),
+                                            start=min(x.hits, len(x.keys()) + 1)))
                 ed.changed()
                 more_keys.refresh()
 
