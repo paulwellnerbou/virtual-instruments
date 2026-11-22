@@ -24,6 +24,7 @@ from vinst.slicing import (
     detect_pitch,
     detect_sounds,
     frame_rms_db,
+    has_audio,
     load_signals,
     mix,
     more_numbers,
@@ -180,14 +181,14 @@ def place(inst: Instrument, p: Pass, split: Split, lane: str, takes_dir: Path) -
                    else "not one of the instrument's notes")
             out.append(Placed(r, None, why))
             continue
-        recorded = any((takes_dir / f).exists() for f in take.files)
+        recorded = any(has_audio(takes_dir / f) for f in take.files)
         out.append(Placed(r, take, more=recorded or take.note.midi in seen))
         seen.add(take.note.midi)
     return out
 
 
 def write(inst: Instrument, signals: list[np.ndarray], sr: int, placed: list[Placed], takes_dir: Path) -> list[str]:
-    """Write each placed run as its note's take, or as more hits beside it; nothing is overwritten.
+    """Write each placed run as its note's take, or as more hits beside it; nothing recorded is overwritten.
     Returns the keys of the takes written."""
     subtype = SUBTYPES.get(inst.recording.bit_depth, "PCM_24")
     ensure_folder(takes_dir)
@@ -196,7 +197,7 @@ def write(inst: Instrument, signals: list[np.ndarray], sr: int, placed: list[Pla
         take = pl.take
         if take is None:
             continue
-        if any((takes_dir / f).exists() for f in take.files):
+        if any(has_audio(takes_dir / f) for f in take.files):
             number = max(more_numbers(take, takes_dir), default=0) + 1
             files, key = [more_file(take, number, s) for s in take.signals], take_key(more_base(take, number),
                                                                                    take.pass_id)

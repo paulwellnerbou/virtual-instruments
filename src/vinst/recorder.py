@@ -119,6 +119,8 @@ class Recorder:
         self.frames = 0
         self.heard = False  # anything but digital silence since the stream opened
         self._peaks = np.zeros(len(self.signals))
+        self._sumsq = np.zeros(len(self.signals))
+        self._count = 0
         self._clipped: set[str] = set()
         self._queue: queue.Queue[np.ndarray | None] = queue.Queue()
         self._writing = False
@@ -146,6 +148,8 @@ class Recorder:
         peaks = np.max(np.abs(block), axis=0) if len(block) else np.zeros(len(self.columns))
         with self._lock:
             self._peaks = np.maximum(self._peaks, peaks)
+            self._sumsq += np.sum(np.square(block, dtype=np.float64), axis=0)
+            self._count += len(block)
         if peaks.any():
             self.heard = True
         if self._writing and self._skip:
@@ -164,6 +168,14 @@ class Recorder:
         with self._lock:
             peaks, self._peaks = self._peaks, np.zeros(len(self.signals))
         return {s: 20 * math.log10(p) if p > 0 else -math.inf for s, p in zip(self.signals, peaks)}
+
+    def rms(self) -> dict[str, float]:
+        """RMS level per signal in dBFS since the last call: with nothing played, the noise."""
+        with self._lock:
+            sumsq, count = self._sumsq, self._count
+            self._sumsq, self._count = np.zeros(len(self.signals)), 0
+        return {s: 10 * math.log10(v / count) if count and v > 0 else -math.inf
+                for s, v in zip(self.signals, sumsq)}
 
     @property
     def recording(self) -> bool:
@@ -227,6 +239,8 @@ class Recorder:
         elif keep and seconds < min_seconds:
             error = (f"The interface stopped delivering audio after {seconds:.0f} s (cable, power or "
                      "driver?).")
+        elif keep and not self.frames:  # stopped during the count-in, which isn't kept
+            error = "It was stopped before anything was recorded."
         files = []
         try:
             for f in self._files.values():

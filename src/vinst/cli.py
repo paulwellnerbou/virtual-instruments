@@ -125,7 +125,11 @@ def split_(
     if velocity not in {*inst.dynamics.layers, *(la for v in inst.note_lanes.values() for la in v.layers)}:
         typer.echo(f"No velocity “{velocity}”; the instrument has {', '.join(inst.dynamics.layers)}.", err=True)
         raise typer.Exit(1)
-    found = split.analyse(inst, files)
+    try:
+        found = split.analyse(inst, files)
+    except (OSError, RuntimeError, ValueError) as e:  # unreadable or empty audio, different rates
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
     if isinstance(found, str):
         typer.echo(found, err=True)
         raise typer.Exit(1)

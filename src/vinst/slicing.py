@@ -71,10 +71,26 @@ def frame_rms_db(y: np.ndarray) -> np.ndarray:
     return db(librosa.feature.rms(y=y, frame_length=2 * HOP, hop_length=HOP, center=True)[0])
 
 
+def has_audio(path: Path) -> bool:
+    """Whether a take file is recorded: an empty one (e.g. a cancelled export) is recorded again,
+    not added to."""
+    try:
+        if path.stat().st_size > 65536:  # not opened: the worksheet asks this for every take
+            return True
+    except OSError:
+        return False
+    try:
+        return sf.info(str(path)).frames > 0
+    except RuntimeError:
+        return True  # unreadable, not empty: kept, as anything recorded is
+
+
 def load_signals(paths: list[Path]) -> tuple[list[np.ndarray], int]:
     signals, rates = [], set()
     for p in paths:
         data, sr = sf.read(p, always_2d=True, dtype="float64")
+        if not len(data):
+            raise ValueError(f"{p.name} is empty: record it again")
         signals.append(data.mean(axis=1))
         rates.add(sr)
     if len(rates) != 1:
@@ -278,6 +294,8 @@ def noise_floor(signal_id: str, takes_dir: Path) -> float | None:
     if not path.exists():
         return None
     data, _ = sf.read(path, always_2d=True, dtype="float64")
+    if not len(data):
+        return None  # as if not recorded: no level, so each take's own quiet parts are used instead
     return float(db(np.sqrt(np.mean(data.mean(axis=1) ** 2))))
 
 
@@ -289,6 +307,8 @@ def noise_profiles(inst: Instrument, takes_dir: Path) -> dict[str, np.ndarray]:
         if not path.exists():
             raise ValueError(f"Denoising is on, but {path.name} is missing (record the noise floor).")
         data, _ = sf.read(path, always_2d=True, dtype="float64")
+        if not len(data):
+            raise ValueError(f"Denoising is on, but {path.name} is empty (record the noise floor again).")
         profiles[sig.id] = denoise.noise_profile(data.mean(axis=1))
     return profiles
 
@@ -460,6 +480,8 @@ def process_take(inst: Instrument, take: Take, takes_dir: Path, out_dir: Path,
         result.status = "noise_floor"
         result.message = f"{len(ref) / sr:.0f} s"
         result.level_db = noise_db  # measured from this take: its pass's noise floor
+        result.levels_db = {sig: round(float(db(np.sqrt(np.mean(x ** 2)))), 1)
+                            for sig, x in zip(take.signals, signals)}
         return result
     result.envelope = envelope(ref)
 

@@ -463,6 +463,8 @@ def editor_page(slug: str) -> None:
 
         def side_for(step: str) -> None:
             worksheet_side.set_open(step == WORKSHEET)
+            if step != WORKSHEET:
+                recording.stop_monitors(ui.context.client)  # collapsed, not deleted: it would go on reading
             side.classes(add="vi-side-wide" if step == WORKSHEET else "vi-side-sticky",
                          remove="vi-side-sticky" if step == WORKSHEET else "vi-side-wide")
 

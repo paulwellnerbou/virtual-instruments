@@ -89,6 +89,18 @@ def test_recorded_notes_get_more_hits_and_nothing_is_overwritten(uke, tmp_path):
     assert (takes_dir / "060_C-0_p_pickup.wav").read_bytes() == b"recorded"
 
 
+def test_an_empty_take_is_written_over_not_added_to(uke, tmp_path):
+    p = recording_passes(uke)[0]
+    takes_dir = tmp_path / "takes"
+    takes_dir.mkdir()
+    sf.write(takes_dir / "060_C-0_p_pickup.wav", np.zeros(0), SR)  # e.g. a cancelled export
+    audio = scale_recording([60], 2)
+    placed = split.place(uke, p, split.find(uke, p, [audio], SR), "p", takes_dir)
+    assert [pl.more for pl in placed] == [False]
+    assert split.write(uke, [audio], SR, placed, takes_dir) == ["060_C-0_p"]
+    assert sf.info(takes_dir / "060_C-0_p_pickup.wav").frames > 0
+
+
 def test_notes_outside_the_instrument_are_left_out(uke, tmp_path):
     p = recording_passes(uke)[0]
     uke.note_lanes = {"062_C-2": NoteLanes(layers=["f"])}  # this note has no p
