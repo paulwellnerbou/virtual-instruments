@@ -15,7 +15,7 @@ import numpy as np
 import soundfile as sf
 
 from vinst.importer import CONFIRM_SEMITONES, free_pitch
-from vinst.plan import Pass, Take, more_base, more_file, plan_takes, recording_passes, take_key
+from vinst.plan import Pass, Take, more_base, more_file, plan_takes, planned_notes, recording_passes, take_key
 from vinst.slicing import (
     MIN_NOISE_FLOOR_DB,
     PREROLL_S,
@@ -67,10 +67,6 @@ def note_takes(inst: Instrument, pass_id: str, lane: str) -> dict[int, Take]:
     """The take of each note at `lane`, by MIDI; notes without that velocity have none."""
     return {t.note.midi: t for t in plan_takes(inst)
             if t.kind == "note" and t.pass_id == pass_id and t.lane == lane and t.note is not None}
-
-
-def planned_notes(inst: Instrument, pass_id: str) -> set[int]:
-    return {t.note.midi for t in plan_takes(inst) if t.kind == "note" and t.pass_id == pass_id and t.note}
 
 
 FUNDAMENTAL_SHARE = 0.1  # of the spectrum's highest peak: a fundamental weaker than this isn't one

@@ -21,7 +21,7 @@ from nicegui import ui
 
 from vinst import guide as guides
 from vinst import aims, recorder, review, store, takes_meta
-from vinst.plan import Take, more_base, more_file, note_lanes, plan_takes, recording_passes
+from vinst.plan import Take, more_base, more_file, note_lanes, plan_takes, planned_notes, recording_passes
 from vinst.plan import take_key as take_key_of
 from vinst.spec import Signal
 from vinst.ui import form
@@ -196,18 +196,17 @@ def record_more(ed: "Editor", take_key: str, count: int, on_saved: Saved | None 
                 (lambda: on_saved(key)) if on_saved else None, loudest_velocity(ed, take), aim_for(ed, take))
 
 
-def record_scale(ed: "Editor", pass_id: str, folder: Path, then: Callable[[], None]) -> None:
+def record_scale(ed: "Editor", pass_id: str, folder: Path, then: Callable[[], None],
+                 on_closed: Callable[[], None]) -> None:
     """The whole scale of a pass in one recording, into `folder`, one file per signal named after it
     (as split.pass_for tells them apart); `then` splits it into the notes' takes."""
     p = next((x for x in recording_passes(ed.inst) if x.id == pass_id), None)
-    if p is None or not guides.scale_notes(ed.inst, pass_id):
+    if p is None or not planned_notes(ed.inst, pass_id):
         return
-    takes_folder(ed)
     paths = {s.id: folder / f"scale_{s.id}.wav" for s in p.signals}
     title = "The whole scale" + (f" · {p.name}" if len(recording_passes(ed.inst)) > 1 else "")
     open_dialog(ed, title, list(p.signals), paths, lambda n: guides.scale_guide(ed.inst, pass_id, n or SCALE_HITS),
-                SCALE_HITS, then, "Split by pitch",
-                next_icon="call_split", click_grid=False)
+                SCALE_HITS, then, "Split by pitch", next_icon="call_split", click_grid=False, on_closed=on_closed)
 
 
 def peak_dbfs(path: Path) -> float:
@@ -243,7 +242,8 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
                 guide_for: Callable[[int | None], guides.Guide], count: int | None,
                 on_next: Callable[[], None] | None, next_label: str,
                 on_saved: Callable[[], None] | None = None, judge_level: bool = False,
-                aim: str | None = None, next_icon: str = "skip_next", click_grid: bool = True) -> None:
+                aim: str | None = None, next_icon: str = "skip_next", click_grid: bool = True,
+                on_closed: Callable[[], None] | None = None) -> None:
     """`count`: how many hits to ask for, which the player can change before recording; None for
     takes recorded as planned. `judge_level`: a take of the loudest velocity, whose level says how
     to set the input gain. `aim`: how loud to play a soft velocity. `click_grid`: keep where the
@@ -414,6 +414,8 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
         release()
         ui.run_javascript("viRec.stop()")
         dialog.delete()
+        if on_closed:
+            on_closed()
 
     dialog.on("hide", closed)
     client.on_disconnect(release)

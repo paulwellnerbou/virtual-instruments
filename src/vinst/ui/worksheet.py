@@ -23,7 +23,6 @@ from fastapi.responses import FileResponse, Response
 from nicegui import app, background_tasks, run, ui
 
 from vinst import aims, cleanup_eq, loops, relocate, review, slicing, split, store, takes_meta
-from vinst import guide as guides
 from vinst import notes as note_names
 from vinst.bundle import CLEANUP_MESSAGE, FINDER_MESSAGE, STALE_MESSAGE, changed_message, eq_message
 from vinst.plan import (
@@ -204,7 +203,7 @@ def clear_long(folder: Path) -> None:
 
 
 def clear_old_long(slug: str, batch: str) -> None:
-    """Clears the uploads and recordings of a day ago never split or cancelled, but `batch`."""
+    """Clears uploads and recordings left unsplit for over a day, but `batch`."""
     root = store.instrument_dir(slug) / LONG_DIR
     if root.is_dir():
         now = time.time()
@@ -1662,18 +1661,19 @@ def step_worksheet(ed: "Editor") -> None:
             return  # unpitched sounds: a pitch can't tell them apart
         with ui.card().classes("w-full py-1").props("flat bordered"):
             with ui.row().classes("vi-lane items-center gap-2 w-full no-wrap") as row:
-                passes = [p for p in recording_passes(inst) if guides.scale_notes(inst, p.id)]
-                with ui.button(icon="fiber_manual_record", color=None,
-                               on_click=(lambda: record_long(passes[0].id)) if len(passes) == 1 else None) \
-                        .props("flat dense round size=sm text-color=red"):
-                    ui.tooltip("Record the whole scale, each note a few times, and split it by pitch")
-                    if len(passes) > 1:
-                        with ui.menu():
-                            for p in passes:
-                                ui.menu_item(p.name, on_click=lambda _, i=p.id: record_long(i))
+                passes = [p for p in recording_passes(inst) if split.planned_notes(inst, p.id)]
+                if passes:
+                    with ui.button(icon="fiber_manual_record", color=None,
+                                   on_click=(lambda: record_long(passes[0].id)) if len(passes) == 1 else None) \
+                            .props("flat dense round size=sm text-color=red"):
+                        ui.tooltip("Record the whole scale, each note a few times, and split it by pitch")
+                        if len(passes) > 1:
+                            with ui.menu():
+                                for p in passes:
+                                    ui.menu_item(p.name, on_click=lambda _, i=p.id: record_long(i))
                 ui.label("Many notes in one recording").classes("font-medium whitespace-nowrap")
-                ui.label("record or drop it here, e.g. the whole scale with each note a few times: each hit goes to its "
-                         "note by its pitch").classes("text-xs opacity-50 truncate") \
+                ui.label("record or drop it here, e.g. the whole scale with each note a few times: each hit "
+                         "goes to its note by its pitch").classes("text-xs opacity-50 truncate") \
                     .tooltip("One file per signal, dropped together, each with its signal in its name. Hits in a "
                              "row on the same note become that note's take at the velocity you choose, or more "
                              "hits beside the ones it has; nothing is overwritten.")
@@ -1697,13 +1697,18 @@ def step_worksheet(ed: "Editor") -> None:
         batch = str(time.time_ns() // 1_000_000)
         clear_old_long(slug, batch)
         folder = long_upload_dir(slug, batch)
-        folder.mkdir(parents=True, exist_ok=True)
+        splitting = {"started": False}
 
         def split_it() -> None:
+            splitting["started"] = True
             with anchor:  # not in the recording dialog, which is deleted as it closes
                 ui.timer(0, lambda: long_split(folder), once=True)
 
-        recording.record_scale(ed, pass_id, folder, split_it)
+        def closed() -> None:
+            if not splitting["started"]:  # nothing will come of it: don't keep a whole scale around
+                clear_long(folder)
+
+        recording.record_scale(ed, pass_id, folder, split_it, closed)
 
     async def long_split(folder: Path) -> None:
         with anchor:

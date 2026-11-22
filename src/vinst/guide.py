@@ -7,7 +7,7 @@ import math
 from dataclasses import asdict, dataclass, field
 
 from vinst import notes as note_names
-from vinst.plan import EXTRA_HIT_S, HIT_GAP_S, Take, plan_takes
+from vinst.plan import EXTRA_HIT_S, HIT_GAP_S, Take, plan_takes, planned_notes
 from vinst.spec import Instrument, file_token
 
 BEAT_S = 1.0  # 60 BPM keeps the counting readable
@@ -65,9 +65,12 @@ def how_to_play(inst: Instrument, take: Take) -> str:
     return lane_name(take.lane or "")
 
 
-def bar_beats(inst: Instrument, take: Take) -> int:
-    seconds = inst.recording.ring_seconds if take.kind == "note" else EXTRA_HIT_S
+def ring_beats(seconds: float) -> int:
     return math.ceil((seconds + HIT_GAP_S) / BEAT_S)
+
+
+def bar_beats(inst: Instrument, take: Take) -> int:
+    return ring_beats(inst.recording.ring_seconds if take.kind == "note" else EXTRA_HIT_S)
 
 
 def count_in(guide: Guide, beats: int, first: str) -> None:
@@ -105,19 +108,14 @@ def more_guide(inst: Instrument, take: Take, count: int) -> Guide:
     return guide
 
 
-def scale_notes(inst: Instrument, pass_id: str) -> list[int]:
-    """The pass's planned notes, low to high: what a long recording of the whole scale plays."""
-    return sorted({t.note.midi for t in plan_takes(inst) if t.kind == "note" and t.pass_id == pass_id and t.note})
-
-
 def scale_guide(inst: Instrument, pass_id: str, per_note: int) -> Guide:
     """The whole scale in one recording, `per_note` hits on each note, at one velocity throughout:
     split into the notes' takes by pitch afterwards."""
     guide = Guide(BEAT_S)
-    midis = scale_notes(inst, pass_id)
+    midis = sorted(planned_notes(inst, pass_id))
     if not midis:
         return guide
-    beats = math.ceil((inst.recording.ring_seconds + HIT_GAP_S) / BEAT_S)
+    beats = ring_beats(inst.recording.ring_seconds)
     count_in(guide, beats, f"{note_names.name(midis[0])} · one velocity throughout")
     for k, m in enumerate(midis):
         for i in range(per_note):

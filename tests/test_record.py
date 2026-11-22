@@ -6,7 +6,7 @@ import soundfile as sf
 from conftest import piezo_and_mic
 
 from vinst import defaults, guide, notes, recorder
-from vinst.plan import plan_takes, recording_passes
+from vinst.plan import plan_takes, planned_notes, recording_passes
 from vinst.spec import InstrumentType
 
 SR = 48000
@@ -234,8 +234,8 @@ def test_a_quiet_loud_take_says_how_much_to_turn_the_gain_up():
 def test_scale_guide_leads_up_the_scale_a_few_hits_per_note(tmp_path, monkeypatch):
     inst = uke(monkeypatch, tmp_path)
     p = recording_passes(inst)[0]
-    midis = guide.scale_notes(inst, p.id)
-    assert midis == sorted(set(midis)) and len(midis) > 2
+    midis = sorted(planned_notes(inst, p.id))
+    assert len(midis) > 2
     g = guide.scale_guide(inst, p.id, 2)
     count, *hits = g.steps
     assert count.kind == "count" and count.detail.startswith(notes.name(midis[0]))
