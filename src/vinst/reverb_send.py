@@ -4,7 +4,8 @@ DecentSampler's own reverb turns a pluck's click into a hiss and keeps the brigh
 ringing. Instead, every sample also goes to a bus for its pitch band; the bus holds a convolution
 reverb whose impulse response is DecentSampler's reverb (same room and damping), or one of your own,
 with a high shelf above about three times the band's pitch and a low-pass. The Reverb knob sets the
-buses' volume.
+buses' volume. An own impulse response without that filtering plays on one bus for all samples: a
+convolution effect on the instrument would crossfade the dry sound away as the knob goes up.
 """
 
 import math
@@ -130,10 +131,13 @@ def _trimmed(ir: np.ndarray) -> np.ndarray:
     return ir[:, : (keep[-1] + 1 if keep.size else 1)]
 
 
-def band_ir(base: np.ndarray, band: Band, rate: int = IR_RATE) -> np.ndarray:
-    """(frames, 2) float32: the reverb of `base` (see builtin_reverb_ir) through the band's shelf and the low-pass."""
-    ir = _shelf(base, band.shelf_hz, SHELF_DB, rate)
-    ir = sosfilt(butter(4, LOWPASS_HZ, "lowpass", fs=rate, output="sos"), ir, axis=-1)
+def band_ir(base: np.ndarray, band: Band | None, rate: int = IR_RATE) -> np.ndarray:
+    """(frames, 2) float32: the reverb of `base` (see builtin_reverb_ir) through the band's shelf and the
+    low-pass; without a band, unfiltered."""
+    ir = base
+    if band is not None:
+        ir = _shelf(ir, band.shelf_hz, SHELF_DB, rate)
+        ir = sosfilt(butter(4, LOWPASS_HZ, "lowpass", fs=rate, output="sos"), ir, axis=-1)
     return (_trimmed(ir) / CONVOLUTION_SCALE).T.astype(np.float32)
 
 
@@ -167,19 +171,21 @@ def _energy(ir: np.ndarray) -> float:
     return float(np.sum(ir.astype(np.float64) ** 2))
 
 
-def write_irs(bundle: Path, bands: list[Band], room: float, damping: float, own: Path | None = None) -> list[str]:
+def write_irs(bundle: Path, bands: list[Band], room: float, damping: float, own: Path | None = None,
+              filtered: bool = True) -> list[str]:
     """Writes one impulse response per band into the bundle, from DecentSampler's reverb with this room and
-    damping or from an own impulse response; returns their paths inside it. An own one is made as loud as
-    DecentSampler's after the band's filtering, so the knob sets the same amount whichever plays."""
+    damping or from an own impulse response, `filtered` per band or not; returns their paths inside it.
+    An own one is made as loud as DecentSampler's after the same filtering, so the knob sets the same
+    amount whichever plays."""
     folder = bundle / IR_DIR
     folder.mkdir(parents=True, exist_ok=True)
     builtin = builtin_reverb_ir(room, damping, IR_MAX_S)
     base = own_ir(own) if own else builtin
     paths = [ir_path(i) for i in range(len(bands))]
     for path, band in zip(paths, bands):
-        ir = band_ir(base, band)
+        ir = band_ir(base, band if filtered else None)
         if own:
-            ir *= math.sqrt(_energy(band_ir(builtin, band)) / _energy(ir))
+            ir *= math.sqrt(_energy(band_ir(builtin, band if filtered else None)) / _energy(ir))
         sf.write(bundle / path, ir, IR_RATE, subtype="PCM_24")
     for old in folder.glob("reverb-*.wav"):
         if f"{IR_DIR}/{old.name}" not in paths:

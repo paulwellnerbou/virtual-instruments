@@ -10,7 +10,7 @@ This guide covers two ways to get one:
 
 Then **[preparing the file](#preparing-the-file)**, which matters in both cases, and **[using it](#using-it)**.
 
-> **In the builder,** an impulse response of your own plays the reverb of *Without the attack's hiss* (Sound & look → Reverb), in place of DecentSampler's own reverb, with the same pitch-following filtering.
+> **In the builder,** an impulse response of your own plays the reverb (Sound & look → Reverb) in place of DecentSampler's own reverb; with *Without the attack's hiss*, with the same pitch-following filtering.
 
 ## Capturing a reverb plug-in
 
@@ -98,7 +98,7 @@ A church on holiday, the space under a bridge: no speaker, no computer. A short,
 
 ### The direct sound
 
-A room recording, or a reverb rendered with some dry signal, starts with the **direct sound**: the click (or the speaker) heard straight, before any reflection. For the builder's send buses the dry sound already comes from the samples, so a direct sound in the IR would play the instrument **a second time**, coloured by speaker and microphone. That's exactly what *Without the attack's hiss* avoids.
+A room recording, or a reverb rendered with some dry signal, starts with the **direct sound**: the click (or the speaker) heard straight, before any reflection. The builder plays your IR on a send bus, the dry sound coming from the samples, so a direct sound in the IR would play the instrument **a second time**, coloured by speaker and microphone.
 
 So: **remove the direct sound.** Cut the IR just after it, or fade it in over a few milliseconds from there, keeping the first reflections. The direct sound is the first sharp peak; the reflections follow a few milliseconds later. Plug-in captures at 100 % wet have no direct sound; nothing to do.
 
@@ -120,14 +120,15 @@ So: **remove the direct sound.** Cut the IR just after it, or fade it in over a 
 
 ### In the builder
 
-1. **Sound & look → Reverb:** switch on **Without the attack's hiss**.
-2. Under **Impulse response of your own**, drop your file (WAV, AIFF or FLAC) or click + to choose it. It's copied into the instrument's folder; **Remove** goes back to DecentSampler's reverb.
-3. **Build** and play it. The build summary names the IR the reverbs were made from.
+1. **Sound & look → Reverb:** under **Impulse response of your own**, drop your file (WAV, AIFF or FLAC) or click + to choose it. It's copied into the instrument's folder and plays the reverb. Beside its name, choose **DecentSampler's reverb** to compare, keeping the file; **Remove** deletes the copy.
+2. Optionally switch on **Without the attack's hiss**, for plucked and struck strings.
+3. **Build** and play it. The build summary names the IR the reverb was made from.
 
 When building, the IR is:
 - **made stereo** if it's mono, and converted to 48 kHz if it isn't;
-- **filtered per few semitones** like DecentSampler's reverb is: a high shelf from about three times the pitch up and a low-pass at 5 kHz;
-- **made as loud, after that filtering, as DecentSampler's reverb** with the instrument's room size and damping, so the Reverb knob sets about the same amount either way (room size and damping don't otherwise change your IR). An IR with a different colour still sounds different in level on some notes: one with fewer lows than DecentSampler's reverb is quieter on low notes. Set the knob by ear.
+- played on a **send bus**, so the dry sound stays as recorded and the Reverb knob sets the bus's volume;
+- with *Without the attack's hiss*, **filtered per few semitones** like DecentSampler's reverb is then: a high shelf from about three times the pitch up and a low-pass at 5 kHz; without it, as it is;
+- **made as loud, after any filtering, as DecentSampler's reverb** with the instrument's room size and damping, so the Reverb knob sets about the same amount either way (room size and damping don't otherwise change your IR). An IR with a different colour still sounds different in level on some notes: one with fewer lows than DecentSampler's reverb is quieter on low notes. Set the knob by ear.
 
 With the switch off, the IR is ignored and the instrument plays DecentSampler's own reverb, as before.
 
