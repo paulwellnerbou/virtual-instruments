@@ -4,6 +4,7 @@ import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 import numpy as np
 from lxml import etree
@@ -526,11 +527,22 @@ def eq_bands(inst: Instrument) -> list[int]:
     return [i for i, b in enumerate(inst.preset.eq) if b.on]
 
 
+def own_reverb_ir(inst: Instrument) -> Path | None:
+    """The impulse response of your own that the reverb plays, if any."""
+    p = inst.preset
+    return Path(p.reverb_ir).expanduser() if p.reverb_ir and p.reverb_own else None
+
+
 def reverb_bands(inst: Instrument, mapping: Mapping, controls: list[str]) -> list[reverb_send.Band]:
-    """The pitch bands of the reverb's send buses; empty when DecentSampler's own reverb plays it."""
-    if not (inst.preset.reverb_send and "reverb" in controls):
+    """The pitch bands of the reverb's send buses: one per few semitones without the attack's hiss, else
+    one for all with an own impulse response; empty when DecentSampler's own reverb plays it."""
+    p = inst.preset
+    if "reverb" not in controls or not (p.reverb_send or own_reverb_ir(inst)):
         return []
-    return reverb_send.bands([reverb_send.sample_pitch(e.lo, e.hi) for e in mapping.notes])
+    pitches = [reverb_send.sample_pitch(e.lo, e.hi) for e in mapping.notes]
+    if p.reverb_send:
+        return reverb_send.bands(pitches)
+    return [reverb_send.Band(min(pitches), max(pitches))] if pitches else []
 
 
 def effects_for(inst: Instrument, controls: list[str], on_buses: bool = False) -> list[str]:
@@ -699,7 +711,7 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
         for e in entries:
             loop = dict(loopEnabled="true", loopStart=e.loop[0], loopEnd=e.loop[1], loopCrossfade=e.loop[2],
                         loopCrossfadeMode="equal_power") if e.loop else {}
-            # Output 2 feeds only the reverb, so its band's filtering never touches the dry sound.
+            # Output 2 feeds only the reverb, so its filtering and level never touch the dry sound.
             band = reverb_send.band_of(reverb_send.sample_pitch(e.lo, e.hi), bands) if bands else None
             send = dict(output2Target=f"BUS_{band + 1}", output2Volume=1.0) if band is not None else {}
             parts = [(e.lo_vel, e.hi_vel, 0.0, None)] if curve is None else \

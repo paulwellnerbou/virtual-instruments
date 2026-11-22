@@ -365,11 +365,12 @@ def reverb_ir_field(ed: "Editor") -> None:
             ui.label("None: DecentSampler's reverb, with the room size and damping above.").classes("text-sm opacity-70")
             return
         with ui.row().classes("items-center gap-3"):
-            if path.is_file():
-                ui.label(path.name).classes("text-sm")
-            else:
-                ui.label(f"{path.name} is missing.").classes("text-sm text-orange-600")
+            # The file stays while DecentSampler's reverb plays, so the two can be compared.
+            Segmented({False: "DecentSampler's reverb", True: path.name}, value=p.reverb_own,
+                      on_change=lambda e: ed.set(p, "reverb_own", e.value))
             ui.button("Remove", icon="close", on_click=remove).props("flat dense")
+        if not path.is_file():
+            ui.label(f"{path.name} is missing.").classes("text-sm text-orange-600")
 
     def remove() -> None:
         old = Path(p.reverb_ir).expanduser() if p.reverb_ir else None
@@ -394,6 +395,7 @@ def reverb_ir_field(ed: "Editor") -> None:
             if old != dest:
                 old.unlink()
         ed.set(p, "reverb_ir", str(dest))
+        ed.set(p, "reverb_own", True)
         upload.reset()
         current.refresh()
 
@@ -404,11 +406,12 @@ def reverb_ir_field(ed: "Editor") -> None:
             .props(f'accept="{",".join(reverb_send.IR_TYPES)}" flat bordered color=grey-8').classes("w-80")
         with ui.column().classes("gap-1 pt-2 max-w-xl"):
             current()
-            ui.label("A room or a reverb you captured, instead of DecentSampler's reverb; the pitch-following "
-                     "filtering is the same. Remove its direct sound first, or the reverb plays every note a "
-                     "second time. It's made about as loud as DecentSampler's reverb with this room size and "
-                     "damping, which otherwise don't change it; set the knob by ear. Longer than "
-                     f"{reverb_send.IR_MAX_S:g} s, it's faded out and cut there.") \
+            ui.label("A room or a reverb you captured, instead of DecentSampler's reverb, on a bus of its own "
+                     "so the dry sound stays as recorded. With Without the attack's hiss (below), it's filtered "
+                     "per pitch as DecentSampler's reverb is there. Remove its direct sound first, or the reverb "
+                     "plays every note a second time. It's made about as loud as DecentSampler's reverb with "
+                     "this room size and damping, which otherwise don't change it; set the knob by ear. Longer "
+                     f"than {reverb_send.IR_MAX_S:g} s, it's faded out and cut there.") \
                 .classes("text-xs opacity-70")
             ui.link("How to record one", reverb_send.DOCS_URL, new_tab=True).classes("text-xs")
 
@@ -566,11 +569,10 @@ def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
                                                      "a pluck's click ringing on as a hiss. To take the click out of "
                                                      "the reverb altogether: Without the attack's hiss, below")
                 if key == "reverb":
-                    def send_switched(e: Any) -> None:
-                        ed.set(p, "reverb_send", e.value)
-                        own_ir.set_open(e.value)
-
-                    ui.switch("Without the attack's hiss", value=p.reverb_send, on_change=send_switched) \
+                    reverb_ir_field(ed)
+                    ui.switch("Without the attack's hiss", value=p.reverb_send,
+                              on_change=lambda e: ed.set(p, "reverb_send", e.value)) \
+                        .classes("pt-2") \
                         .tooltip("Each sample also feeds a reverb for its few semitones: a convolution reverb on a "
                                  "bus of its own, made when building from DecentSampler's reverb with this room and "
                                  "damping (or your own impulse response), turned down from about three times the "
@@ -581,8 +583,6 @@ def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
                              "without a click (bowed, blown, sung) gain little. At the same knob setting the "
                              "reverb is a little quieter, its highs gone, so you may turn it up a bit. MuseScore's "
                              "soundfont has no reverb; nothing changes there.").classes("text-xs opacity-70 max-w-3xl")
-                    with Collapse(p.reverb_send, inner_classes="flex flex-col gap-1 pt-2") as own_ir:
-                        reverb_ir_field(ed)
                 if key == "lowcut":
                     ui.label("E.g. the low resonance of a ukulele's body that rings on after the pluck; the note itself, from its pitch up, "
                              "stays as it is. A curve, not a step, as drawn: the full amount well below the share "

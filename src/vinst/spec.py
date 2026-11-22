@@ -283,6 +283,9 @@ class Preset(BaseModel):
             n = data["neighbour_round_robins"]
             data = {k: v for k, v in data.items() if k != "neighbour_round_robins"}
             return {"neighbours_below": n, "neighbours_above": n, **data}
+        # Before the setting, an own impulse response played only with reverb_send: keep their sound.
+        if isinstance(data, dict) and data.get("reverb_ir") and "reverb_own" not in data:
+            return {**data, "reverb_own": bool(data.get("reverb_send", False))}
         return data
     # Signals recorded in separate passes are different performances: "switch" plays one pass at
     # a time (a menu in the instrument), "layer" plays them together like two players in unison.
@@ -312,7 +315,10 @@ class Preset(BaseModel):
     reverb_damping: float = Field(default=0.6, ge=0, le=1)
     # The reverb on buses fed per pitch band, without a pluck's click and bright start (see vinst.reverb_send).
     reverb_send: bool = False
-    reverb_ir: str = ""  # with reverb_send: an impulse response file of your own; empty: DecentSampler's reverb
+    # An impulse response file of your own, kept while DecentSampler's reverb plays (reverb_own off), so
+    # the two can be compared; empty: DecentSampler's reverb. It plays on a send bus (see vinst.reverb_send).
+    reverb_ir: str = ""
+    reverb_own: bool = True
     chorus: float = Field(default=0.0, ge=0, le=1)
     background: str = ""  # image file; empty means a plain colour
     cover_art: str = ""  # square image for DecentSampler's File Browser

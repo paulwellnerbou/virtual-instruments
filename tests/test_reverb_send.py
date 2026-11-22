@@ -140,24 +140,52 @@ def test_an_own_ir_is_as_loud_as_decentsampler_s_after_each_band_s_filtering(tmp
         assert np.sum(own ** 2) == pytest.approx(np.sum(ds ** 2), rel=1e-3)
 
 
-def test_the_build_uses_an_own_ir_only_with_the_switch_on(built, tmp_path):
+def test_an_own_ir_plays_without_the_switch_on_one_unfiltered_bus(built, tmp_path):
     inst, _ = built
-    before = bundle.build(inst).preset_file.read_bytes()
     inst.preset.reverb_ir = str(_decaying_noise(tmp_path / "hall.wav", channels=2))
     off = bundle.build(inst)
-    assert off.preset_file.read_bytes() == before and not (off.bundle / reverb_send.IR_DIR).exists()
+    assert off.report.ok, off.report.errors
+    assert "Reverb from hall.wav" in "\n".join(off.info)
+    doc = _preset(off)
+    assert "reverb" not in [e.get("type") for e in doc.find("effects")]
+    buses = doc.find("buses").findall("bus")
+    assert len(buses) == 1 and float(buses[0].get("busVolume")) == inst.preset.reverb
+    assert {s.get("output2Target") for s in doc.iter("sample")} == {"BUS_1"}
+    unfiltered, rate = sf.read(str(off.bundle / reverb_send.ir_path(0)))
+    # The hall's own decay, not DecentSampler's reverb (which starts only after its first comb's delay).
+    assert rate == reverb_send.IR_RATE and np.abs(unfiltered[:100]).max() > 0
+    # As loud as DecentSampler's reverb, unfiltered too.
+    ds = reverb_send.band_ir(reverb_send.builtin_reverb_ir(inst.preset.reverb_room, inst.preset.reverb_damping,
+                                                           reverb_send.IR_MAX_S), None)
+    assert np.sum(unfiltered ** 2) == pytest.approx(float(np.sum(ds.astype(np.float64) ** 2)), rel=1e-2)
 
     inst.preset.reverb_send = True
     on = bundle.build(inst)
     assert on.report.ok, on.report.errors
-    assert any("from hall.wav" in line for line in on.info)
-    ir, rate = sf.read(str(on.bundle / reverb_send.ir_path(0)))
-    # The hall's own decay, not DecentSampler's reverb (which starts only after its first comb's delay).
-    assert rate == reverb_send.IR_RATE and np.abs(ir[:100]).max() > 0
+    assert any("from hall.wav" in line and "attack's hiss" in line for line in on.info)
+    assert len(_preset(on).find("buses").findall("bus")) > 1
+    filtered, _ = sf.read(str(on.bundle / reverb_send.ir_path(0)))
+    assert np.abs(filtered[:100]).max() > 0
+
+    # DecentSampler's reverb chosen, the file kept: as without one.
+    inst.preset.reverb_send, inst.preset.reverb_own = False, False
+    plain = bundle.build(inst)
+    assert _preset(plain).find("buses") is None and not (plain.bundle / reverb_send.IR_DIR).exists()
 
     inst.preset.reverb_ir = str(tmp_path / "gone.wav")
+    bundle.build(inst)  # not played, so not needed
+    inst.preset.reverb_own = True
     with pytest.raises(ValueError, match="Impulse response not found"):
         bundle.build(inst)
+
+
+@pytest.mark.parametrize("send", [False, True])
+def test_an_instrument_saved_before_the_choice_keeps_its_reverb(send):
+    from vinst.spec import Preset
+
+    assert Preset.model_validate({"reverb_ir": "hall.wav", "reverb_send": send}).reverb_own is send
+    assert Preset.model_validate({"reverb_ir": "hall.wav", "reverb_own": True}).reverb_own is True
+    assert Preset().reverb_own is True
 
 
 def test_a_long_own_ir_is_faded_out_and_cut(built, tmp_path):
