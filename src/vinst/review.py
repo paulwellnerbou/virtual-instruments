@@ -88,6 +88,7 @@ class TakeResult(BaseModel):
     length: int | None = None
     envelope: list[float] = []  # normalised peak per bucket, for the waveform thumbnail
     level_db: float | None = None  # a noise floor's RMS level; each pass has its own
+    levels_db: dict[str, float] = {}  # a noise floor's RMS level per signal: each input has its own noise
     cut_by_hand: bool = False  # its hits are where they were set by hand, not where they were found
     cleanup_eq: str = ""  # cleanup_eq.take_setup() its samples were written with
 

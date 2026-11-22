@@ -154,10 +154,12 @@ async def drop_file(slug: str, key: str, request: Request, name: str = "") -> di
         audio, sr = sf.read(io.BytesIO(await request.body()), always_2d=True)
     except Exception:
         return {"ok": False, "message": f"“{name}” isn't an audio file this app can read (WAV, AIFF, FLAC)."}
+    if not len(audio):
+        return {"ok": False, "message": f"“{name}” is empty."}
     index = take.signals.index(signal)
     target = takes_dir / take.files[index]
     result_key = take.key
-    if target.exists():
+    if slicing.has_audio(target):
         if take.kind != "note":
             return {"ok": False, "message": f"{take.title} is already recorded; record it again with ●."}
         from vinst.slicing import more_numbers
@@ -1372,7 +1374,13 @@ def step_worksheet(ed: "Editor") -> None:
                     level = result.level_db
                     if level is None and state["manifest"] and take.pass_id == recording_passes(inst)[0].id:
                         level = state["manifest"].noise_floor_db  # sliced before levels were kept per pass
-                    text = f"{result.message} of silence" + (f" · {level:.1f} dBFS" if level is not None else "")
+                    names = {s.id: s.name for s in inst.signals}
+                    if len(result.levels_db) > 1:
+                        level_text = " · " + ", ".join(f"{names.get(sid, sid)} {v:.1f}"
+                                                       for sid, v in result.levels_db.items()) + " dBFS"
+                    else:
+                        level_text = f" · {level:.1f} dBFS" if level is not None else ""
+                    text = f"{result.message} of silence{level_text}"
                     if state["manifest"] and state["manifest"].denoised:
                         text += " · used to denoise the samples"
                     ui.label(text).classes("text-sm opacity-70 truncate")
@@ -1395,7 +1403,7 @@ def step_worksheet(ed: "Editor") -> None:
         noise floor and extras are single takes, so they're recorded again."""
         # As record_take decides: by the files, which may not be sliced yet (e.g. just dropped).
         folder = Path(rec.takes_dir).expanduser() if rec.takes_dir else None
-        recorded = recorded or (folder is not None and all((folder / f).exists() for f in take.files))
+        recorded = all(slicing.has_audio(folder / f) for f in take.files) if folder is not None else recorded
         if not recorded:
             tip = "Record"
         elif take.kind == "note":

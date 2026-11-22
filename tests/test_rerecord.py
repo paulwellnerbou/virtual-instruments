@@ -305,6 +305,13 @@ def test_dropped_files_become_the_take_or_more_variations(uke):
         asyncio.run(drop_file(uke.meta.slug, take.key, Body(buf.getvalue(), headers={}), "x.wav"))
     bad = asyncio.run(drop_file(uke.meta.slug, take.key, Body(b"not audio"), "notes.txt"))
     assert not bad["ok"] and "isn't an audio file" in bad["message"]
+    empty = io.BytesIO()
+    sf.write(empty, np.zeros(0), 44100, format="WAV")
+    nothing = asyncio.run(drop_file(uke.meta.slug, take.key, Body(empty.getvalue()), "export.wav"))
+    assert not nothing["ok"] and "is empty" in nothing["message"]
+    sf.write(takes / take.files[0], np.zeros(0), SR)  # empty, e.g. from an older version
+    again = drop("C3 loud take, exported again.wav")
+    assert again["ok"] and again["key"] == take.key  # not more hits beside the empty one
 
 
 def test_velocities_out_of_loudness_order_name_the_pair():
@@ -562,3 +569,32 @@ def test_a_take_edited_without_moving_a_hit_is_cut_where_it_was_when_building(uk
     again = result(after, take.key)
     assert [(h.start, h.end) for h in again.hits] == before and again.hits[1].rejected
     assert slicing.changed_takes(uke, after) == []
+
+
+def test_an_empty_take_is_recorded_again_not_added_to(uke, monkeypatch):
+    from types import SimpleNamespace
+
+    from vinst.ui import recording
+
+    take = lane(uke)
+    takes = store.instrument_dir(uke.meta.slug).parent.parent / "takes"
+    opened = []
+    monkeypatch.setattr(recording, "open_dialog", lambda ed, title, *a, **k: opened.append(title))
+    monkeypatch.setattr(recording, "record_more", lambda ed, key, *a, **k: opened.append("more"))
+    ed = SimpleNamespace(inst=uke)
+    sf.write(takes / take.files[0], np.zeros(0), SR)  # e.g. a cancelled export
+    recording.record_take(ed, take.number)
+    sf.write(takes / take.files[0], take_audio(take, (0.5,)), SR)
+    recording.record_take(ed, take.number)
+    assert opened == [take.title, "more"]
+
+
+def test_split_on_the_command_line_says_why_a_file_cant_be_used(uke, tmp_path):
+    from typer.testing import CliRunner
+
+    from vinst.cli import app
+
+    sf.write(tmp_path / "scale_pickup.wav", np.zeros(0), SR)
+    result = CliRunner().invoke(app, ["split", uke.meta.slug, "p", str(tmp_path / "scale_pickup.wav")])
+    assert result.exit_code == 1 and "scale_pickup.wav is empty" in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)

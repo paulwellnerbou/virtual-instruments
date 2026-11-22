@@ -10,6 +10,8 @@ import asyncio
 import json
 import math
 import time
+from collections import deque
+from dataclasses import dataclass
 from html import escape
 from collections.abc import Callable
 from pathlib import Path
@@ -17,13 +19,14 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import soundfile as sf
-from nicegui import ui
+from nicegui import Client, ui
 
 from vinst import guide as guides
 from vinst import aims, recorder, review, store, takes_meta
 from vinst.plan import Take, more_base, more_file, note_lanes, plan_takes, planned_notes, recording_passes
 from vinst.plan import take_key as take_key_of
-from vinst.spec import Signal
+from vinst.slicing import has_audio
+from vinst.spec import Instrument, Signal
 from vinst.ui import form
 from vinst.ui.controls import NumberField
 
@@ -56,11 +59,13 @@ CSS = """
 .vi-rec-total { height: 4px; } .vi-rec-total > div { height: 100%; background: #9e9e9e; }
 .vi-rec-time { opacity: .7; font-size: .9rem; min-height: 1.3em; }
 .vi-meter { display: grid; grid-template-columns: 7rem 1fr 4.5rem; align-items: center; gap: 8px; width: 100%; }
-.vi-meter-bar { height: 10px; background: #eeeeee; border-radius: 5px; overflow: hidden; }
+.vi-meter-bar { height: 10px; background: var(--vi-border, #eeeeee); border-radius: 5px; overflow: hidden; }
 .vi-meter-bar > div { height: 100%; width: 0; background: #43a047; transition: width .08s linear; }
 .vi-meter-bar > div.hot { background: #fdd835; } .vi-meter-bar > div.over { background: #e53935; }
 .vi-meter-db { text-align: right; font-variant-numeric: tabular-nums; font-size: .85rem; }
 .vi-meter-db.clip { color: #e53935; font-weight: 600; }
+.vi-meter.mon { grid-template-columns: 1fr 4.5rem 7rem; }
+.vi-meter-floor { font-variant-numeric: tabular-nums; font-size: .85rem; opacity: .7; white-space: nowrap; }
 """
 
 JS = r"""
@@ -132,6 +137,8 @@ window.viRec = (() => {
       bar.className = m.db >= -3 ? 'over' : m.db >= -12 ? 'hot' : '';
       text.textContent = m.clip ? 'CLIP' : m.db > -100 ? m.db.toFixed(0) + ' dB' : '–';
       text.classList.toggle('clip', m.clip);
+      const floor = row.querySelector('.vi-meter-floor');
+      if (floor) floor.textContent = 'noise ' + (m.floor > -100 ? m.floor.toFixed(0) + ' dB' : '–');
     }
   }
   return { start, stop, preview, meters };
@@ -168,7 +175,7 @@ def record_take(ed: "Editor", number: int, on_saved: Saved | None = None) -> Non
         return
     folder = takes_folder(ed)
     paths = {sid: folder / name for sid, name in zip(take.signals, take.files)}
-    if take.kind == "note" and all(p.exists() for p in paths.values()):
+    if take.kind == "note" and all(has_audio(p) for p in paths.values()):
         record_more(ed, take.key, ed.inst.dynamics.round_robins, on_saved)
         return
     following = next((t for t in plan_takes(ed.inst) if t.number == number + 1), None)
@@ -238,6 +245,27 @@ def current_device(rescan: bool = False) -> tuple[recorder.Device | None, list[r
     return recorder.find_device(name, devices), devices, name
 
 
+def take_stream(inst: Instrument, signals: list[Signal]) \
+        -> tuple[recorder.Recorder, recorder.Device, dict[str, int]] | None:
+    """The interface opened for a take, or None after saying why it can't be."""
+    # Re-read the devices: the interface's sample rate may have changed since the app started.
+    device, _, name = current_device(rescan=True)
+    why = recorder.problem(inst, device, [s.id for s in signals])
+    if device is None and name:
+        why = f"{name} isn't connected. Connect it, or choose another interface under Recording."
+    if why:
+        ui.notify(why, type="warning", multi_line=True, timeout=8000)
+        return None
+    assert device is not None
+    channels = recorder.channels_for(inst)
+    try:
+        rec = recorder.Recorder(device, {s.id: channels[s.id] for s in signals}, inst.recording.sample_rate)
+    except Exception as e:  # PortAudio refuses: device busy, unplugged, no permission
+        ui.notify(f"Couldn't open {device.name}: {e}", type="negative", multi_line=True)
+        return None
+    return rec, device, channels
+
+
 def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str, Path],
                 guide_for: Callable[[int | None], guides.Guide], count: int | None,
                 on_next: Callable[[], None] | None, next_label: str,
@@ -249,21 +277,13 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
     to set the input gain. `aim`: how loud to play a soft velocity. `click_grid`: keep where the
     hits were asked for, for slicing (see takes_meta)."""
     inst = ed.inst
-    # Re-read the devices: the interface's sample rate may have changed since the app started.
-    device, _, name = current_device(rescan=True)
-    why = recorder.problem(inst, device, [s.id for s in signals])
-    if device is None and name:
-        why = f"{name} isn't connected. Connect it, or choose another interface under Recording."
-    if why:
-        ui.notify(why, type="warning", multi_line=True, timeout=8000)
+    paused = pause_monitors()
+    opened = take_stream(inst, signals)
+    for m in paused:
+        (m.stop if opened else m.resume)()
+    if opened is None:
         return
-    assert device is not None
-    channels = recorder.channels_for(inst)
-    try:
-        rec = recorder.Recorder(device, {s.id: channels[s.id] for s in signals}, inst.recording.sample_rate)
-    except Exception as e:  # PortAudio refuses: device busy, unplugged, no permission
-        ui.notify(f"Couldn't open {device.name}: {e}", type="negative", multi_line=True)
-        return
+    rec, device, channels = opened
     opened = time.monotonic()
     state: dict = {"timer": None, "guide": guide_for(count)}
     client = ui.context.client
@@ -423,13 +443,71 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
     dialog.open()
 
 
+QUIET_S = 3.0  # the monitor's noise reading is the quietest moment of this long
+MONITOR_TICK_S = 0.1
+
+
+@dataclass(eq=False)
+class _Monitor:
+    """An open input monitor of one page."""
+
+    client: Client
+    stop: Callable[[], None]  # turns it off
+    pause: Callable[[], None]  # closes its stream, staying on
+    resume: Callable[[], None]  # opens it again after a pause
+
+
+_monitors: list[_Monitor] = []
+
+
+def stop_monitors(client: Client | None = None) -> None:
+    """Turn the open monitors off; `client`: only that page's."""
+    for m in list(_monitors):
+        if client is None or m.client is client:
+            m.stop()
+
+
+def pause_monitors() -> list[_Monitor]:
+    """Close the monitors' streams while something else opens the interface (one stream per input at
+    a time) or re-reads the devices, which PortAudio skips while a stream is open. Each one paused
+    is then either stopped or resumed."""
+    paused = list(_monitors)
+    for m in paused:
+        m.pause()
+    return paused
+
+
+class _Released(ui.element):
+    """Calls `release` when deleted, e.g. when the step around it is redrawn or the page closes."""
+
+    def __init__(self, release: Callable[[], None]) -> None:
+        super().__init__()
+        self._release = release
+
+    def _handle_delete(self) -> None:
+        self._release()
+        super()._handle_delete()
+
+
 def input_settings(ed: "Editor") -> None:
     """Which interface to record from, and which of its inputs each signal is plugged into."""
     inst, rec = ed.inst, ed.inst.recording
-    state = {"rescan": True}  # the interface's rate may have changed since the app started
+    client = ui.context.client
+    state: dict = {
+        "rescan": True,  # the interface's rate may have changed since the app started
+        "monitor": set(),  # ids of the signals whose inputs are monitored
+        "probe": None,  # the stream they are read from
+        "key": None,  # what it was opened for
+        "quiet": {},  # signal id -> recent RMS levels
+        "clipped": set(),
+        "held": False,  # paused while something else has the interface
+    }
+    meter_id = f"vi-monitor-{id(state)}"
 
     @ui.refreshable
     def body() -> None:
+        if state["rescan"]:
+            close_probe()  # reopened below, once the devices are read again
         device, devices, name = current_device(rescan=state["rescan"])
         state["rescan"] = False
         with form.setting("Interface", "The audio interface the app records from. ⟳ looks again, e.g. after "
@@ -457,10 +535,12 @@ def input_settings(ed: "Editor") -> None:
                 ui.label("no audio input found").classes("text-sm text-negative")
             ui.button(icon="refresh", on_click=rescan).props("flat dense round").tooltip("Look for interfaces again")
         if device is None:
+            monitor(None, {})  # monitoring resumes when it's back
             if name and devices:
                 form.note(f"{name} isn't connected.")
             return
         channels = recorder.channels_for(inst)
+        monitor(device, channels)  # before the buttons: if it can't open, they show it's off
         for p in recording_passes(inst):
             for s in p.signals:
                 with form.setting(s.name, f"Which input of {device.name} the {s.name} is plugged into. "
@@ -472,15 +552,106 @@ def input_settings(ed: "Editor") -> None:
                         .props("dense outlined").classes("grow min-w-0")
                     ui.button("Detect", icon="hearing", on_click=lambda _, sig=s: detect(device, sig)) \
                         .props("flat dense no-caps")
+                    there = channels[s.id] <= device.channels
+                    on = there and s.id in state["monitor"]
+                    ui.button("Monitor", icon="graphic_eq", on_click=lambda _, sid=s.id: toggle(sid)) \
+                        .props("unelevated dense no-caps color=primary" if on else "flat dense no-caps") \
+                        .tooltip("Show this input's level, and its noise while nothing is played. To hear it, "
+                                 "use the interface's direct monitoring.") \
+                        .set_enabled(there)
+                if on:
+                    with form.setting(""):
+                        ui.html(f'<div id="{meter_id}-{escape(s.id)}"><div class="vi-meter mon" '
+                                f'data-signal="{escape(s.id)}"><div class="vi-meter-bar"><div></div></div>'
+                                '<span class="vi-meter-db">–</span><span class="vi-meter-floor"></span></div></div>') \
+                            .classes("grow min-w-0")
         why = recorder.problem(inst, device, [s.id for s in inst.signals])
         if why:
             form.note(why)
 
+    def monitor(device: recorder.Device | None, channels: dict[str, int]) -> None:
+        """Keep the monitored inputs' stream open; reopened only when what it reads changes."""
+        want = {sid: channels[sid] for sid in sorted(state["monitor"])
+                if device and channels.get(sid, device.channels + 1) <= device.channels}
+        key = (device.index, tuple(want.items())) if device and want and not state["held"] else None
+        if key == state["key"]:
+            return
+        close_probe()
+        if not want or device is None:
+            return
+        try:
+            # At the interface's own rate: monitoring works before the instrument's rate matches it.
+            state["probe"] = recorder.Recorder(device, want, device.sample_rate)
+        except Exception as e:
+            state["monitor"].clear()
+            ui.notify(f"Couldn't open {device.name}: {e}", type="negative")
+            return
+        state["key"] = key
+        _monitors.append(handle)
+
+    def close_probe() -> None:
+        if state["probe"]:
+            state["probe"].close()
+        state["probe"], state["key"] = None, None
+        state["quiet"], state["clipped"] = {}, set()
+        if handle in _monitors:
+            _monitors.remove(handle)
+
+    def stop_from_outside() -> None:
+        state["monitor"].clear()
+        state["held"] = False
+        close_probe()
+        redraw()
+
+    def hold() -> None:
+        state["held"] = True
+        close_probe()
+
+    def resume() -> None:
+        state["held"] = False
+        redraw()
+
+    def redraw() -> None:
+        """Also from another page, e.g. one opening a take."""
+        with client:
+            body.refresh()
+
+    handle = _Monitor(client, stop_from_outside, hold, resume)
+
+    def toggle(sid: str) -> None:
+        state["monitor"] ^= {sid}
+        close_probe()  # a fresh reading, also for the inputs still monitored
+        body.refresh()
+
+    def tick() -> None:
+        probe = state["probe"]
+        if probe is None:
+            return
+        peaks, rms = probe.levels(), probe.rms()
+        clip_db = 20 * math.log10(recorder.CLIP_LEVEL)
+        for sid in probe.signals:
+            quiet = state["quiet"].setdefault(sid, deque(maxlen=round(QUIET_S / MONITOR_TICK_S)))
+            if math.isfinite(rms[sid]):
+                quiet.append(rms[sid])
+            if peaks[sid] >= clip_db:
+                state["clipped"].add(sid)  # stays shown: a clip is over before anyone sees it
+            data = [{"id": sid, "db": max(peaks[sid], -120.0), "clip": sid in state["clipped"],
+                     "floor": min(quiet) if quiet else -120.0}]
+            ui.run_javascript(f"viRec.meters({json.dumps(f'{meter_id}-{sid}')}, {json.dumps(data)})")
+
     def rescan() -> None:
-        recorder.input_devices(rescan=True)
+        state["rescan"] = True
         body.refresh()
 
     async def detect(device: recorder.Device, sig: Signal) -> None:
+        paused = pause_monitors()
+        try:
+            await listen(device, sig)
+        finally:
+            for m in paused:
+                m.resume()  # on the input just found, if it was this one
+
+    async def listen(device: recorder.Device, sig: Signal) -> None:
         inputs = {f"in{n}": n for n in range(1, device.channels + 1)}
         try:
             probe = recorder.Recorder(device, inputs, device.sample_rate)
@@ -510,6 +681,8 @@ def input_settings(ed: "Editor") -> None:
 
     body()
     ed.on_change_hooks.append(body.refresh)
+    with _Released(close_probe).classes("hidden"):
+        ui.timer(MONITOR_TICK_S, tick)
 
 
 DETECT_S = 8

@@ -48,6 +48,43 @@ def test_takes_are_cut_into_expected_hits(sliced):
     assert by_base["noisefloor"].level_db == pytest.approx(m.noise_floor_db)  # each pass keeps its own
 
 
+def two_signal_takes(folder: Path):
+    inst = piezo_and_mic(defaults.new_instrument("Mini", InstrumentType.PLUCKED))
+    for s in inst.range.strings:
+        s.frets = 0
+    inst.dynamics.round_robins = 2
+    inst.extras = []
+    inst.recording.ring_seconds = 1.0
+    inst.recording.noise_floor_seconds = 2
+    inst.recording.takes_dir = str(folder)
+    write_takes(inst, folder, ring=1.0)
+    return inst
+
+
+def test_each_signal_keeps_its_own_noise_floor(tmp_path):
+    inst = two_signal_takes(tmp_path)
+    # A mic with the gain far up hisses much more than the piezo.
+    sf.write(tmp_path / "noisefloor_mic.wav", np.random.default_rng(1).normal(0, 10 ** (-50 / 20), 2 * 48000), 48000)
+    floor = next(t for t in process(inst).takes if t.base == "noisefloor")
+    assert floor.levels_db["piezo"] == pytest.approx(-70, abs=1)
+    assert floor.levels_db["mic"] == pytest.approx(-50, abs=1)
+    assert floor.level_db == pytest.approx(-70, abs=1)  # hits are found in the piezo, against its own noise
+
+
+def test_an_empty_take_file_is_reported_on_its_take_and_the_rest_is_sliced(tmp_path):
+    inst = two_signal_takes(tmp_path)
+    for name in ("noisefloor_piezo.wav", "055_G-0_p_mic.wav"):  # e.g. a cancelled export
+        sf.write(tmp_path / name, np.zeros(0), 48000)
+    by_base = {t.base: t for t in process(inst).takes}
+    assert by_base["noisefloor"].status == "error" and "noisefloor_piezo.wav is empty" in by_base["noisefloor"].message
+    assert by_base["055_G-0_p"].status == "error" and "055_G-0_p_mic.wav is empty" in by_base["055_G-0_p"].message
+    # Sliced as without a noise floor: against each take's own quiet parts.
+    assert by_base["060_C-0_f"].status == "ok" and len(by_base["060_C-0_f"].hits) == 2
+    inst.processing.denoise = True
+    with pytest.raises(ValueError, match="noisefloor_piezo.wav is empty"):
+        process(inst)
+
+
 def test_mistakes_are_flagged(sliced):
     _, m = sliced
     by_number = {t.number: t for t in m.takes}

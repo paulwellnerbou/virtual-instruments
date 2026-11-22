@@ -65,6 +65,30 @@ def test_each_signal_is_written_from_its_input(tmp_path):
     assert stream.closed
 
 
+def test_rms_is_read_per_input_for_the_monitor():
+    rec, stream = open_recorder({"piezo": 1, "mic": 2})
+    block = np.zeros((SR // 10, 2))
+    block[:, 0], block[:, 1] = 0.1, 0.001
+    stream.feed(block)
+    stream.feed(block)
+    rms = rec.rms()
+    assert rms["piezo"] == pytest.approx(-20, abs=0.01) and rms["mic"] == pytest.approx(-60, abs=0.01)
+    assert rec.rms()["mic"] == float("-inf")  # read since the last call only
+    rec.close()
+
+
+def test_take_stopped_during_the_count_in_keeps_the_old_one(tmp_path):
+    path = tmp_path / "take_pickup.wav"
+    sf.write(path, np.full(100, 0.1), SR)
+    rec, stream = open_recorder({"pickup": 1})
+    rec.start({"pickup": path}, 24, skip_seconds=2.0)
+    stream.feed(np.ones((SR // 10, 1)) * 0.5)  # still in the part that isn't kept
+    result = rec.stop(keep=True)
+    assert result.error and not result.files
+    assert len(sf.read(path)[0]) == 100 and not list(tmp_path.glob("*.part"))
+    rec.close()
+
+
 def test_cancelled_recording_keeps_the_old_take(tmp_path):
     path = tmp_path / "take_pickup.wav"
     sf.write(path, np.full(100, 0.1), SR)
