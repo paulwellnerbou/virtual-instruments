@@ -409,13 +409,17 @@ def table_value(table: str, x: float) -> float:
     return pts[0][1] if x < pts[0][0] else pts[-1][1]
 
 
-def equal_power_table(rising: bool) -> str:
+def equal_power_table(rising: bool, top: float = 1) -> str:
+    """Volume over a knob going from 0 to `top`."""
     pts = []
     for i in range(21):
         x = i / 20
         y = math.sin(x * math.pi / 2) if rising else math.cos(x * math.pi / 2)
-        pts.append(f"{1.0001 if i == 20 else x:g},{y:.3f}")
+        pts.append(f"{top * 1.0001 if i == 20 else x * top:g},{y:.3f}")
     return ";".join(pts)
+
+
+LABEL_CHAR_W = 8.4  # a full-size knob's label has room for about 10 characters
 
 
 @dataclass
@@ -427,6 +431,12 @@ class Knob:
     value: float
     bindings: list[dict[str, object]]
     tooltip: str | None = None
+    unit: str = ""  # a knob shows a bare number, so its label carries the unit where there's room
+
+    def shown_label(self, size: float) -> str:
+        """The label under a knob `size` pixels wide."""
+        full = f"{self.label} {self.unit}" if self.unit else self.label
+        return full if len(full) * LABEL_CHAR_W <= size else self.label
 
 
 def knob_layout(n: int) -> tuple[float, float, int]:
@@ -548,12 +558,12 @@ def knobs_for(inst: Instrument, controls: list[str], effects: list[str], buses: 
     for c in controls:
         if c == "mix" and len(mixable_signals(inst)) == 2:
             a, b = mixable_signals(inst)
-            knobs.append(Knob("mix", "Mix", 0, 1, 0.5, [
+            knobs.append(Knob("mix", b.name, 0, 100, 50, [
                 dict(type="amp", level="tag", identifier=a.id, parameter="AMP_VOLUME", translation="table",
-                     translationTable=equal_power_table(rising=False)),
+                     translationTable=equal_power_table(rising=False, top=100)),
                 dict(type="amp", level="tag", identifier=b.id, parameter="AMP_VOLUME", translation="table",
-                     translationTable=equal_power_table(rising=True)),
-            ], tooltip=f"{a.name} ← → {b.name}"))
+                     translationTable=equal_power_table(rising=True, top=100)),
+            ], tooltip=f"0 %: only {a.name}, 100 %: only {b.name}, between: both blended", unit="%"))
         elif c == "mix":
             for sig in mixable_signals(inst):
                 knobs.append(Knob(f"mix-{sig.id}", sig.name, 0, 1, 0.7, [
@@ -665,7 +675,7 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
     x0, step, size = knob_layout(len(knobs))
     for i, k in enumerate(knobs):
         el = _el(tab, "labeled-knob", x=round(x0 + i * step), y=KNOB_Y,
-                 width=size, height=size, label=k.label, textSize=13, type="float", minValue=float(k.lo),
+                 width=size, height=size, label=k.shown_label(size), textSize=13, type="float", minValue=float(k.lo),
                  maxValue=float(k.hi), value=float(k.value), textColor=f"CC{p.text_color[2:]}",
                  trackForegroundColor=p.accent_color, trackBackgroundColor="22FFFFFF", tooltip=k.tooltip,
                  controlStyle=KNOB_STYLE, tags=f"knob-{k.key}")
