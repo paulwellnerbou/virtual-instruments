@@ -154,8 +154,7 @@ def render(inst: Instrument, cutting: bool, background_url: str | None = None, m
     else:
         wanted = inst.range.span()
         span = (max(0, wanted[0] - p.extend_below), min(127, wanted[1] + p.extend_above)) if wanted else None
-        extra_keys = [k for x in inst.extras if x.use == "key"
-                      for k in ([x.key, x.down_key, x.up_key] if x.stroke_keys else [x.key])]
+        extra_keys = [k for x in inst.extras if x.use == "key" for k in x.keys()]
     tints: dict[int, str] = {}
     if span:
         tints.update({n: css(preset.pale(p.accent_color, 0.4)) for n in range(span[0], span[1] + 1)})

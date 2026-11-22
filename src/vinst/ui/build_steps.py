@@ -3,7 +3,7 @@
 import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
@@ -12,7 +12,7 @@ from nicegui import app, run, ui
 from vinst import bundle, lowcut, preset, reverb_send, review, sf2, store
 from vinst.plan import layer_bounds, recording_passes, valid_splits
 from vinst.preset import mixable_signals
-from vinst.spec import CONTROLS, Extra
+from vinst.spec import CONTROLS, Extra, ExtraKey
 from vinst.ui.anim import Collapse
 from vinst.ui.controls import NumberField, Segmented, VelocitySplits
 from vinst.ui import preview
@@ -612,21 +612,60 @@ def extra_row(ed: "Editor", x: Extra) -> None:
                       label="Use", on_change=use_changed).classes("w-52")
         # Below the row, not beside it: closed, it takes no room even where the row would wrap.
         with Collapse(x.use == "key", inner_classes="flex flex-col gap-2 pl-52 pt-2") as key:
+            turns: list[tuple[ui.label, Callable[[], int]]] = []
+
+            def show_turns() -> None:
+                for i, (label, start) in enumerate(turns):
+                    label.set_text(hit_turn(start(), x.hits, own=i > 0))
+
             with ui.row().classes("items-start gap-4"):
                 ed.note("Key", x, "key").classes("w-28")
                 ui.switch("Stops ringing notes", value=x.mutes, on_change=lambda e: ed.set(x, "mutes", e.value)) \
                     .classes("mt-2").tooltip("As a chuck mutes the strings: playing it fades out the notes still ringing")
+            turns.append((ui.label().classes("text-xs opacity-70 -mt-1"), lambda: 1))
 
-            def strokes_changed(e: Any) -> None:
-                ed.set(x, "stroke_keys", e.value)
-                strokes.set_open(e.value)
+            @ui.refreshable
+            def more_keys() -> None:
+                del turns[1:]
+                for k in x.more_keys:
+                    with ui.row().classes("items-start gap-4"):
+                        ed.note("Key", k, "key").classes("w-28")
+                        ed.number("Starts with hit", k, "start", min=1, max=x.hits, precision=0).classes("w-32")
+                        ui.button(icon="delete", on_click=lambda k=k: remove(k)).props("flat round") \
+                            .tooltip("Remove this key")
+                    turns.append((ui.label().classes("text-xs opacity-70 -mt-1"), lambda k=k: k.start))
+                show_turns()
 
-            ui.switch("Down and up on keys of their own", value=x.stroke_keys, on_change=strokes_changed) \
-                .tooltip("For hits recorded alternating down and up: the 1st, 3rd, … hit on the down key, "
-                         "the 2nd, 4th, … on the up key. The key above keeps playing them all in turn.")
-            with Collapse(x.stroke_keys, inner_classes="flex items-start gap-4") as strokes:
-                ed.note("Down key", x, "down_key").classes("w-28")
-                ed.note("Up key", x, "up_key").classes("w-28")
+            def add() -> None:
+                taken = {k for other in ed.inst.extras if other.use == "key" for k in other.keys()}
+                free = next((k for k in range(max(x.keys()) + 1, 128) if k not in taken), 127)
+                x.more_keys.append(ExtraKey(key=free, start=min(x.hits, len(x.keys()) + 1)))
+                ed.changed()
+                more_keys.refresh()
+
+            def remove(k: ExtraKey) -> None:
+                # By identity: two keys set alike are equal, and the one clicked must go.
+                x.more_keys = [o for o in x.more_keys if o is not k]
+                ed.changed()
+                more_keys.refresh()
+
+            more_keys()
+            ed.on_change_hooks.append(show_turns)
+            ui.button("+ Key starting with another hit", on_click=add).props("outline dense").classes("self-start") \
+                .tooltip("The same hits in turn on one more key, each key keeping its own place. E.g. chucks "
+                         "recorded down, up, down…: a key starting with hit 2 starts with an up stroke. "
+                         "Rejected hits are skipped. In the soundfont, each key plays only the hit it starts with.")
+
+
+def hit_turn(start: int, hits: int, own: bool = False) -> str:
+    """What each press of a key plays, e.g. "Each press plays the next hit: 2, 3, 4, … 10, 1, then 2 again"."""
+    if hits == 1:
+        return "Each press plays its one hit."
+    order = [str((start - 1 + i) % hits + 1) for i in range(hits)]
+    if hits > 6:
+        order = [*order[:3], f"… {order[-2]}", order[-1]]
+    turn = "next hit of its own turn" if own else "next hit"
+    return f"Each press plays the {turn}: {', '.join(order)}, then {order[0]} again."
 
 
 def step_build(ed: "Editor") -> None:

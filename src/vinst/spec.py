@@ -129,6 +129,14 @@ class NoteLanes(BaseModel):
     splits: list[int] = []
 
 
+class ExtraKey(BaseModel):
+    """Another key for an extra on its own key: the same hits in turn, from another one on."""
+
+    key: int = Field(ge=0, le=127)
+    # The hit it starts with, by its place in the recording (1 = the first recorded).
+    start: int = Field(default=2, ge=1)
+
+
 class Extra(BaseModel):
     """Additional non-note recordings, e.g. release noises, chucks, body taps."""
 
@@ -141,17 +149,24 @@ class Extra(BaseModel):
     key: int = Field(default=48, ge=0, le=127)
     # On its own key: whether playing it stops the notes still ringing, as a chuck mutes the strings.
     mutes: bool = False
-    # On its own key: hits recorded alternating down and up (1st, 3rd, … down) also each on a key of their own.
-    stroke_keys: bool = False
-    down_key: int = Field(default=49, ge=0, le=127)
-    up_key: int = Field(default=51, ge=0, le=127)
+    # On its own key: more keys with the same hits, each in its own turn, e.g. one starting on an up chuck.
+    more_keys: list[ExtraKey] = []
+
+    def keys(self) -> list[int]:
+        return [self.key, *(k.key for k in self.more_keys)]
 
     @model_validator(mode="before")
     @classmethod
-    def _chuck_mutes(cls, data: Any) -> Any:
+    def _older(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
         # Instruments from before the setting: their chuck mutes, as one does on a real instrument.
-        if isinstance(data, dict) and "mutes" not in data and data.get("id") == "chuck":
-            return {**data, "mutes": True}
+        if "mutes" not in data and data.get("id") == "chuck":
+            data = {**data, "mutes": True}
+        # The down and up keys: a key starting on the first hit and one starting on the second.
+        if data.get("stroke_keys") and "more_keys" not in data:
+            data = {**data, "more_keys": [{"key": data.get("down_key", 49), "start": 1},
+                                          {"key": data.get("up_key", 51), "start": 2}]}
         return data
 
 
@@ -328,6 +343,7 @@ class Instrument(BaseModel):
             out.append("Add at least one signal.")
         _dupes(out, "signal id", [s.id for s in self.signals])
         _dupes(out, "extra id", [e.id for e in self.extras])
+        _dupes(out, "key for extras", [str(k) for x in self.extras if x.use == "key" for k in x.keys()])
         if self.range.mode == "strings":
             if not self.range.strings:
                 out.append("Add at least one string.")
@@ -366,9 +382,10 @@ class Instrument(BaseModel):
         if span is not None and self.range.mode != "sounds" and self.recording.source == "takes":
             lo, hi = span[0] - self.preset.extend_below, span[1] + self.preset.extend_above
             for x in self.extras:
-                if x.use == "key" and lo <= x.key <= hi:
-                    out.append(f"Extra “{x.name}” is on key {x.key}, inside the playable range {lo}–{hi}; "
-                               "move it outside (step 6).")
+                for key in x.keys() if x.use == "key" else []:
+                    if lo <= key <= hi:
+                        out.append(f"Extra “{x.name}” is on key {key}, inside the playable range {lo}–{hi}; "
+                                   "move it outside (step 6).")
         for sig in self.signals:
             if sig.id in RESERVED_SIGNAL_IDS or sig.id.startswith("pass-"):
                 out.append(f"Signal id “{sig.id}” is reserved; choose another.")
