@@ -196,6 +196,10 @@ def plan_takes(inst: Instrument) -> list[Take]:
     return takes
 
 
+def planned_notes(inst: Instrument, pass_id: str) -> set[int]:
+    return {t.note.midi for t in plan_takes(inst) if t.kind == "note" and t.pass_id == pass_id and t.note}
+
+
 def more_base(take: Take, number: int) -> str:
     """Variations of a lane recorded later, to compare with the lane's own and keep the best."""
     return f"{take.base_name}-more{number}"

@@ -6,7 +6,8 @@ A bar is as long as a hit rings, plus a short gap, at one beat per second.
 import math
 from dataclasses import asdict, dataclass, field
 
-from vinst.plan import EXTRA_HIT_S, HIT_GAP_S, Take, plan_takes
+from vinst import notes as note_names
+from vinst.plan import EXTRA_HIT_S, HIT_GAP_S, Take, plan_takes, planned_notes
 from vinst.spec import Instrument, file_token
 
 BEAT_S = 1.0  # 60 BPM keeps the counting readable
@@ -64,9 +65,12 @@ def how_to_play(inst: Instrument, take: Take) -> str:
     return lane_name(take.lane or "")
 
 
-def bar_beats(inst: Instrument, take: Take) -> int:
-    seconds = inst.recording.ring_seconds if take.kind == "note" else EXTRA_HIT_S
+def ring_beats(seconds: float) -> int:
     return math.ceil((seconds + HIT_GAP_S) / BEAT_S)
+
+
+def bar_beats(inst: Instrument, take: Take) -> int:
+    return ring_beats(inst.recording.ring_seconds if take.kind == "note" else EXTRA_HIT_S)
 
 
 def count_in(guide: Guide, beats: int, first: str) -> None:
@@ -101,6 +105,23 @@ def more_guide(inst: Instrument, take: Take, count: int) -> Guide:
     """More variations of a lane take, to compare with its own and keep the best."""
     guide = Guide(BEAT_S)
     hits(guide, inst, take, count, "New hit {} of {}")
+    return guide
+
+
+def scale_guide(inst: Instrument, pass_id: str, per_note: int) -> Guide:
+    """The whole scale in one recording, `per_note` hits on each note, at one velocity throughout:
+    split into the notes' takes by pitch afterwards."""
+    guide = Guide(BEAT_S)
+    midis = sorted(planned_notes(inst, pass_id))
+    if not midis:
+        return guide
+    beats = ring_beats(inst.recording.ring_seconds)
+    count_in(guide, beats, f"{note_names.name(midis[0])} · one velocity throughout")
+    for k, m in enumerate(midis):
+        for i in range(per_note):
+            last = i == per_note - 1 and k + 1 < len(midis)
+            guide.add(beats * BEAT_S, "hit", f"{note_names.name(m)} · {i + 1} of {per_note}",
+                      f"next: {note_names.name(midis[k + 1])}" if last else "", beats)
     return guide
 
 

@@ -5,8 +5,8 @@ import pytest
 import soundfile as sf
 from conftest import piezo_and_mic
 
-from vinst import defaults, guide, recorder
-from vinst.plan import plan_takes
+from vinst import defaults, guide, notes, recorder
+from vinst.plan import plan_takes, planned_notes, recording_passes
 from vinst.spec import InstrumentType
 
 SR = 48000
@@ -229,3 +229,17 @@ def test_a_quiet_loud_take_says_how_much_to_turn_the_gain_up():
     assert recorder.level_advice(-55.0) is None  # nothing played: no gain to suggest
     advice = recorder.level_advice(-18.0)
     assert "peaks at -18 dBFS" in advice and "up by about 12 dB" in advice and "same for all takes" in advice
+
+
+def test_scale_guide_leads_up_the_scale_a_few_hits_per_note(tmp_path, monkeypatch):
+    inst = uke(monkeypatch, tmp_path)
+    p = recording_passes(inst)[0]
+    midis = sorted(planned_notes(inst, p.id))
+    assert len(midis) > 2
+    g = guide.scale_guide(inst, p.id, 2)
+    count, *hits = g.steps
+    assert count.kind == "count" and count.detail.startswith(notes.name(midis[0]))
+    assert [h.title for h in hits[:3]] == [f"{notes.name(midis[0])} · 1 of 2", f"{notes.name(midis[0])} · 2 of 2",
+                                           f"{notes.name(midis[1])} · 1 of 2"]
+    assert hits[1].detail == f"next: {notes.name(midis[1])}" and hits[-1].detail == ""
+    assert len(g.hits_at()) == 2 * len(midis)
