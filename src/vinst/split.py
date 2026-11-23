@@ -218,23 +218,31 @@ def write(inst: Instrument, signals: list[np.ndarray], sr: int, placed: list[Pla
     return keys
 
 
+def names_signal(stem: str, signal_id: str) -> bool:
+    """Whether a file's name (its stem, lower case) has a signal's id in it as a word of its own."""
+    return re.search(rf"(^|[^a-z0-9]){re.escape(signal_id.lower())}([^a-z0-9]|$)", stem) is not None
+
+
+def by_name(p: Pass, names: list[str]) -> list[int] | None:
+    """Which file is each of the pass's signals, by the ids in their names; None if that can't be told."""
+    stems = [Path(n).stem.lower() for n in names]
+    if len(names) != len(p.signals):
+        return None
+    order = [next((i for i, st in enumerate(stems) if names_signal(st, s.id)), -1) for s in p.signals]
+    return order if -1 not in order and len(set(order)) == len(order) else None
+
+
 def pass_for(inst: Instrument, names: list[str]) -> tuple[Pass, list[int]] | str:
     """Which pass the uploaded files are, and which file is each of its signals (indices into
     `names`, in the pass's order); or why that can't be told."""
     stems = [Path(n).stem.lower() for n in names]
-
-    def has(stem: str, signal_id: str) -> bool:
-        return re.search(rf"(^|[^a-z0-9]){re.escape(signal_id.lower())}([^a-z0-9]|$)", stem) is not None
-
     passes = recording_passes(inst)
     for p in passes:
         ids = [s.id for s in p.signals]
-        if len(ids) == 1 and len(names) == 1 and (len(passes) == 1 or has(stems[0], ids[0])):
+        if len(ids) == 1 and len(names) == 1 and (len(passes) == 1 or names_signal(stems[0], ids[0])):
             return p, [0]
-        if len(names) == len(ids):
-            order = [next((i for i, st in enumerate(stems) if has(st, sid)), -1) for sid in ids]
-            if -1 not in order and len(set(order)) == len(order):
-                return p, order
+        if (order := by_name(p, names)) is not None:
+            return p, order
     example = f"scale_{passes[0].signals[0].id}.wav"
     if len(passes) == 1 and len(passes[0].signals) == 1:
         return "This instrument records one signal: drop one file."
@@ -248,8 +256,94 @@ def pass_for(inst: Instrument, names: list[str]) -> tuple[Pass, list[int]] | str
     return f"Which signal is it? Put {wanted} in the file name, e.g. {example}."
 
 
-def load(inst: Instrument, paths: list[Path]) -> tuple[Pass, list[np.ndarray], int] | str:
-    """The pass and its signals (in its order) of the long recording's files; or why not."""
+@dataclass(frozen=True)
+class Source:
+    """Where a signal is among uploaded files: a file, and one of its channels, or all of them mixed."""
+
+    file: int
+    channel: int | None = None
+
+
+Chosen = tuple[Pass, list[Source]]  # a pass, and where each of its signals is (in its order)
+
+
+def channel_count(path: Path) -> int:
+    return sf.info(str(path)).channels
+
+
+def told(inst: Instrument, paths: list[Path], pass_id: str | None = None) -> Chosen | None:
+    """Where each signal is, when the files tell without asking: by their names, or one file for a pass
+    of one signal. With `pass_id`, only for that pass. None: ask (see guess)."""
+    names = [p.name for p in paths]
+    if pass_id is None:
+        which = pass_for(inst, names)
+        return None if isinstance(which, str) else (which[0], [Source(i) for i in which[1]])
+    p = next((q for q in recording_passes(inst) if q.id == pass_id), None)
+    if p is None:
+        return None
+    if len(p.signals) == 1 and len(paths) == 1:
+        return p, [Source(0)]
+    order = by_name(p, names)
+    return (p, [Source(i) for i in order]) if order is not None else None
+
+
+def sources_of(paths: list[Path], channels: list[int]) -> list[Source]:
+    """Every file's channels one by one, and a file of several channels also mixed."""
+    out = []
+    for i, n in enumerate(channels):
+        out += [Source(i)] if n == 1 else [*(Source(i, c) for c in range(n)), Source(i)]
+    return out
+
+
+def guess(p: Pass, paths: list[Path], channels: list[int]) -> list[Source]:
+    """A first answer to where each of the pass's signals is: a file named after it, else the files'
+    channels in order (left for the first signal, right for the second)."""
+    if (order := by_name(p, [x.name for x in paths])) is not None:
+        return [Source(i) for i in order]
+    singles = [s for s in sources_of(paths, channels) if s.channel is not None or channels[s.file] == 1]
+    if not singles:
+        return [Source(0)] * len(p.signals)
+    return [singles[min(i, len(singles) - 1)] for i in range(len(p.signals))]
+
+
+def source_label(paths: list[Path], channels: list[int], src: Source) -> str:
+    name = paths[src.file].name
+    if channels[src.file] == 1:
+        return name
+    if src.channel is None:
+        return f"{name} · all channels mixed"
+    side = {0: "left", 1: "right"}.get(src.channel) if channels[src.file] == 2 else None
+    return f"{name} · {side or f'channel {src.channel + 1}'}"
+
+
+def load_sources(paths: list[Path], sources: list[Source]) -> tuple[list[np.ndarray], int]:
+    """Each source's audio, mono, as long as the shortest; files read once however many channels are used."""
+    read: dict[int, tuple[np.ndarray, int]] = {}
+    signals, rates = [], set()
+    for src in sources:
+        if src.file not in read:
+            data, sr = sf.read(paths[src.file], always_2d=True, dtype="float64")
+            if not len(data):
+                raise ValueError(f"{paths[src.file].name} is empty")
+            read[src.file] = data, sr
+        data, sr = read[src.file]
+        if src.channel is not None and src.channel >= data.shape[1]:
+            raise ValueError(f"{paths[src.file].name} has no channel {src.channel + 1}")
+        signals.append(data.mean(axis=1) if src.channel is None else data[:, src.channel])
+        rates.add(sr)
+    if len(rates) != 1:
+        raise ValueError(f"signals have different sample rates: {sorted(rates)}")
+    n = min(len(x) for x in signals)
+    return [x[:n] for x in signals], rates.pop()
+
+
+def load(inst: Instrument, paths: list[Path], chosen: Chosen | None = None) -> tuple[Pass, list[np.ndarray], int] | str:
+    """The pass and its signals (in its order) of the long recording's files; or why not. `chosen`:
+    where each signal is, as answered; else by the files' names."""
+    if chosen is not None:
+        p, sources = chosen
+        signals, sr = load_sources(paths, sources)
+        return p, signals, sr
     which = pass_for(inst, [p.name for p in paths])
     if isinstance(which, str):
         return which
@@ -258,8 +352,8 @@ def load(inst: Instrument, paths: list[Path]) -> tuple[Pass, list[np.ndarray], i
     return p, signals, sr
 
 
-def analyse(inst: Instrument, paths: list[Path]) -> tuple[Pass, Split] | str:
-    loaded = load(inst, paths)
+def analyse(inst: Instrument, paths: list[Path], chosen: Chosen | None = None) -> tuple[Pass, Split] | str:
+    loaded = load(inst, paths, chosen)
     if isinstance(loaded, str):
         return loaded
     p, signals, sr = loaded
@@ -267,10 +361,11 @@ def analyse(inst: Instrument, paths: list[Path]) -> tuple[Pass, Split] | str:
     return p, find(inst, p, signals, sr, noise_floor(p.signals[0].id, takes_dir))
 
 
-def add(inst: Instrument, paths: list[Path], lane: str, found: Split | None = None) -> list[str]:
+def add(inst: Instrument, paths: list[Path], lane: str, found: Split | None = None,
+        chosen: Chosen | None = None) -> list[str]:
     """Cut the long recording at `paths` into takes at `lane`; the keys of the takes written.
     `found`: what analyse() found in these files, so it isn't looked for again."""
-    loaded = load(inst, paths)
+    loaded = load(inst, paths, chosen)
     if isinstance(loaded, str):
         raise ValueError(loaded)
     p, signals, sr = loaded

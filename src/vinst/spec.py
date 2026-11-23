@@ -62,17 +62,30 @@ class Meta(BaseModel):
     copyright: str = ""
 
 
+MAIN_PASS = "main"
+
+
 class Signal(BaseModel):
     """One recorded source, e.g. piezo, internal mic, external mic.
 
-    "together": recorded at the same time as the other "together" signals (one performance,
-    phase-aligned, can be mixed). "separate": recorded in its own pass, e.g. because it shares
-    one output with another source; the instrument switches between passes instead of mixing.
+    Signals with the same `pass_id` are recorded at the same time, on inputs of their own: one
+    performance, cut at the same points, blended by a knob. Each pass is a run through all notes of
+    its own, e.g. because two sources share one output; the instrument switches or layers passes.
     """
 
     id: str
     name: str
-    recorded: Literal["together", "separate"] = "together"
+    pass_id: str = MAIN_PASS
+
+    @model_validator(mode="before")
+    @classmethod
+    def _older(cls, data: Any) -> Any:
+        # "together" signals shared the main pass; a "separate" one had a pass of its own, named after it.
+        if isinstance(data, dict) and "recorded" in data:
+            data = dict(data)
+            separate = data.pop("recorded") == "separate"
+            data.setdefault("pass_id", data.get("id", MAIN_PASS) if separate else MAIN_PASS)
+        return data
 
 
 class InstrumentString(BaseModel):
@@ -443,9 +456,9 @@ class Instrument(BaseModel):
         if self.recording.source == "samples":
             if not self.recording.import_dir:
                 out.append("Choose the folder with the samples to import (step 5).")
-            if any(sig.recorded == "separate" for sig in self.signals):
-                out.append("Imported samples can't be in separate recording passes; set all signals to "
-                           "“Together” (step 2).")
+            if len({sig.pass_id for sig in self.signals}) > 1:
+                out.append("Imported samples can't be in separate recording passes; record all signals "
+                           "together (step 2).")
         for x in self.extras:
             for key in x.keys() if x.use == "key" else []:
                 if inside := self.extra_key_problem(key):
@@ -456,7 +469,9 @@ class Instrument(BaseModel):
         if self.processing.denoise and not self.recording.noise_floor_seconds:
             out.append("Denoising needs a noise-floor recording (set its length in step 4).")
         lanes = self.dynamics.layers + [lane for own in self.note_lanes.values() for lane in own.layers]
-        for what, values in (("Signal id", [s.id for s in self.signals]), ("Velocity name", list(dict.fromkeys(lanes)))):
+        for what, values in (("Signal id", [s.id for s in self.signals]),
+                             ("Pass id", list(dict.fromkeys(s.pass_id for s in self.signals))),
+                             ("Velocity name", list(dict.fromkeys(lanes)))):
             for v in values:
                 if not SAFE_NAME.fullmatch(v):
                     out.append(f"{what} “{v}” may only use letters, digits and “-”.")

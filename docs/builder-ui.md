@@ -20,10 +20,12 @@ Under **Samples**, record new takes or [import existing samples](#importing-exis
 
 ## 2. Signals
 
-What you record, e.g. a pickup, a microphone or a DI; each becomes its own sound.
+What you record, e.g. a pickup, a microphone or a DI; each becomes its own sound. With more than one, a card per **pass** (a run through all notes) shows which are recorded together; each signal's **Recorded** says with whom, and choosing another moves it.
 
-- **Together:** recorded at the same time as the other "together" signals, e.g. pickup and mic on two inputs. Cut at the same points; a knob blends them.
-- **Own pass:** a separate run through all notes, e.g. a piezo and an internal mic sharing one output. Passes **switch** via a menu or **layer** (play together, like two players in unison); set in step 6.
+- **Recorded together:** at the same time, on inputs of their own, e.g. pickup and mic. One performance: cut at the same points, and a knob blends them.
+- **On its own:** a pass of its own, e.g. a piezo and an internal mic sharing one output. Every note is recorded once per pass. Passes **switch** via a menu or **layer** (play together, like two players in unison); set in step 6.
+
+Any grouping works, e.g. pickup and mic together, then DI and room mic together in a second pass.
 
 ## 3. Range
 
@@ -49,7 +51,9 @@ Record, check and fix everything in one place.
 
 **Beside the notes:** the takes folder, sample rate and bit depth, your audio interface and each signal's input ("Detect" finds it while you play; "Monitor" shows its level, and its noise while nothing is played), and the samples folder, with optional denoising, clean-up EQs and loops.
 
-**The noise floor** comes first: 30 s of silence that tells the builder what is noise. Each signal gets its own, since every input has its own noise (a piezo is quieter than a mic with its gain far up); the row shows each one's level. Below it, a card per note and a row per **extra**.
+**The noise floor** comes first: 30 s of silence that tells the builder what is noise. Each signal gets its own, since every input has its own noise (a piezo is quieter than a mic with its gain far up); the card shows each one's level. Below it, a card per note and a row per **extra**.
+
+**With more than one signal**, each has a lane of its own, named, with **▶** for its own sound: a hit shows each signal's wave, stacked. Signals recorded together share a bracket and one **●**, as they're recorded again together; a signal on its own pass has its own ● and its own takes. A note's card holds all its passes, velocity by velocity.
 
 ![The worksheet](images/worksheet.png)
 
@@ -58,8 +62,8 @@ Record, check and fix everything in one place.
 - **● on a row** records it: a count-in, then one hit per bar to a visual metronome. Set how many hits first.
 - Once a velocity is recorded, ● records **more hits** beside the others, to compare and reject the weak ones. The noise floor and extras are single takes, so ● records them again.
 - A recording replaces the old one only when it finishes: cancelling or an interface problem keeps what you had. The app won't record while the interface runs at another sample rate than the instrument.
-- **Recorded elsewhere?** Drop a WAV, AIFF or FLAC onto a row. It becomes that velocity's take, or more hits if there is one, so nothing is overwritten. With several signals per take, put the signal's name in the file name (`…_piezo.wav`).
-- **Many notes in one recording?** Record it with the red dot on **Many notes in one recording**, which leads you up the scale a few hits per note, then **Split by pitch**; or drop a recording onto it, e.g. the whole scale with each note played a few times. Each hit's note comes from its pitch; hits in a row on one note become that note's take at the velocity you choose, or more hits if it has one. Before anything is written, a list shows where each note goes; notes outside the range are left out. A single misread or wrong note inside a run of the same note stays with it, flagged if it's wrong. With several signals, drop one file per signal together.
+- **Recorded elsewhere?** Drop a WAV, AIFF or FLAC onto a row. It becomes that velocity's take, or more hits if there is one, so nothing is overwritten. With signals recorded together, drop a file per signal with its name in the file name (`…_piezo.wav`), or one file with a channel per signal: the worksheet asks which channel (left, right) or file is which signal.
+- **Many notes in one recording?** Record it with the red dot on **Many notes in one recording**, which leads you up the scale a few hits per note, then **Split by pitch**; or drop a recording onto it, e.g. the whole scale with each note played a few times. Each hit's note comes from its pitch; hits in a row on one note become that note's take at the velocity you choose, or more hits if it has one. Before anything is written, a list shows where each note goes; notes outside the range are left out. A single misread or wrong note inside a run of the same note stays with it, flagged if it's wrong. With several passes, each has its own row to record or drop onto. With signals recorded together, drop one file per signal together, or one file with a channel per signal, and say which is which.
 - Takes are named `<note>_<velocity>_<signal>.wav`, e.g. `060_C-0_p_pickup.wav`; later hits `…_p-more1_pickup.wav`. Files you put in the folder yourself are picked up with **Slice them**.
 
 ### Checking

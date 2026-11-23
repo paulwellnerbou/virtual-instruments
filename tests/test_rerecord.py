@@ -610,3 +610,46 @@ def test_split_on_the_command_line_says_why_a_file_cant_be_used(uke, tmp_path):
     result = CliRunner().invoke(app, ["split", uke.meta.slug, "p", str(tmp_path / "scale_pickup.wav")])
     assert result.exit_code == 1 and "scale_pickup.wav is empty" in result.output
     assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_a_dropped_file_whose_signal_isnt_named_waits_to_be_asked(uke):
+    """With signals recorded together, a file without a signal in its name (e.g. a stereo export, a
+    channel per signal) is kept for the worksheet to ask which is which; then each is stored."""
+    import asyncio
+
+    from conftest import piezo_and_mic
+    from vinst.split import Source, load_sources
+    from vinst.ui.worksheet import DROP_BATCH, drop_file, long_upload_dir, store_take_audio
+
+    piezo_and_mic(uke)
+    store.save(uke)
+    take = lane(uke, "p")
+
+    class Body:
+        headers = {"X-Vinst-Drop": "1"}
+
+        def __init__(self, data):
+            self.data = data
+
+        async def body(self):
+            return self.data
+
+    left, right = take_audio(take, (0.7, 0.7)), take_audio(take, (0.35, 0.1))
+    buf = io.BytesIO()
+    sf.write(buf, np.stack([left, right], axis=1), SR, format="WAV", subtype="PCM_24")
+    asked = asyncio.run(drop_file(uke.meta.slug, take.key, Body(buf.getvalue()), "export.wav", "123"))
+    assert asked["ask"] and not asked["ok"]
+    kept = long_upload_dir(uke.meta.slug, f"{DROP_BATCH}123") / "export.wav"
+    assert kept.is_file()
+    signals, sr = load_sources([kept], [Source(0, 1), Source(0, 0)])  # mic on the left, here
+    for sig, audio in zip(["piezo", "mic"], signals):
+        assert store_take_audio(uke, take, sig, audio, sr, "export.wav")["ok"]
+    takes = store.instrument_dir(uke.meta.slug).parent.parent / "takes"
+    piezo, mic = (sf.read(takes / f)[0] for f in take.files)
+    assert np.max(np.abs(mic)) == pytest.approx(2 * np.max(np.abs(piezo)), rel=0.05)
+    m = slicing.process(uke)
+    result = next(t for t in m.takes if t.key == take.key)
+    assert set(result.envelopes) == {"piezo", "mic"}  # each its own waveform in the worksheet
+    assert result.envelope_of("mic") != result.envelope_of("piezo")
+    named = asyncio.run(drop_file(uke.meta.slug, take.key, Body(buf.getvalue()), "export_mic.wav", "124"))
+    assert named["ok"] and named["signal"] == "mic"  # its name says: no question

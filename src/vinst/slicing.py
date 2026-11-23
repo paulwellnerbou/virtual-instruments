@@ -484,6 +484,8 @@ def process_take(inst: Instrument, take: Take, takes_dir: Path, out_dir: Path,
                             for sig, x in zip(take.signals, signals)}
         return result
     result.envelope = envelope(ref)
+    if len(signals) > 1:
+        result.envelopes = {sig: envelope(x) for sig, x in zip(take.signals, signals)}
 
     primary_level = float(db(np.max(np.abs(signals[0]))))
     floor = noise_db if noise_db is not None else float(np.percentile(frame_rms_db(signals[0]), 10))

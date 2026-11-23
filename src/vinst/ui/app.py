@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from vinst import defaults, notes, review, store
 from vinst.plan import (
+    Pass,
     SampledNote,
     Summary,
     playable_range,
@@ -19,6 +20,7 @@ from vinst.plan import (
     summarize,
 )
 from vinst.spec import (
+    MAIN_PASS,
     SUSTAINED_TYPES,
     TYPE_LABELS,
     Extra,
@@ -575,59 +577,93 @@ def step_instrument(ed: Editor) -> None:
         ui.label(f"Folder: {store.instrument_dir(meta.slug)}").classes("text-xs opacity-60")
 
 
+OWN_PASS = "\0own"  # the "Recorded" choice that gives a signal a pass of its own
+
+
 def step_signals(ed: Editor) -> None:
+    """The signals, grouped by how they're recorded: one card per pass, so what's recorded together
+    is what shares a card. Each signal says whom it's recorded with, which also moves it between cards."""
     inst = ed.inst
-    ui.markdown(
-        "The sources you record, e.g. a pickup, an external mic or a DI. The id is the track name and file "
-        "suffix.\n\n"
-        "- **Together**: recorded at the same time as the other “together” signals, so it's the same "
-        "performance. The instrument can blend them with a mix knob.\n"
-        "- **Own pass**: recorded separately, e.g. piezo and internal mic that share one output and are "
-        "switched by a knob inside the instrument. Every take is recorded once more for this signal. "
-        "Because it's a different performance, the instrument switches between passes (or layers them, "
-        "step 6) instead of blending."
-    ).classes("max-w-3xl")
+    ui.label("What you record, e.g. a pickup, a microphone or a DI; each becomes a sound of its own. The id "
+             "names its files and its track.").classes("text-sm max-w-3xl")
+
+    def free_pass_id(sig: Signal) -> str:
+        taken = {s.pass_id for s in inst.signals if s is not sig}
+        return next(c for c in (sig.id, *(f"{sig.id}{n}" for n in range(2, 100))) if c not in taken)
+
+    def recorded_with(sig: Signal, value: str) -> None:
+        sig.pass_id = free_pass_id(sig) if value == OWN_PASS else value
+        ed.changed()
+        body.refresh()
+
+    def remove(sig: Signal) -> None:
+        inst.signals.remove(sig)
+        ed.changed()
+        body.refresh()
+
+    def add(name: str, sid: str | None) -> None:
+        passes = recording_passes(inst)
+        # Usually a second input at the same time, e.g. a mic beside the pickup.
+        inst.signals.append(Signal(id=sid or slugify(name).replace("-", ""), name=name,
+                                   pass_id=passes[0].id if passes else MAIN_PASS))
+        ed.changed()
+        body.refresh()
+
+    def choices(sig: Signal, passes: list[Pass]) -> dict[str, str]:
+        mine = next(p for p in passes if sig in p.signals)
+        others = [s.name for s in mine.signals if s is not sig]
+        out = {mine.id: f"with {' + '.join(others)}" if others else "on its own"}
+        out |= {p.id: f"with {p.name}" for p in passes if p is not mine}
+        if others:
+            out[OWN_PASS] = "on its own"
+        return out
+
+    def signal_row(sig: Signal, passes: list[Pass]) -> None:
+        with ui.row().classes("items-center gap-3 no-wrap"):
+            # Names show in the "with …" choices: those follow once the name is typed.
+            ed.text("Name", sig, "name").classes("w-56").on("blur", body.refresh)
+            ed.text("Id (track name)", sig, "id").classes("w-40")
+            if len(inst.signals) > 1:
+                ui.select(choices(sig, passes), label="Recorded", value=sig.pass_id,
+                          on_change=lambda e, s=sig: recorded_with(s, e.value)).classes("w-64")
+            ui.button(icon="delete", on_click=lambda s=sig: remove(s)).props("flat round") \
+                .tooltip(f"Remove {sig.name}")
 
     @ui.refreshable
-    def rows() -> None:
-        for sig in inst.signals:
-            with ui.row().classes("items-center"):
-                ed.text("Name", sig, "name").classes("w-56")
-                ed.text("Id (track name)", sig, "id").classes("w-40")
-                ui.select({"together": "Together", "separate": "Own pass"}, label="Recorded",
-                          value=sig.recorded,
-                          on_change=lambda e, s=sig: (ed.set(s, "recorded", e.value), passes_label.refresh())
-                          ).classes("w-36")
-
-                def remove(s: Signal = sig) -> None:
-                    inst.signals.remove(s)
-                    ed.changed()
-                    rows.refresh()
-                    passes_label.refresh()
-
-                ui.button(icon="delete", on_click=remove).props("flat round")
+    def body() -> None:
+        passes = recording_passes(inst)
+        if len(inst.signals) == 1:
+            signal_row(inst.signals[0], passes)
+        for i, p in enumerate(passes if len(inst.signals) > 1 else [], 1):
+            n = len(p.signals)
+            with ui.card().classes("w-full max-w-3xl gap-1").props("flat bordered"):
+                head = "Recorded together" if n > 1 else "Recorded on its own"
+                ui.label(f"Pass {i} · {head}" if len(passes) > 1 else head).classes("font-medium")
+                ui.label(f"One performance on {n} inputs at once: its signals are cut at the same points, and a "
+                         "knob in the instrument blends them." if n > 1 else
+                         "A run through all notes of its own, e.g. as it shares one output with another "
+                         "source.").classes("text-xs opacity-70")
+                for sig in p.signals:
+                    signal_row(sig, passes)
         with ui.row().classes("items-center gap-2"):
             present = {s.name for s in inst.signals}
             for name in defaults.SIGNAL_SUGGESTIONS:
                 if name not in present:
                     ui.button(f"+ {name}", on_click=lambda n=name: add(n, SIGNAL_IDS.get(n))).props("outline dense")
             ui.button("+ Other", on_click=lambda: add("New signal", None)).props("outline dense")
-
-    @ui.refreshable
-    def passes_label() -> None:
-        passes = recording_passes(inst)
         if len(passes) > 1:
-            text = " → ".join(f"{i}. {p.name}" for i, p in enumerate(passes, 1))
-            ui.label(f"Recording passes: {text}").classes("text-sm font-medium")
+            times = "twice" if len(passes) == 2 else f"{len(passes)} times"
+            ui.label(f"Every note is recorded {times}, once per pass. Passes are different "
+                     "performances, so the instrument switches between them or layers them (step 6) instead "
+                     "of blending.").classes("text-sm max-w-3xl")
+        elif len(inst.signals) > 1:
+            ui.label("Recorded one after the other instead, e.g. two sources sharing one output? Choose “on its "
+                     "own” for one of them.").classes("text-xs opacity-70 max-w-3xl")
+        else:
+            ui.label("Two inputs at once, e.g. a pickup and a mic? Add the second signal.") \
+                .classes("text-xs opacity-70 max-w-3xl")
 
-    def add(name: str, sid: str | None) -> None:
-        inst.signals.append(Signal(id=sid or slugify(name).replace("-", ""), name=name))
-        ed.changed()
-        rows.refresh()
-        passes_label.refresh()
-
-    rows()
-    passes_label()
+    body()
 
 
 def step_range(ed: Editor) -> None:

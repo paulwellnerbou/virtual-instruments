@@ -275,3 +275,24 @@ def test_a_hits_tooltip_says_what_it_is():
     assert "Pitch D#3 +2 cents" in text  # off the note it names, not the one expected
     assert "more than 50 cents away" in text
     assert hit_info(take, hit, imported=True).startswith("062_x_01_pickup.wav\n")  # its own file
+
+
+def test_signals_recorded_together_share_a_pass():
+    """Older specs said "together" or "separate"; a pass id groups them, keeping their takes' keys."""
+    from vinst.plan import recording_passes, take_key
+    from vinst.spec import Instrument, Signal
+
+    old = [Signal(id="intmic", name="Internal mic", recorded="separate"),
+           Signal(id="piezo", name="Piezo", recorded="together"), Signal(id="mic", name="Mic", recorded="together")]
+    assert [s.pass_id for s in old] == ["intmic", "main", "main"]
+    inst = defaults.new_instrument("Passes", InstrumentType.PLUCKED)
+    inst.signals = old
+    passes = recording_passes(inst)
+    assert [(p.id, p.name) for p in passes] == [("main", "Piezo + Mic"), ("intmic", "Internal mic")]
+    assert take_key("060_C-0_p", passes[1].id) == "060_C-0_p~intmic"
+    # Two pairs, each recorded together, one pass after the other.
+    inst.signals = [Signal(id="piezo", name="Piezo"), Signal(id="mic", name="Mic"),
+                    Signal(id="di", name="DI", pass_id="di"), Signal(id="room", name="Room", pass_id="di")]
+    assert [[s.id for s in p.signals] for p in recording_passes(inst)] == [["piezo", "mic"], ["di", "room"]]
+    again = Instrument.from_toml(inst.to_toml())
+    assert "recorded" not in inst.to_toml() and [s.pass_id for s in again.signals] == ["main", "main", "di", "di"]

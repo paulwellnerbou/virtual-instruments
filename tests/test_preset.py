@@ -331,7 +331,7 @@ def two_passes(tmp_path, monkeypatch):
     monkeypatch.setenv("VINST_BUILD", str(tmp_path / "build"))
     monkeypatch.setenv("VINST_DS_LIBRARY", str(tmp_path / "library"))
     inst = piezo_and_mic(defaults.new_instrument("Pass Uke", InstrumentType.PLUCKED))
-    inst.signals[1].recorded = "separate"
+    inst.signals[1].pass_id = "mic"
     for s in inst.range.strings:
         s.frets = 0
     inst.dynamics.round_robins = 2
@@ -404,7 +404,7 @@ def test_blend_knob_shows_its_unit_where_it_fits(two_passes):
 def test_build_refuses_hits_sliced_under_another_setup(built):
     inst, _ = built
     moved = inst.model_copy(deep=True)
-    moved.signals[1].recorded = "separate"
+    moved.signals[1].pass_id = "mic"
     with pytest.raises(ValueError, match="Slice again"):
         bundle.build(moved)
     renamed = inst.model_copy(deep=True)
