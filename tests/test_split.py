@@ -202,3 +202,38 @@ def test_drops_that_dont_fit_the_signals_say_why(uke):
     assert "one signal: drop one file" in split.pass_for(uke, ["a.wav", "b.wav"])
     uke.signals = [Signal(id="piezo", name="Piezo"), Signal(id="mic", name="Mic", recorded="separate")]
     assert "one pass at a time" in split.pass_for(uke, ["scale_piezo.wav", "scale_mic.wav"])
+
+
+def test_a_stereo_scale_gives_each_signal_its_channel(uke, tmp_path):
+    """One file with a channel per signal recorded together: asked for, guessed left then right."""
+    piezo_and_mic(uke)
+    p = recording_passes(uke)[0]
+    midis = sorted(split.planned_notes(uke, p.id))
+    loud, soft = scale_recording(midis, 2), 0.25 * scale_recording(midis, 2)
+    path = tmp_path / "scale.wav"
+    sf.write(path, np.stack([loud, soft], axis=1), SR)
+    assert split.told(uke, [path], p.id) is None  # nothing in the name says which is which
+    channels = [split.channel_count(path)]
+    sources = split.guess(p, [path], channels)
+    assert sources == [split.Source(0, 0), split.Source(0, 1)]
+    assert [split.source_label([path], channels, s) for s in split.sources_of([path], channels)] == \
+        ["scale.wav · left", "scale.wav · right", "scale.wav · all channels mixed"]
+    chosen = (p, sources)
+    found_p, found = split.analyse(uke, [path], chosen)
+    assert found_p == p and [r.midi for r in found.runs] == midis
+    keys = split.add(uke, [path], "p", found, chosen)
+    takes = tmp_path / "takes"
+    piezo, mic = (sf.read(takes / f"{keys[0]}_{s}.wav")[0] for s in ("piezo", "mic"))
+    assert piezo.ndim == mic.ndim == 1 and np.max(np.abs(piezo)) == pytest.approx(4 * np.max(np.abs(mic)), rel=0.01)
+
+
+def test_files_named_after_their_signals_need_no_question(uke, tmp_path):
+    from vinst.spec import Signal
+
+    uke.signals = [Signal(id="piezo", name="Piezo"), Signal(id="mic", name="Mic"),
+                   Signal(id="intmic", name="Internal mic", pass_id="intmic")]
+    main, own = recording_passes(uke)
+    names = [tmp_path / "x_mic.wav", tmp_path / "x_piezo.wav"]
+    assert split.told(uke, names, main.id) == (main, [split.Source(1), split.Source(0)])
+    assert split.told(uke, [tmp_path / "anything.wav"], own.id) == (own, [split.Source(0)])
+    assert split.told(uke, [tmp_path / "anything.wav"], main.id) is None

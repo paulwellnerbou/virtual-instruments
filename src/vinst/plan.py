@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from vinst import notes
-from vinst.spec import Instrument, InstrumentString, Signal, file_token
+from vinst.spec import MAIN_PASS, Instrument, InstrumentString, Signal, file_token
 
 # Seconds per take for tuning, arming and naming, on top of the hits themselves.
 TAKE_OVERHEAD_S = 30.0
@@ -27,9 +27,6 @@ class SampledNote:
     sound: str | None = None
 
 
-MAIN_PASS = "main"
-
-
 @dataclass(frozen=True)
 class Pass:
     """One recording run through all takes; its signals are recorded simultaneously."""
@@ -40,9 +37,13 @@ class Pass:
 
 
 def recording_passes(inst: Instrument) -> list[Pass]:
-    together = [s for s in inst.signals if s.recorded == "together"]
-    out = [Pass(MAIN_PASS, " + ".join(s.name for s in together), tuple(together))] if together else []
-    out += [Pass(s.id, s.name, (s,)) for s in inst.signals if s.recorded == "separate"]
+    """Signals grouped by pass: the main pass first, as the instrument's default one, then the others
+    in the order of their first signal."""
+    ids = sorted(dict.fromkeys(s.pass_id for s in inst.signals), key=lambda i: i != MAIN_PASS)
+    out = []
+    for pass_id in ids:
+        signals = tuple(s for s in inst.signals if s.pass_id == pass_id)
+        out.append(Pass(pass_id, " + ".join(s.name for s in signals), signals))
     return out
 
 

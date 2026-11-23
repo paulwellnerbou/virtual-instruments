@@ -26,11 +26,13 @@ from vinst import aims, cleanup_eq, loops, relocate, review, slicing, split, sto
 from vinst import notes as note_names
 from vinst.bundle import CLEANUP_MESSAGE, FINDER_MESSAGE, STALE_MESSAGE, changed_message, eq_message
 from vinst.plan import (
+    Pass,
     Take,
     lane_bounds,
     more_base,
     more_file,
     note_lanes,
+    note_title,
     plan_takes,
     recording_passes,
     slicing_setup,
@@ -38,7 +40,7 @@ from vinst.plan import (
 )
 from vinst.slicing import SUBTYPES
 from vinst.review import FLAGS, Hit, Manifest, TakeResult, lane_of, loudness, settle
-from vinst.spec import AUDIO_SUFFIXES, SAFE_NAME as SAFE_LANE, SUSTAINED_TYPES, CleanupEq, EqFilter, Instrument, NoteLanes
+from vinst.spec import AUDIO_SUFFIXES, SAFE_NAME as SAFE_LANE, SUSTAINED_TYPES, CleanupEq, EqFilter, Instrument, NoteLanes, Signal
 from vinst.ui import form, open_with, recording
 from vinst.ui.anim import Collapse
 from vinst.ui.controls import NumberField, Segmented
@@ -130,32 +132,48 @@ def compare_file(slug: str, names: list[str] = Query(), every: float = COMPARE_E
 
 
 @app.post("/drop/{slug}/{key}")
-async def drop_file(slug: str, key: str, request: Request, name: str = "") -> dict:
+async def drop_file(slug: str, key: str, request: Request, name: str = "", batch: str = "") -> dict:
     """An audio file dropped onto a take's row, e.g. exported from a DAW.
 
     It becomes the take, or if the take is already recorded, more variations of it; nothing
     recorded is overwritten. Several signals of a take are told apart by their ids in the file name.
+    Files dropped together share `batch`: one whose signal the name doesn't tell is kept with it
+    ("ask"), for the worksheet to ask which signal, or which of its channels, is which.
     """
     # Only the worksheet sends this header. Setting it makes the browser ask first (CORS preflight),
     # which this server never allows, so other web pages can't write into the takes folder.
     if request.headers.get(DROP_HEADER) != "1":
         raise HTTPException(403)
     inst = store.load(slug)
-    takes_dir = Path(inst.recording.takes_dir).expanduser()
     take = next((t for t in plan_takes(inst) if t.key == key), None)
     if take is None or not inst.recording.takes_dir:
         raise HTTPException(404)
     stem = Path(name).stem.lower()
-    signal = take.signals[0] if len(take.signals) == 1 else next(
-        (s for s in take.signals if re.search(rf"(^|[^a-z0-9]){re.escape(s.lower())}([^a-z0-9]|$)", stem)), None)
-    if signal is None:
-        return {"ok": False, "message": f"Which signal is “{name}”? Put one of {', '.join(take.signals)} in its name."}
+    # A name with more than one signal in it (e.g. "piezo+mic", a channel each) says nothing about which is which.
+    named = [s for s in take.signals if split.names_signal(stem, s)]
+    signal = take.signals[0] if len(take.signals) == 1 else named[0] if len(named) == 1 else None
+    body = await request.body()
     try:
-        audio, sr = sf.read(io.BytesIO(await request.body()), always_2d=True)
+        audio, sr = sf.read(io.BytesIO(body), always_2d=True)
     except Exception:
         return {"ok": False, "message": f"“{name}” isn't an audio file this app can read (WAV, AIFF, FLAC)."}
     if not len(audio):
         return {"ok": False, "message": f"“{name}” is empty."}
+    if signal is None:
+        safe = Path(name).name
+        if batch.isdigit() and safe and not safe.startswith("."):
+            folder = long_upload_dir(slug, f"{DROP_BATCH}{batch}")
+            folder.mkdir(parents=True, exist_ok=True)
+            await run.io_bound((folder / safe).write_bytes, body)
+            return {"ok": False, "ask": True, "batch": batch, "name": safe, "message": ""}
+        return {"ok": False, "message": f"Which signal is “{name}”? Put one of {', '.join(take.signals)} in its name."}
+    return {**store_take_audio(inst, take, signal, audio, sr, name), "signal": signal}
+
+
+def store_take_audio(inst: Instrument, take: Take, signal: str, audio: np.ndarray, sr: int, name: str) -> dict:
+    """One signal of a take from a file dropped onto its row (`name`): the take, or more variations
+    beside it; for a note, other signals of the same recording share its "more" number."""
+    takes_dir = Path(inst.recording.takes_dir).expanduser()
     index = take.signals.index(signal)
     target = takes_dir / take.files[index]
     result_key = take.key
@@ -183,6 +201,7 @@ async def drop_file(slug: str, key: str, request: Request, name: str = "") -> di
 
 
 LONG_DIR = ".long-recordings"  # in the instrument's folder: uploads waiting to be split
+DROP_BATCH = "drop-"  # uploads dropped onto a row, waiting to be told which signal they are
 LONG_KEPT_S = 24 * 3600  # older uploads, never split or cancelled, are cleared away
 UPLOAD_BLOCK = 4 << 20
 
@@ -328,10 +347,11 @@ def hit_peak_db(hit: Hit) -> float:
     return max(hit.peak_db.values(), default=-120.0)
 
 
-def hit_wave(take: TakeResult, hit: Hit, height: int, loudest_db: float) -> str:
-    """Just this hit's stretch of its take's waveform. Takes are normalised each on their own, so the
-    hit is scaled to its peak against `loudest_db`: across takes, a hit 6 dB softer is half as tall."""
-    env, length = take.envelope, take.length or 0
+def hit_wave(take: TakeResult, hit: Hit, height: int, loudest_db: float, signal: str | None = None) -> str:
+    """Just this hit's stretch of its take's waveform, or of one signal's. Takes are normalised each on
+    their own, so the hit is scaled to its peak against `loudest_db`: across takes, a hit 6 dB softer
+    is half as tall."""
+    env, length = (take.envelope_of(signal) if signal else take.envelope), take.length or 0
     if not env or not length:
         return ""
     n = len(env)
@@ -342,7 +362,8 @@ def hit_wave(take: TakeResult, hit: Hit, height: int, loudest_db: float) -> str:
         part = part * 2
     top_of = max(part)
     if top_of > 0:
-        target = min(1.0, 10 ** ((hit_peak_db(hit) - loudest_db) / 20))
+        peak = hit.peak_db.get(signal, hit_peak_db(hit)) if signal else hit_peak_db(hit)
+        target = min(1.0, 10 ** ((peak - loudest_db) / 20))
         part = [v / top_of * target for v in part]
     w, h = 400, height
     top = " ".join(f"{i * w / (len(part) - 1):.1f},{h / 2 - v * h / 2:.1f}" for i, v in enumerate(part))
@@ -367,6 +388,12 @@ CSS = """
 .vi-vel-dot.active { transform: scale(1.15); }
 .vi-vel-dot span { position: absolute; left: 20px; top: -1px; font-size: 11px; opacity: .75; pointer-events: none; }
 .vi-lane { border-radius: 6px; padding: 2px 4px; transition: background-color .15s; }
+/* Signals recorded together: one bracket, one ● beside it. */
+.vi-together { border-left: 2px solid var(--vi-border-strong); padding-left: 6px; border-radius: 0; }
+.vi-signals { padding-right: 2px; }
+.vi-waves { display: flex; flex-direction: column; width: 100%; }
+/* Several recordings per velocity: a line between velocities, so each one's lanes read as a group. */
+.vi-vel-row { border-top: 1px solid var(--vi-border); padding-top: 2px; margin-top: 2px; }
 .vi-hits { display: flex; flex-wrap: nowrap; gap: 6px; width: 100%; }
 /* As wide as the hit is long; when a row runs out of room, all shrink alike and stay to scale. */
 .vi-hit { display: flex; flex-direction: column; align-items: center; min-width: 14px; cursor: grab;
@@ -408,7 +435,8 @@ DROP_HEADER = "X-Vinst-Drop"
 DROP_JS = ("(e) => { e.preventDefault(); e.currentTarget.classList.remove('vi-drop'); "
            "const files = [...(e.dataTransfer.files || [])]; "
            "if (!files.length) { emit(e.dataTransfer.getData('text/plain')); return; } "
-           "Promise.all(files.map(f => fetch(URL + '?name=' + encodeURIComponent(f.name), "
+           "const batch = String(Date.now()); "
+           "Promise.all(files.map(f => fetch(URL + '?batch=' + batch + '&name=' + encodeURIComponent(f.name), "
            "{method: 'POST', body: f, headers: {'X-Vinst-Drop': '1'}})"
            ".then(r => r.json()).catch(err => ({ok: false, message: String(err)})))).then(rs => emit(rs)); }")
 # Files dropped together (one per signal) are uploaded under one batch; hit chips dragged here are ignored.
@@ -421,6 +449,8 @@ LONG_DROP_JS = ("(e) => { e.preventDefault(); e.currentTarget.classList.remove('
 SUGGESTED_LANES = ["pp", "p", "mp", "mf", "f", "ff"]
 VELOCITY_COLOURS = ["#90caf9", "#42a5f5", "#1e88e5", "#1565c0", "#0d47a1"]
 WAVE_H = 36  # px; a row's buttons sit in a strip this tall, so they line up with the middle of its wave
+WAVE_GAP = 2  # px between the stacked waves of one recording's signals
+NOISE_ROW_H = 28  # px per signal in the noise floor's card
 ROW_H = 80  # px per velocity row (a wave lane and its labels); the velocity slider spans the rows
 
 # Dragging a velocity dot: values follow the pointer between the neighbouring dots; on release the
@@ -935,8 +965,12 @@ def step_worksheet(ed: "Editor") -> None:
         if not found or importing:
             return
         take, hit = found
-        if (take.note, take.pass_id) != (note, pass_id):
+        if take.note != note:
             ui.notify("Hits can only move between the velocities of their own note.", type="warning")
+            return
+        if take.pass_id != pass_id:
+            ui.notify("A hit stays with the signals it was recorded with: move it within their lanes.",
+                      type="warning")
             return
         hit.layer_set = None if lane == take.lane else lane
         saved(take)
@@ -983,7 +1017,10 @@ def step_worksheet(ed: "Editor") -> None:
                      ("Loudness (first 0.3 s)", f"{hit.rms_db:.1f} dBFS")]
             if hit.cents is not None:
                 facts.append(("Tuning", f"{hit.cents:+.1f} cents"))
-            facts += [(f"Peak {sig}", f"{p:.1f} dBFS") for sig, p in hit.peak_db.items()]
+            names = signal_names()
+            facts += [(f"Peak {names.get(sig, sig)}", f"{p:.1f} dBFS") for sig, p in hit.peak_db.items()]
+            if len(take.signals) > 1:
+                facts.append(("Recorded together", " + ".join(names.get(s, s) for s in take.signals)))
             with ui.grid(columns=2).classes("gap-x-6 gap-y-1 text-sm"):
                 for k, v in facts:
                     ui.label(k).classes("opacity-70")
@@ -1008,7 +1045,7 @@ def step_worksheet(ed: "Editor") -> None:
             folder = Path(state["manifest"].samples_dir)
             for i, (sig, name) in enumerate(hit.files.items()):
                 mtime = int((folder / name).stat().st_mtime) if (folder / name).exists() else 0
-                ui.label(sig).classes("text-sm font-medium mt-2")
+                ui.label(names.get(sig, sig)).classes("text-sm font-medium mt-2")
                 ui.audio(f"/audio/{slug}/{quote(name)}?v={mtime}", autoplay=autoplay and i == 0).classes("w-full")
             if hit.loop_start is not None and hit.loop_end is not None:
                 sr = hit.sample_rate or take.sample_rate or 1
@@ -1320,26 +1357,58 @@ def step_worksheet(ed: "Editor") -> None:
         draggable_hit(c, take, h)
         info_tip(c, take, h)
 
-    def compare_button(hits: list[tuple[TakeResult, Hit]]) -> None:
-        kept = [h for _, h in hits if not h.rejected]  # rejected ones are decided; compare the rest
+    def compare_button(hits: list[tuple[TakeResult, Hit]], signal: str | None = None) -> None:
+        """Plays the kept hits; with `signal`, that signal's sound of them, else the first signal's."""
+        kept = [h for _, h in hits if not h.rejected and (signal is None or signal in h.files)]
         button = ui.button(icon="play_arrow").props("flat dense round size=sm")
         if not kept:  # still there, disabled, so the waves of all rows start at the same x
             button.disable()
             return
-        names = "&".join(f"names={quote(next(iter(h.files.values())))}" for h in kept)
+        names = "&".join(f"names={quote(h.files[signal] if signal else next(iter(h.files.values())))}"
+                         for h in kept)
         url = f"/compare/{slug}?{names}"
         button.on("click", js_handler=f"() => ({PLAY_JS})({json.dumps(url)})")
-        button.tooltip("Play it (click again to stop)" if len(kept) == 1 else
-                       f"Play the {len(kept)} kept ones with their attacks {COMPARE_EVERY_S:g} s apart "
+        whose = f" {signal_names().get(signal, signal)}" if signal else ""
+        button.tooltip(f"Play it{whose} (click again to stop)" if len(kept) == 1 else
+                       f"Play the {len(kept)} kept ones{whose}, with their attacks {COMPARE_EVERY_S:g} s apart "
                        "(click again to stop)")
+
+    def signal_names() -> dict[str, str]:
+        return {s.id: s.name for s in inst.signals}
+
+    def per_signal() -> bool:
+        """With more than one signal, each gets a lane of its own, named: which is which, and which are
+        recorded together (they share a bracket and one ●)."""
+        return len(inst.signals) > 1 and not importing
+
+    def lanes_height(signals: int) -> int:
+        """Stacked waves of one recording's signals, and the gaps between them."""
+        return signals * WAVE_H + (signals - 1) * WAVE_GAP
+
+    def signal_column(signals: list[str], hits: list[tuple[TakeResult, Hit]] | None, row_h: int = WAVE_H) -> None:
+        """A recording's signals, one per lane beside its waves, each with ▶ for its own sound (without
+        `hits`, just the names). A bracket joins signals recorded together."""
+        names = signal_names()
+        width = min(16, max((len(n) for n in names.values()), default=4)) + (4 if hits is not None else 1)
+        together = len(signals) > 1
+        with ui.column().classes("vi-signals shrink-0" + (" vi-together" if together else "")) \
+                .style(f"width:{width}ch;gap:{WAVE_GAP}px"):
+            for sid in signals:
+                name = names.get(sid, sid)
+                with ui.row().classes("items-center no-wrap gap-0 w-full").style(f"height:{row_h}px"):
+                    label = ui.label(name).classes("text-xs truncate grow min-w-0")
+                    others = [names.get(o, o) for o in signals if o != sid]
+                    label.tooltip(f"{name}, recorded together with {' + '.join(others)}" if together else name)
+                    if hits is not None:
+                        compare_button(hits, sid)
 
     def is_problem(recs: list[TakeResult]) -> bool:
         return any(t.status == "error" or t.message or any(h.severity() in ("error", "warning") and not h.rejected
                                                              for h in t.hits) for t in recs)
 
     def take_card(take: Take, result: TakeResult | None) -> None:
-        """An extra: one take, recorded as a whole. One line like the noise floor's until it's
-        recorded, then its hits below."""
+        """An extra of a single signal: one take, recorded as a whole. One line like the noise floor's
+        until it's recorded, then its hits below."""
         recorded = result is not None and result.status != "missing"
         if state["problems_only"] and not is_problem([result] if recorded else []):
             return
@@ -1363,8 +1432,54 @@ def step_worksheet(ed: "Editor") -> None:
                               max((hit_peak_db(h) for _, h in hits), default=0.0))
             drop_target(lane, take, "", take.pass_id)
 
+    def without_pass(take: Take) -> str:
+        """A take's title without its pass, which its lanes show."""
+        return take.title.removesuffix(f" · {take.pass_name}") if len(recording_passes(inst)) > 1 else take.title
+
+    def loudest_by_signal(hits: list[tuple[TakeResult, Hit]]) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for _, h in hits:
+            for sig, peak in h.peak_db.items():
+                out[sig] = max(out.get(sig, -120.0), peak)
+        return out
+
+    def extra_card(takes: list[Take], results_by_key: dict[str, TakeResult]) -> None:
+        """An extra with more than one signal: a lane per signal, a ● per recording (one for the signals
+        recorded together)."""
+        results = [results_by_key.get(t.key) for t in takes]
+        recorded = [r is not None and r.status != "missing" for r in results]
+        if state["problems_only"] and not is_problem([r for r, ok in zip(results, recorded) if ok]):
+            return
+        hits_of = [[(r, h) for h in r.hits] if ok else [] for r, ok in zip(results, recorded)]
+        span_s = max((sum(hit_seconds(r, h) for r, h in hits) for hits in hits_of), default=0.0)
+        every = [x for hits in hits_of for x in hits]
+        loudest = max((hit_peak_db(h) for _, h in every), default=0.0)
+        loudest_of = loudest_by_signal(every)
+        with ui.card().classes("w-full py-1 gap-1").props("flat bordered"):
+            ui.label(without_pass(takes[0])).classes("font-medium")
+            for take, result, ok, hits in zip(takes, results, recorded, hits_of):
+                with ui.row().classes("vi-lane items-start gap-1 w-full no-wrap") as row:
+                    with controls_strip():
+                        record_button(take, ok)
+                    signal_column(take.signals, hits)
+                    with ui.column().classes("grow gap-1 min-w-0"):
+                        if not ok:
+                            with controls_strip():
+                                drop_hint(take)
+                        elif result.message or result.info:
+                            ui.label(result.message or result.info).classes(
+                                "text-xs truncate " + ("text-orange-600" if result.message else "opacity-60"))
+                        hit_strip(hits, span_s, loudest, signals=take.signals, loudest_of=loudest_of)
+                drop_target(row, take, "", take.pass_id)
+
+    def noise_text(result: TakeResult | None) -> str:
+        text = f"{result.message} of silence" if result and result.status == "noise_floor" else ""
+        if text and state["manifest"] and state["manifest"].denoised:
+            text += " · used to denoise the samples"
+        return text
+
     def noise_card(take: Take, result: TakeResult | None) -> None:
-        """The noise floor: nothing to judge but whether it's there and how loud, so one line."""
+        """The noise floor of a single signal: nothing to judge but whether it's there and how loud, so one line."""
         recorded = result is not None and result.status != "missing"
         with ui.card().classes("w-full py-1").props("flat bordered"):
             with ui.row().classes("vi-lane items-center gap-2 w-full no-wrap") as row:
@@ -1372,49 +1487,84 @@ def step_worksheet(ed: "Editor") -> None:
                 ui.label(take.title).classes("font-medium whitespace-nowrap")
                 if result and result.status == "noise_floor":
                     level = result.level_db
-                    if level is None and state["manifest"] and take.pass_id == recording_passes(inst)[0].id:
+                    if level is None and state["manifest"]:
                         level = state["manifest"].noise_floor_db  # sliced before levels were kept per pass
-                    names = {s.id: s.name for s in inst.signals}
-                    if len(result.levels_db) > 1:
-                        level_text = " · " + ", ".join(f"{names.get(sid, sid)} {v:.1f}"
-                                                       for sid, v in result.levels_db.items()) + " dBFS"
-                    else:
-                        level_text = f" · {level:.1f} dBFS" if level is not None else ""
-                    text = f"{result.message} of silence{level_text}"
-                    if state["manifest"] and state["manifest"].denoised:
-                        text += " · used to denoise the samples"
-                    ui.label(text).classes("text-sm opacity-70 truncate")
+                    level_text = f" · {level:.1f} dBFS" if level is not None else ""
+                    ui.label(noise_text(result) + level_text).classes("text-sm opacity-70 truncate")
                 elif recorded and result.message:
                     ui.label(result.message).classes("text-xs text-orange-600 truncate")
                 elif not recorded:
                     drop_hint(take)
             drop_target(row, take, "", take.pass_id)
 
+    def noise_lanes_card(takes: list[Take], results_by_key: dict[str, TakeResult]) -> None:
+        """Every signal's noise floor, each input's own noise: a line per signal with its level, a ● per
+        recording (one for the signals recorded together)."""
+        results = [results_by_key.get(t.key) for t in takes]
+        with ui.card().classes("w-full py-1 gap-1").props("flat bordered"):
+            with ui.row().classes("items-baseline gap-2 w-full no-wrap"):
+                ui.label("Noise floor").classes("font-medium whitespace-nowrap")
+                text = next((noise_text(r) for r in results if noise_text(r)), "")
+                ui.label(text or "silence with everything set up as for the takes, once per recording") \
+                    .classes("text-sm opacity-70 truncate")
+            names = signal_names()
+            for take, result in zip(takes, results):
+                recorded = result is not None and result.status != "missing"
+                # Sliced before each signal's level was kept: the recording's own, once.
+                pass_level = None
+                if result is not None and result.status == "noise_floor" and not result.levels_db:
+                    pass_level = result.level_db
+                    if pass_level is None and state["manifest"] and take.pass_id == recording_passes(inst)[0].id:
+                        pass_level = state["manifest"].noise_floor_db
+                with ui.row().classes("vi-lane items-start gap-2 w-full no-wrap") as row:
+                    with controls_strip().style(f"height:{NOISE_ROW_H}px"):
+                        record_button(take, recorded)
+                    with ui.column().classes("vi-signals shrink-0" + (" vi-together" if len(take.signals) > 1
+                                                                      else "")).style("gap:0"):
+                        for k, sid in enumerate(take.signals):
+                            with ui.row().classes("items-center gap-3 no-wrap").style(f"height:{NOISE_ROW_H}px"):
+                                ui.label(names.get(sid, sid)).classes("text-sm whitespace-nowrap").style("min-width:8ch")
+                                level = result.levels_db.get(sid) if result else None
+                                if level is None and k == 0:
+                                    level = pass_level
+                                if level is not None:
+                                    ui.label(f"{level:.1f} dBFS").classes("text-sm opacity-70 whitespace-nowrap")
+                    with ui.row().classes("items-center min-w-0").style(f"height:{NOISE_ROW_H}px"):
+                        if not recorded:
+                            drop_hint(take)
+                        elif result.message and result.status != "noise_floor":
+                            ui.label(result.message).classes("text-xs text-orange-600 truncate")
+                drop_target(row, take, "", take.pass_id)
+
     def controls_strip() -> ui.row:
         return ui.row().classes("items-center gap-1 no-wrap shrink-0").style(f"height:{WAVE_H}px")
 
     def drop_hint(take: Take) -> None:
-        ui.label("or drop an audio file here").classes("text-xs opacity-50") \
-            .tooltip(f"E.g. a file exported from Cubase or WaveLab; it is stored as {', '.join(take.files)}")
+        ui.label("or drop an audio file here").classes("text-xs opacity-50 whitespace-nowrap") \
+            .tooltip(f"E.g. a file exported from Cubase or WaveLab; it is stored as {', '.join(take.files)}"
+                     + ("; a file with a channel per signal works too" if len(take.signals) > 1 else ""))
 
     def record_button(take: Take, recorded: bool) -> None:
         """Whether it's recorded shows in the row itself: its waveform, or the drop hint. A recorded
         velocity gets more hits beside its own, never replaced: the bad ones are rejected instead. The
-        noise floor and extras are single takes, so they're recorded again."""
+        noise floor and extras are single takes, so they're recorded again. Signals recorded together
+        are recorded together again: one performance, one button."""
         # As record_take decides: by the files, which may not be sliced yet (e.g. just dropped).
         folder = Path(rec.takes_dir).expanduser() if rec.takes_dir else None
         recorded = all(slicing.has_audio(folder / f) for f in take.files) if folder is not None else recorded
+        names = signal_names()
+        what = f" {' + '.join(names.get(s, s) for s in take.signals)}" if per_signal() else ""
         if not recorded:
-            tip = "Record"
+            tip = f"Record{what}" + (" together" if len(take.signals) > 1 else "")
         elif take.kind == "note":
-            tip = "Record more hits; the ones you have stay until you reject them"
+            tip = f"Record more hits{' of' + what if what else ''}; the ones you have stay until you reject them"
         else:
-            tip = "Record again (replaces this recording)"
+            tip = f"Record{what} again (replaces this recording)"
         ui.button(icon="fiber_manual_record", color=None,
                   on_click=lambda t=take: recording.record_take(ed, t.number, resliced)) \
             .props("flat dense round size=sm text-color=red").tooltip(tip)
 
-    def velocity_slider(note: str, bounds: list[tuple[str, int, int]]) -> None:
+    def velocity_slider(note: str, bounds: list[tuple[str, int, int]], heights: list[int]) -> None:
         """A vertical bar from velocity 1 (top) to 127, one draggable dot per boundary between velocities."""
         segs = "".join(
             f"<div class='vi-vel-seg' style='top:{(lo - 1) / 127 * 100:.2f}%;height:{(hi - lo + 1) / 127 * 100:.2f}%;"
@@ -1424,7 +1574,7 @@ def step_worksheet(ed: "Editor") -> None:
             f"<div class='vi-vel-dot' data-value='{lo}' style='top:{(lo - 1) / 127 * 100:.2f}%'>"
             f"<span>{lo}</span></div>" for _, lo, _ in bounds[1:])
         # As tall as the rows beside it, which grow with their wave lanes.
-        track = ui.element("div").classes("vi-vel shrink-0 self-stretch").style(f"min-height:{len(bounds) * ROW_H - 8}px")
+        track = ui.element("div").classes("vi-vel shrink-0 self-stretch").style(f"min-height:{sum(heights) - 8}px")
         with track:
             ui.html(f"<div class='vi-vel-segs'>{segs}</div>{dots}", sanitize=False)
         track.tooltip("Velocity 1 at the top, 127 at the bottom: drag a dot to move where the next velocity "
@@ -1437,33 +1587,111 @@ def step_worksheet(ed: "Editor") -> None:
         row.on("dragover", js_handler=DRAG_OVER_JS)
         row.on("dragleave", js_handler=DRAG_LEAVE_JS)
         row.on("drop", js_handler=DROP_JS.replace("URL", url),
-               handler=lambda e, la=take.lane, n=note, ps=pass_id: dropped(e.args, la, n, ps))
+               handler=lambda e, t=take, n=note, ps=pass_id: dropped(e.args, t, n, ps))
 
-    def dropped(args: Any, lane: str | None, note: str, pass_id: str) -> None:
+    async def dropped(args: Any, take: Take, note: str, pass_id: str) -> None:
         if isinstance(args, list):  # audio files, already stored by the /drop endpoint
             for r in args:
-                ui.notify(r.get("message", ""), type="positive" if r.get("ok") else "warning", multi_line=True)
+                if not r.get("ask"):
+                    ui.notify(r.get("message", ""), type="positive" if r.get("ok") else "warning", multi_line=True)
             keys = [r["key"] for r in args if r.get("ok")]
+            asks = [r for r in args if r.get("ask")]
+            if asks:
+                with anchor:
+                    keys += await ask_dropped(take, asks, {r["signal"] for r in args if r.get("ok")})
             if len(set(keys)) == 1:
                 resliced(keys[0])
             elif keys:
                 with anchor:
                     ui.timer(0.1, lambda: slice_all(), once=True)
-        elif isinstance(args, str) and lane:
-            move(args, lane, note, pass_id)
+        elif isinstance(args, str) and take.lane:
+            move(args, take.lane, note, pass_id)
+
+    async def ask_dropped(take: Take, asks: list[dict], written: set[str]) -> list[str]:
+        """Files dropped onto a row whose names don't say which signal they are: asked, then stored as the
+        take's signals. The keys of what was stored."""
+        folder = long_upload_dir(slug, DROP_BATCH + asks[0]["batch"])
+        paths = [folder / r["name"] for r in asks if (folder / r["name"]).is_file()]
+        try:
+            by_id = {s.id: s for s in inst.signals}
+            wanted = [by_id[s] for s in take.signals if s not in written and s in by_id]
+            if not paths or not wanted:
+                return []
+            sources = await which_is_where(paths, wanted, without_pass(take))
+            if sources is None:
+                return []
+            signals, sr = await run.io_bound(split.load_sources, paths, sources)
+            keys = []
+            for sig, audio in zip(wanted, signals):
+                done = store_take_audio(inst, take, sig.id, audio, sr, f"{sig.name} from {paths[0].name}")
+                ui.notify(done["message"], type="positive" if done["ok"] else "warning", multi_line=True)
+                if done["ok"]:
+                    keys.append(done["key"])
+            return keys
+        except (ValueError, RuntimeError, OSError) as e:
+            ui.notify(f"Can't use {paths[0].name if paths else 'it'}: {e}", type="warning", multi_line=True)
+            return []
+        finally:
+            clear_long(folder)
+
+    async def which_is_where(paths: list[Path], signals: list[Signal], what: str) -> list[split.Source] | None:
+        """Asks which file, or which channel of one, each of `signals` is; None if cancelled. Guessed
+        first: a file named after the signal, else the channels in order (left, right)."""
+        channels = [split.channel_count(p) for p in paths]
+        options = split.sources_of(paths, channels)
+        singles = [o for o in options if o.channel is not None or channels[o.file] == 1]
+        names = " + ".join(s.name for s in signals)
+        if len(signals) > 1 and len(singles) < len(signals):
+            ui.notify(f"{names} are recorded together: drop a file for each, or one file with a channel for each.",
+                      type="warning", multi_line=True)
+            return None
+        if len(signals) == 1 and len(options) == 1:
+            return [options[0]]
+        guessed = split.guess(Pass("", names, tuple(signals)), paths, channels)
+        labels = {i: split.source_label(paths, channels, o) for i, o in enumerate(options)}
+        picked = {s.id: options.index(g) for s, g in zip(signals, guessed)}
+        with anchor, ui.dialog().props("persistent") as box, ui.card().classes("min-w-[26rem] max-w-[36rem]"):
+            ui.label("Which signal is where?").classes("text-lg font-medium")
+            ui.label(f"{what}: " + (f"{names} are recorded together, so each needs a file or a channel of its own."
+                                    if len(signals) > 1 else f"which part of the file is {names}?")) \
+                .classes("text-sm opacity-80")
+            with ui.grid(columns="auto 1fr").classes("items-center gap-x-4 gap-y-2 w-full"):
+                for s in signals:
+                    ui.label(s.name).classes("font-medium")
+                    ui.select(labels, value=picked[s.id],
+                              on_change=lambda e, sid=s.id: (picked.__setitem__(sid, e.value), buttons.refresh())) \
+                        .props("dense outlined")
+
+            @ui.refreshable
+            def buttons() -> None:
+                twice = len(set(picked.values())) < len(picked)
+                if twice:
+                    ui.label("Each signal needs its own file or channel.").classes("text-xs text-orange-600")
+                with ui.row().classes("w-full justify-end gap-2 mt-2"):
+                    ui.button("Cancel", on_click=lambda: box.submit(None)).props("flat")
+                    ui.button("Continue", on_click=lambda: box.submit([options[picked[s.id]] for s in signals])) \
+                        .props("unelevated" + (" disable" if twice else ""))
+
+            buttons()
+        answer = await box
+        box.delete()
+        return answer
 
     def hit_seconds(r: TakeResult, h: Hit) -> float:
         return (h.end - h.start) / (h.sample_rate or r.sample_rate or 1)
 
     def hit_strip(hits: list[tuple[TakeResult, Hit]], span_s: float, loudest_db: float,
-                  empty: list[TakeResult] = ()) -> None:
+                  empty: list[TakeResult] = (), signals: list[str] | None = None,
+                  loudest_of: dict[str, float] | None = None) -> None:
         """A row's hits side by side, whichever recording they come from, each as wide as it is long
         and as tall as it is loud: `span_s` seconds fill the row and `loudest_db` its height, the same
         for all rows of a note. Click a hit to review it, drag it to another velocity. Recordings of
-        the row in which no hit was found get a tile of their own, to open them."""
+        the row in which no hit was found get a tile of their own, to open them. With `signals`, each
+        hit shows each signal's wave, stacked, each as tall as that signal is loud (`loudest_of`)."""
         with ui.element("div").classes("vi-hits"):
             for r in empty:
-                ui.label("no hit found").classes("vi-hit-empty").on("click", lambda t=r: open_recording(t))
+                ui.label("no hit found").classes("vi-hit-empty").style(
+                    f"height:{lanes_height(len(signals or [None]))}px").on("click", lambda t=r: open_recording(t))
             for r, h in hits:
                 if not r.envelope:  # e.g. imported files: nothing to draw
                     chip(r, h)
@@ -1471,7 +1699,12 @@ def step_worksheet(ed: "Editor") -> None:
                 text = hit_text(h)
                 basis = hit_seconds(r, h) / span_s * 100 if span_s else 100 / len(hits)
                 with ui.element("div").classes("vi-hit").style(f"flex:0 1 {basis:.2f}%;position:relative") as tile:
-                    ui.html(hit_wave(r, h, WAVE_H, loudest_db), sanitize=False)
+                    if signals:
+                        waves = "".join(hit_wave(r, h, WAVE_H, (loudest_of or {}).get(sig, loudest_db), sig)
+                                        for sig in signals)
+                        ui.html(f"<div class='vi-waves' style='gap:{WAVE_GAP}px'>{waves}</div>", sanitize=False)
+                    else:
+                        ui.html(hit_wave(r, h, WAVE_H, loudest_db), sanitize=False)
                     if r.cleanup_eq:
                         ui.icon("graphic_eq").classes("vi-hit-eq")  # its tooltip says which EQ
                     ui.label(text).classes("vi-hit-label").style(
@@ -1496,22 +1729,30 @@ def step_worksheet(ed: "Editor") -> None:
         label.classes("text-orange-600" if off else "opacity-70")
         label.tooltip(tip)
 
-    def note_card(lane_takes: list[Take], results_by_key: dict[str, TakeResult]) -> None:
-        first = lane_takes[0]
-        note = first.note_base
-        recs = note_results(note, first.pass_id)
+    def note_card(note: str, by_pass: list[tuple[Pass, list[Take]]], results_by_key: dict[str, TakeResult]) -> None:
+        """A note: a row per velocity; in it, with more than one signal, a lane per signal, joined by a
+        bracket and one ● where they're recorded together."""
+        recs_of = {p.id: note_results(note, p.id) for p, _ in by_pass}
+        recs = [r for p, _ in by_pass for r in recs_of[p.id]]
         if state["problems_only"] and not is_problem(recs):
             return
-        title = first.title.replace(f" · {first.lane}", "")
+        first = by_pass[0][1][0]
+        title = note_title(first.note) if first.note else note
         own = note in inst.note_lanes
         lanes = note_lanes(inst, note)
-        by_lane: dict[str | None, list[tuple[TakeResult, Hit]]] = {}
-        for r in recs:
-            for h in r.hits:
-                by_lane.setdefault(lane_of(h, r, lanes), []).append((r, h))
+        many = per_signal()
+        lanes_of: dict[str, dict[str | None, list[tuple[TakeResult, Hit]]]] = {}
+        for p, _ in by_pass:
+            by_lane = lanes_of.setdefault(p.id, {})
+            for r in recs_of[p.id]:
+                for h in r.hits:
+                    by_lane.setdefault(lane_of(h, r, lanes), []).append((r, h))
+        rows = [row for by_lane in lanes_of.values() for row in by_lane.values()]
+        every = [x for row in rows for x in row]
         # The row with the most to play fills the width; the others are drawn to the same scale.
-        span_s = max((sum(hit_seconds(r, h) for r, h in row) for row in by_lane.values()), default=0.0)
-        loudest_db = max((hit_peak_db(h) for row in by_lane.values() for _, h in row), default=0.0)
+        span_s = max((sum(hit_seconds(r, h) for r, h in row) for row in rows), default=0.0)
+        loudest_db = max((hit_peak_db(h) for _, h in every), default=0.0)
+        loudest_of = loudest_by_signal(every)
         with ui.card().classes("w-full").props("flat bordered"):
             with ui.row().classes("items-center gap-2 w-full"):
                 ui.label(title).classes("font-medium")
@@ -1523,29 +1764,32 @@ def step_worksheet(ed: "Editor") -> None:
                     ui.button("Use default velocities", on_click=lambda n=note: use_defaults(n)) \
                         .props("flat dense no-caps")
             # A row's own status ("not recorded yet") shows in the row: here what needs attention, in
-            # orange, and what's good to know, in grey.
+            # orange, and what's good to know, in grey; with several passes, whose.
             recorded_recs = [r for r in recs if r.status != "missing"]
             changed_here(recorded_recs, title)
-            for text, style in (("; ".join(filter(None, (r.message for r in recorded_recs))), "text-orange-600"),
-                                ("; ".join(filter(None, (r.info for r in recorded_recs))), "opacity-60")):
-                if text:
-                    ui.label(text).classes(f"text-xs {style}")
+            for attr, style in (("message", "text-orange-600"), ("info", "opacity-60")):
+                parts = []
+                for p, _ in by_pass:
+                    text = "; ".join(filter(None, (getattr(r, attr) for r in recs_of[p.id] if r.status != "missing")))
+                    if text:
+                        parts.append(f"{p.name}: {text}" if len(by_pass) > 1 else text)
+                if parts:
+                    ui.label("; ".join(parts)).classes(f"text-xs {style}")
             bounds = lane_bounds(inst, note)
             # As wide as the longest velocity name of the instrument, so short names leave no gap but
             # the buttons still line up across notes.
             name_w = max(len(n) for n in [*inst.dynamics.layers, *(nl for v in inst.note_lanes.values()
                                                                     for nl in v.layers)] or ["p"])
+            pass_h = {p.id: ROW_H + (lanes_height(len(p.signals)) - WAVE_H if many else 0) for p, _ in by_pass}
+            heights = [sum(pass_h.values())] * len(bounds)
             with ui.row().classes("w-full no-wrap items-start gap-1"):
                 if len(bounds) > 1:
-                    velocity_slider(note, bounds)
+                    velocity_slider(note, bounds, heights)
                 with ui.column().classes("grow gap-0 min-w-0"):
-                    for (lane, lo, hi), take in zip(bounds, lane_takes):
-                        result = results_by_key.get(take.key)
-                        recorded = result is not None and result.status != "missing"
-                        hits = by_lane.get(lane, [])
-                        with ui.row().classes("vi-lane vi-vel-lane items-start gap-1 w-full no-wrap") \
-                                .style(f"min-height:{ROW_H}px") \
-                                as row:
+                    for k, (lane, lo, hi) in enumerate(bounds):
+                        lane_hits = [x for p, _ in by_pass for x in lanes_of[p.id].get(lane, [])]
+                        with ui.row().classes("items-start gap-1 w-full no-wrap"
+                                              + (" vi-vel-row" if len(by_pass) > 1 and k else "")):
                             with controls_strip():
                                 # Fixed widths, so the buttons line up across rows and notes; the
                                 # range fits "100–127".
@@ -1553,28 +1797,48 @@ def step_worksheet(ed: "Editor") -> None:
                                     .style(f"width:{name_w + 1}ch")
                                 ui.label(f"{lo}–{hi}").classes("shrink-0 text-xs opacity-70 whitespace-nowrap") \
                                     .style("width:7.5ch").tooltip(f"Velocity {lo}–{hi}")
-                                record_button(take, recorded)
-                                compare_button(hits)
-                                aim_label(first.pass_id, note, lane, hits)
-                            with ui.column().classes("vi-vel-hits grow gap-1 min-w-0"):
-                                if not recorded and not hits:
-                                    with controls_strip():
-                                        drop_hint(take)
-                                hit_strip(hits, span_s, loudest_db,
-                                          [r for r in recs if r.lane == lane and not r.hits and r.envelope])
-                            if len(bounds) > 1 and not hits:
+                            with ui.column().classes("grow gap-0 min-w-0"):
+                                for p, lane_takes in by_pass:
+                                    take = lane_takes[k]
+                                    pass_lane(note, p, take, lane, results_by_key.get(take.key),
+                                              lanes_of[p.id].get(lane, []), recs_of[p.id], span_s, loudest_db,
+                                              loudest_of, pass_h[p.id])
+                            if len(bounds) > 1 and not lane_hits:
                                 with controls_strip():
                                     ui.button(icon="close", on_click=lambda n=note, la=lane: remove_lane(n, la)) \
                                         .props("flat dense round size=xs") \
                                         .tooltip(f"Remove the {lane} velocity from this note")
-                        drop_target(row, take, note, first.pass_id)
-            orphans = by_lane.get(None, [])
+            orphans = [x for p, _ in by_pass for x in lanes_of[p.id].get(None, [])]
             if orphans:
                 with ui.row().classes("items-center gap-1 w-full"):
                     ui.label("No velocity:").classes("text-xs opacity-70") \
                         .tooltip("Their velocity was removed from this note; drag them into one, or they're left out")
                     for n, (r, h) in enumerate(orphans, 1):
                         chip(r, h, n)
+
+    def pass_lane(note: str, p: Pass, take: Take, lane: str, result: TakeResult | None,
+                  hits: list[tuple[TakeResult, Hit]], recs: list[TakeResult], span_s: float, loudest_db: float,
+                  loudest_of: dict[str, float], height: int) -> None:
+        """One velocity of one recording: its ●, its aim, and its hits, with more than one signal a lane
+        of waves per signal."""
+        recorded = result is not None and result.status != "missing"
+        many = per_signal()
+        with ui.row().classes("vi-lane vi-vel-lane items-start gap-1 w-full no-wrap") \
+                .style(f"min-height:{height}px") as row:
+            with controls_strip():
+                record_button(take, recorded)
+                if not many:
+                    compare_button(hits)
+                aim_label(p.id, note, lane, hits)
+            if many:
+                signal_column([s.id for s in p.signals], hits)
+            with ui.column().classes("vi-vel-hits grow gap-1 min-w-0"):
+                if not recorded and not hits:
+                    with controls_strip():
+                        drop_hint(take)
+                hit_strip(hits, span_s, loudest_db, [r for r in recs if r.lane == lane and not r.hits and r.envelope],
+                          [s.id for s in p.signals] if many else None, loudest_of)
+        drop_target(row, take, note, p.id)
 
     def changed_here(recs: list[TakeResult], note_title: str) -> None:
         """At the note too, not only above the list: which of its recordings changed since slicing."""
@@ -1641,22 +1905,29 @@ def step_worksheet(ed: "Editor") -> None:
             return
         results_by_key = {t.key: t for t in manifest.takes} if manifest else {}
         state["aims"] = aims.aims(inst, manifest)
-        passes = recording_passes(inst)
         takes = plan_takes(inst)
-        for p in passes:
-            if len(passes) > 1:
-                ui.label(f"Pass: {p.name}").classes("text-base font-medium mt-2")
-            notes: dict[str, list[Take]] = {}
+        # One card per note, whatever pass recorded it: its signals side by side.
+        notes: dict[str, list[tuple[Pass, list[Take]]]] = {}
+        for p in recording_passes(inst):
+            of_pass: dict[str, list[Take]] = {}
             for t in takes:
                 if t.pass_id == p.id and t.kind == "note":
-                    notes.setdefault(t.note_base, []).append(t)
-            for lane_takes in notes.values():
-                note_card(lane_takes, results_by_key)
-        extras = [t for t in takes if t.kind == "extra"]
+                    of_pass.setdefault(t.note_base, []).append(t)
+            for note, lane_takes in of_pass.items():
+                notes.setdefault(note, []).append((p, lane_takes))
+        for note, by_pass in notes.items():
+            note_card(note, by_pass, results_by_key)
+        extras: dict[str, list[Take]] = {}
+        for t in takes:
+            if t.kind == "extra":
+                extras.setdefault(t.base_name, []).append(t)
         if extras:
             ui.label("Extras").classes("text-sm font-medium mt-2")
-            for t in extras:
-                take_card(t, results_by_key.get(t.key))
+            for of_extra in extras.values():
+                if per_signal():
+                    extra_card(of_extra, results_by_key)
+                else:
+                    take_card(of_extra[0], results_by_key.get(of_extra[0].key))
 
 
     # A long recording of many notes, e.g. the whole scale: split into the notes' takes by pitch.
@@ -1667,30 +1938,42 @@ def step_worksheet(ed: "Editor") -> None:
     def long_card() -> None:
         if not rec.takes_dir or inst.range.mode == "sounds":
             return  # unpitched sounds: a pitch can't tell them apart
-        with ui.card().classes("w-full py-1").props("flat bordered"):
-            with ui.row().classes("vi-lane items-center gap-2 w-full no-wrap") as row:
-                passes = [p for p in recording_passes(inst) if split.planned_notes(inst, p.id)]
-                if passes:
-                    with ui.button(icon="fiber_manual_record", color=None,
-                                   on_click=(lambda: record_long(passes[0].id)) if len(passes) == 1 else None) \
-                            .props("flat dense round size=sm text-color=red"):
-                        ui.tooltip("Record the whole scale, each note a few times, and split it by pitch")
-                        if len(passes) > 1:
-                            with ui.menu():
-                                for p in passes:
-                                    ui.menu_item(p.name, on_click=lambda _, i=p.id: record_long(i))
+        passes = [p for p in recording_passes(inst) if split.planned_notes(inst, p.id)]
+        hint = ("One file per signal, dropped together, or one file with a channel per signal. Hits in a row on "
+                "the same note become that note's take at the velocity you choose, or more hits beside the ones "
+                "it has; nothing is overwritten.")
+        with ui.card().classes("w-full py-1 gap-1").props("flat bordered"):
+            if len(passes) <= 1:
+                with ui.row().classes("vi-lane items-center gap-2 w-full no-wrap") as row:
+                    if passes:
+                        ui.button(icon="fiber_manual_record", color=None, on_click=lambda: record_long(passes[0].id)) \
+                            .props("flat dense round size=sm text-color=red") \
+                            .tooltip("Record the whole scale, each note a few times, and split it by pitch")
+                    ui.label("Many notes in one recording").classes("font-medium whitespace-nowrap")
+                    ui.label("record or drop it here, e.g. the whole scale with each note a few times: each hit "
+                             "goes to its note by its pitch").classes("text-xs opacity-50 truncate").tooltip(hint)
+                long_drop(row, passes[0].id if passes else None)
+                return
+            with ui.row().classes("items-baseline gap-2 w-full no-wrap"):
                 ui.label("Many notes in one recording").classes("font-medium whitespace-nowrap")
-                ui.label("record or drop it here, e.g. the whole scale with each note a few times: each hit "
-                         "goes to its note by its pitch").classes("text-xs opacity-50 truncate") \
-                    .tooltip("One file per signal, dropped together, each with its signal in its name. Hits in a "
-                             "row on the same note become that note's take at the velocity you choose, or more "
-                             "hits beside the ones it has; nothing is overwritten.")
-            url = json.dumps(f"/long/{slug}")
-            row.on("dragover", js_handler=DRAG_OVER_JS)
-            row.on("dragleave", js_handler=DRAG_LEAVE_JS)
-            row.on("drop", js_handler=LONG_DROP_JS.replace("URL", url), handler=lambda e: long_dropped(e.args))
+                ui.label("e.g. the whole scale with each note a few times, once per recording: each hit goes to its "
+                         "note by its pitch").classes("text-xs opacity-50 truncate").tooltip(hint)
+            for p in passes:
+                with ui.row().classes("vi-lane items-center gap-2 w-full no-wrap") as row:
+                    ui.button(icon="fiber_manual_record", color=None, on_click=lambda i=p.id: record_long(i)) \
+                        .props("flat dense round size=sm text-color=red") \
+                        .tooltip(f"Record the whole scale with {p.name}, each note a few times, and split it by pitch")
+                    signal_column([s.id for s in p.signals], None, NOISE_ROW_H)
+                    ui.label("record or drop it here").classes("text-xs opacity-50 whitespace-nowrap")
+                long_drop(row, p.id)
 
-    async def long_dropped(args: Any) -> None:
+    def long_drop(row: Any, pass_id: str | None) -> None:
+        url = json.dumps(f"/long/{slug}")
+        row.on("dragover", js_handler=DRAG_OVER_JS)
+        row.on("dragleave", js_handler=DRAG_LEAVE_JS)
+        row.on("drop", js_handler=LONG_DROP_JS.replace("URL", url), handler=lambda e: long_dropped(e.args, pass_id))
+
+    async def long_dropped(args: Any, pass_id: str | None) -> None:
         with anchor:  # the card may be redrawn while the files are analysed
             if not isinstance(args, list):
                 return
@@ -1699,7 +1982,7 @@ def step_worksheet(ed: "Editor") -> None:
                     ui.notify(r.get("message", ""), type="warning", multi_line=True)
             ok = [r for r in args if r.get("ok")]
             if ok:
-                await long_split(long_upload_dir(slug, ok[0]["batch"]))
+                await long_split(long_upload_dir(slug, ok[0]["batch"]), pass_id)
 
     def record_long(pass_id: str) -> None:
         batch = str(time.time_ns() // 1_000_000)
@@ -1710,7 +1993,7 @@ def step_worksheet(ed: "Editor") -> None:
         def split_it() -> None:
             splitting["started"] = True
             with anchor:  # not in the recording dialog, which is deleted as it closes
-                ui.timer(0, lambda: long_split(folder), once=True)
+                ui.timer(0, lambda: long_split(folder, pass_id), once=True)
 
         def closed() -> None:
             if not splitting["started"]:  # nothing will come of it: don't keep a whole scale around
@@ -1718,10 +2001,37 @@ def step_worksheet(ed: "Editor") -> None:
 
         recording.record_scale(ed, pass_id, folder, split_it, closed)
 
-    async def long_split(folder: Path) -> None:
+    async def which_pass(paths: list[Path], pass_id: str | None) -> split.Chosen | None:
+        """Which signal each file, or channel of one, of a long recording is: by the names, else asked."""
+        chosen = split.told(inst, paths, pass_id)
+        if chosen is not None:
+            return chosen
+        # Dropped onto another recording's row, but named after its own signals: those decide.
+        if pass_id is not None and (by_name := split.told(inst, paths)) is not None:
+            ui.notify(f"{', '.join(x.name for x in paths)}: split for {by_name[0].name}, as the file names say.")
+            return by_name
+        passes = recording_passes(inst)
+        p = next((q for q in passes if q.id == pass_id), None) if pass_id else passes[0] if len(passes) == 1 else None
+        if p is None:
+            found = split.pass_for(inst, [x.name for x in paths])
+            ui.notify(found if isinstance(found, str) else "Drop it onto the recording it is of.", type="warning",
+                      multi_line=True)
+            return None
+        sources = await which_is_where(paths, list(p.signals), ", ".join(x.name for x in paths))
+        return (p, sources) if sources is not None else None
+
+    async def long_split(folder: Path, pass_id: str | None = None) -> None:
         with anchor:
             paths = long_files(folder)
             if not paths:
+                return
+            try:
+                chosen = await which_pass(paths, pass_id)
+            except RuntimeError as e:  # not audio after all
+                chosen = None
+                ui.notify(f"Can't read {paths[0].name}: {e}", type="warning", multi_line=True)
+            if chosen is None:
+                clear_long(folder)
                 return
             if state.get("long_folder") not in (None, folder):
                 clear_long(state["long_folder"])  # an earlier drop still waiting is replaced by this one
@@ -1736,7 +2046,7 @@ def step_worksheet(ed: "Editor") -> None:
             long_dialog.props("persistent")
             long_dialog.open()
             try:
-                found = await run.io_bound(split.analyse, inst.model_copy(deep=True), paths)
+                found = await run.io_bound(split.analyse, inst.model_copy(deep=True), paths, chosen)
             except Exception as e:  # unreadable audio, signals at different rates
                 long_dialog.close()
                 ui.notify(f"Can't split {paths[0].name if paths else 'it'}: {e}", type="warning", multi_line=True)
@@ -1751,9 +2061,9 @@ def step_worksheet(ed: "Editor") -> None:
                 long_dialog.close()
                 ui.notify(f"No notes found in {paths[0].name}.", type="warning")
                 return
-            long_review(paths, *found)
+            long_review(paths, *found, chosen)
 
-    def long_review(paths: list[Path], p: Any, found: split.Split) -> None:
+    def long_review(paths: list[Path], p: Any, found: split.Split, chosen: split.Chosen) -> None:
         takes_dir = Path(rec.takes_dir).expanduser()
         lanes = list(dict.fromkeys([*inst.dynamics.layers, *(la for v in inst.note_lanes.values() for la in v.layers)]))
         placements = {la: split.place(inst, p, found, la, takes_dir) for la in lanes}
@@ -1767,8 +2077,9 @@ def step_worksheet(ed: "Editor") -> None:
         with long_body:
             ui.label(f"{', '.join(x.name for x in paths)}: {found.hits()} hits on {len(found.runs)} "
                      f"note{'' if len(found.runs) == 1 else 's'}").classes("text-base font-medium")
-            if len(recording_passes(inst)) > 1:
-                ui.label(f"Pass: {p.name}").classes("text-sm opacity-70")
+            if len(inst.signals) > 1:
+                where = [split.source_label(paths, [split.channel_count(x) for x in paths], src) for src in chosen[1]]
+                ui.label(" · ".join(f"{s.name}: {w}" for s, w in zip(p.signals, where))).classes("text-sm opacity-70")
             with ui.row().classes("items-center gap-2"):
                 ui.label("Played at velocity").classes("text-sm")
                 ui.select({la: la for la in lanes}, value=lane,
@@ -1815,12 +2126,12 @@ def step_worksheet(ed: "Editor") -> None:
                 with ui.row().classes("w-full justify-end gap-2 mt-2"):
                     ui.button("Cancel", on_click=long_dialog.close).props("flat")
                     ui.button(f"Add {len(adding)} take{'' if len(adding) == 1 else 's'}",
-                              on_click=lambda: long_add(paths, choice["lane"], found)) \
+                              on_click=lambda: long_add(paths, choice["lane"], found, chosen)) \
                         .props("unelevated" + ("" if adding else " disable"))
 
             listing()
 
-    async def long_add(paths: list[Path], lane: str, found: split.Split) -> None:
+    async def long_add(paths: list[Path], lane: str, found: split.Split, chosen: split.Chosen) -> None:
         with anchor:  # the button that started it is cleared from the dialog
             if not still_there():
                 long_dialog.close()
@@ -1832,7 +2143,7 @@ def step_worksheet(ed: "Editor") -> None:
                 ui.label("Writing the takes…").classes("text-sm opacity-70")
             try:
                 ensure_folder(Path(rec.takes_dir).expanduser())
-                keys = await run.io_bound(split.add, inst.model_copy(deep=True), paths, lane, found)
+                keys = await run.io_bound(split.add, inst.model_copy(deep=True), paths, lane, found, chosen)
             except Exception as e:  # e.g. the disk gone, or audio that can't be read: say so, as slicing does
                 ui.notify(f"Couldn't add the takes: {e}", type="negative", multi_line=True)
                 return
@@ -1848,9 +2159,11 @@ def step_worksheet(ed: "Editor") -> None:
         if importing:
             return
         results_by_key = {t.key: t for t in state["manifest"].takes} if state["manifest"] else {}
-        for t in plan_takes(inst):
-            if t.kind == "noise_floor":
-                noise_card(t, results_by_key.get(t.key))
+        floors = [t for t in plan_takes(inst) if t.kind == "noise_floor"]
+        if per_signal() and floors:
+            noise_lanes_card(floors, results_by_key)
+        for t in floors if not per_signal() else []:
+            noise_card(t, results_by_key.get(t.key))
         long_card()
 
     @ui.refreshable
@@ -2061,6 +2374,7 @@ def step_worksheet(ed: "Editor") -> None:
     def shown() -> str:
         """What the worksheet depends on in the spec; other edits (a name, a colour) don't redraw it."""
         return repr((rec.takes_dir, rec.samples_dir, rec.source, inst.note_lanes, inst.preset.velocity_splits,
+                     [(s.id, s.name) for s in inst.signals],
                      slicing_setup(inst), slicing.cleanup_setup(inst),
                      [e.model_dump() for e in inst.processing.cleanup_eqs],
                      [(t.key, t.files, t.hits, t.title) for t in plan_takes(inst)]))

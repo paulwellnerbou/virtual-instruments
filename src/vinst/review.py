@@ -87,6 +87,7 @@ class TakeResult(BaseModel):
     sample_rate: int | None = None
     length: int | None = None
     envelope: list[float] = []  # normalised peak per bucket, for the waveform thumbnail
+    envelopes: dict[str, list[float]] = {}  # the same per signal, with more than one
     level_db: float | None = None  # a noise floor's RMS level; each pass has its own
     levels_db: dict[str, float] = {}  # a noise floor's RMS level per signal: each input has its own noise
     cut_by_hand: bool = False  # its hits are where they were set by hand, not where they were found
@@ -100,6 +101,10 @@ class TakeResult(BaseModel):
     @property
     def key(self) -> str:
         return take_key(self.base, self.pass_id)
+
+    def envelope_of(self, signal_id: str) -> list[float]:
+        """A signal's waveform; the signals' mix for takes sliced before each had its own."""
+        return self.envelopes.get(signal_id) or self.envelope
 
 
 def settle(take: TakeResult, lanes: list[str]) -> None:
