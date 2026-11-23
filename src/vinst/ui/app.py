@@ -88,6 +88,19 @@ STEPS_CSS = """
 .vi-side .vi-collapse.vi-open > .vi-collapse-inner { overflow: visible; }
 .vi-steps .q-stepper__header { flex-wrap: wrap; justify-content: flex-start; }
 .vi-steps .q-stepper__tab { flex: 0 0 auto; }
+/* The step's number on its icon, as messages point to steps by number. On the icon, not in the title:
+   it shows where only the icons do (narrow windows), and the titles still fit on one row. */
+.vi-steps .q-stepper__header { counter-reset: vi-step; }
+.vi-steps .q-stepper__tab { counter-increment: vi-step; }
+.vi-steps .q-stepper__dot.q-stepper__dot::after {
+  content: counter(vi-step); display: block; position: absolute; right: -5px; bottom: -4px;
+  top: auto; left: auto; width: auto; margin: 0;  /* Quasar's connecting line uses ::after too */
+  min-width: 12px; height: 12px; padding: 0 2px; border-radius: 6px; box-sizing: border-box;
+  background: var(--vi-bg); color: var(--vi-text); box-shadow: 0 0 0 1px var(--vi-border-strong);
+  font-size: 9px; font-weight: 600; line-height: 12px; text-align: center; }
+/* Room for the number beside the title, taken from the tabs' sides so the seven still fit one row. */
+.vi-steps .q-stepper__tab { padding-left: 8px; padding-right: 8px; }
+.vi-steps .q-stepper__dot { margin-right: 10px; }
 @media (min-width: 1024px) { .vi-steps .q-stepper__title { white-space: nowrap; } }
 /* Chrome anchors the scroll position to the focused element (a chip being dragged, the button just
    clicked); a redraw replaces it and the page jumps. The steps redraw in place, so no anchoring. */
@@ -424,32 +437,33 @@ def editor_page(slug: str) -> None:
                 ed.status = ui.label("Saved").classes("text-sm opacity-60")
             ed.on_change_hooks.append(lambda: title.set_text(inst.meta.name))
 
-            # Numbered, as messages point to steps by number: no check or pencil in place of a number.
+            # Each step keeps its icon, also when open or passed: no pencil or check mark in its place.
+            # Its number is on the icon (STEPS_CSS).
             with ui.stepper().props('header-nav animated flat active-icon="none" done-icon="none"') \
                     .classes("w-full vi-steps") as stepper:
-                with ui.step("Instrument").props('prefix="1"'):
+                with ui.step("Instrument", icon="music_note"):
                     step_instrument(ed)
                     nav(stepper, first=True)
-                with ui.step("Signals").props('prefix="2"'):
+                with ui.step("Signals", icon="settings_input_component"):
                     step_signals(ed)
                     nav(stepper)
                 importing = inst.recording.source == "samples"
-                with ui.step("Range").props('prefix="3"'):
+                with ui.step("Range", icon="piano"):
                     if importing:
                         not_needed("Not needed when importing: the notes come from the samples (step 5).")
                     else:
                         step_range(ed)
                     nav(stepper)
-                with ui.step("Dynamics & extras").props('prefix="4"'):
+                with ui.step("Dynamics & extras", icon="graphic_eq"):
                     step_dynamics(ed)
                     nav(stepper)
-                with ui.step(WORKSHEET).props('prefix="5"'):
+                with ui.step(WORKSHEET, icon="view_list"):
                     step_worksheet(ed)
                     nav(stepper)
-                with ui.step("Sound & look").props('prefix="6"'):
+                with ui.step("Sound & look", icon="tune"):
                     step_sound(ed)
                     nav(stepper)
-                with ui.step("Build").props('prefix="7"'):
+                with ui.step("Build", icon="inventory_2"):
                     step_build(ed)
                     nav(stepper, last=True)
 
