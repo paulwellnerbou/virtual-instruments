@@ -296,3 +296,23 @@ def test_signals_recorded_together_share_a_pass():
     assert [[s.id for s in p.signals] for p in recording_passes(inst)] == [["piezo", "mic"], ["di", "room"]]
     again = Instrument.from_toml(inst.to_toml())
     assert "recorded" not in inst.to_toml() and [s.pass_id for s in again.signals] == ["main", "main", "di", "di"]
+
+
+def test_each_signal_says_whom_it_is_recorded_with():
+    from vinst.plan import recording_passes
+    from vinst.spec import Signal
+    from vinst.ui.app import OWN_PASS, free_pass_id, recorded_choices
+
+    piezo, mic, intmic = (Signal(id="piezo", name="Piezo"), Signal(id="mic", name="Mic"),
+                          Signal(id="intmic", name="Internal mic", pass_id="intmic"))
+    signals = [piezo, mic, intmic]
+    inst = defaults.new_instrument("Choices", InstrumentType.PLUCKED)
+    inst.signals = signals
+    passes = recording_passes(inst)
+    assert recorded_choices(piezo, passes) == {"main": "with Mic", "intmic": "with Internal mic",
+                                               OWN_PASS: "on its own"}
+    assert recorded_choices(intmic, passes) == {"intmic": "on its own", "main": "with Piezo + Mic"}
+    # On its own: its own id, unless another pass has it (it left the pass named after it).
+    assert free_pass_id(signals, piezo) == "piezo"
+    mic.pass_id = intmic.pass_id = "piezo"
+    assert free_pass_id(signals, piezo) == "piezo2"

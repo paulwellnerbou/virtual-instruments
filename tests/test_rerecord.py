@@ -653,3 +653,5 @@ def test_a_dropped_file_whose_signal_isnt_named_waits_to_be_asked(uke):
     assert result.envelope_of("mic") != result.envelope_of("piezo")
     named = asyncio.run(drop_file(uke.meta.slug, take.key, Body(buf.getvalue()), "export_mic.wav", "124"))
     assert named["ok"] and named["signal"] == "mic"  # its name says: no question
+    both = asyncio.run(drop_file(uke.meta.slug, take.key, Body(buf.getvalue()), "export piezo+mic.wav", "125"))
+    assert both["ask"]  # a channel each, but which is which?

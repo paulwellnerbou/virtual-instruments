@@ -37,8 +37,8 @@ class Pass:
 
 
 def recording_passes(inst: Instrument) -> list[Pass]:
-    """The main pass first (as when a signal was either "together" or "separate"), then the others in
-    the order of their first signal."""
+    """Signals grouped by pass: the main pass first, as the instrument's default one, then the others
+    in the order of their first signal."""
     ids = sorted(dict.fromkeys(s.pass_id for s in inst.signals), key=lambda i: i != MAIN_PASS)
     out = []
     for pass_id in ids:

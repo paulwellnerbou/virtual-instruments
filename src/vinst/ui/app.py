@@ -580,6 +580,24 @@ def step_instrument(ed: Editor) -> None:
 OWN_PASS = "\0own"  # the "Recorded" choice that gives a signal a pass of its own
 
 
+def free_pass_id(signals: list[Signal], sig: Signal) -> str:
+    """A pass id for `sig` alone: its own id, unless another signal's pass has it."""
+    taken = {s.pass_id for s in signals if s is not sig}
+    return next(c for c in (sig.id, *(f"{sig.id}{n}" for n in range(2, 1000))) if c not in taken)
+
+
+def recorded_choices(sig: Signal, passes: list[Pass]) -> dict[str, str]:
+    """What `sig` can be recorded with: its own pass (named by its other signals), each other pass, and,
+    when it shares one, a pass on its own."""
+    mine = next(p for p in passes if sig in p.signals)
+    others = [s.name for s in mine.signals if s is not sig]
+    out = {mine.id: f"with {' + '.join(others)}" if others else "on its own"}
+    out |= {p.id: f"with {p.name}" for p in passes if p is not mine}
+    if others:
+        out[OWN_PASS] = "on its own"
+    return out
+
+
 def step_signals(ed: Editor) -> None:
     """The signals, grouped by how they're recorded: one card per pass, so what's recorded together
     is what shares a card. Each signal says whom it's recorded with, which also moves it between cards."""
@@ -587,12 +605,10 @@ def step_signals(ed: Editor) -> None:
     ui.label("What you record, e.g. a pickup, a microphone or a DI; each becomes a sound of its own. The id "
              "names its files and its track.").classes("text-sm max-w-3xl")
 
-    def free_pass_id(sig: Signal) -> str:
-        taken = {s.pass_id for s in inst.signals if s is not sig}
-        return next(c for c in (sig.id, *(f"{sig.id}{n}" for n in range(2, 100))) if c not in taken)
+    selects: list[tuple[Signal, ui.select]] = []
 
     def recorded_with(sig: Signal, value: str) -> None:
-        sig.pass_id = free_pass_id(sig) if value == OWN_PASS else value
+        sig.pass_id = free_pass_id(inst.signals, sig) if value == OWN_PASS else value
         ed.changed()
         body.refresh()
 
@@ -609,28 +625,26 @@ def step_signals(ed: Editor) -> None:
         ed.changed()
         body.refresh()
 
-    def choices(sig: Signal, passes: list[Pass]) -> dict[str, str]:
-        mine = next(p for p in passes if sig in p.signals)
-        others = [s.name for s in mine.signals if s is not sig]
-        out = {mine.id: f"with {' + '.join(others)}" if others else "on its own"}
-        out |= {p.id: f"with {p.name}" for p in passes if p is not mine}
-        if others:
-            out[OWN_PASS] = "on its own"
-        return out
+    def relabel() -> None:
+        """The "with …" choices name the other signals: renamed in place, as typed, so no field loses focus."""
+        passes = recording_passes(inst)
+        for sig, select in selects:
+            select.set_options(recorded_choices(sig, passes), value=sig.pass_id)
 
     def signal_row(sig: Signal, passes: list[Pass]) -> None:
         with ui.row().classes("items-center gap-3 no-wrap"):
-            # Names show in the "with …" choices: those follow once the name is typed.
-            ed.text("Name", sig, "name").classes("w-56").on("blur", body.refresh)
+            ed.text("Name", sig, "name").classes("w-56").on_value_change(lambda _: relabel())
             ed.text("Id (track name)", sig, "id").classes("w-40")
             if len(inst.signals) > 1:
-                ui.select(choices(sig, passes), label="Recorded", value=sig.pass_id,
-                          on_change=lambda e, s=sig: recorded_with(s, e.value)).classes("w-64")
+                select = ui.select(recorded_choices(sig, passes), label="Recorded", value=sig.pass_id,
+                                   on_change=lambda e, s=sig: recorded_with(s, e.value)).classes("w-64")
+                selects.append((sig, select))
             ui.button(icon="delete", on_click=lambda s=sig: remove(s)).props("flat round") \
                 .tooltip(f"Remove {sig.name}")
 
     @ui.refreshable
     def body() -> None:
+        selects.clear()
         passes = recording_passes(inst)
         if len(inst.signals) == 1:
             signal_row(inst.signals[0], passes)
@@ -659,9 +673,11 @@ def step_signals(ed: Editor) -> None:
         elif len(inst.signals) > 1:
             ui.label("Recorded one after the other instead, e.g. two sources sharing one output? Choose “on its "
                      "own” for one of them.").classes("text-xs opacity-70 max-w-3xl")
-        else:
+        elif inst.signals:
             ui.label("Two inputs at once, e.g. a pickup and a mic? Add the second signal.") \
                 .classes("text-xs opacity-70 max-w-3xl")
+        else:
+            ui.label("Add what you record, e.g. a pickup or a mic.").classes("text-xs opacity-70 max-w-3xl")
 
     body()
 

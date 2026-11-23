@@ -149,8 +149,9 @@ async def drop_file(slug: str, key: str, request: Request, name: str = "", batch
     if take is None or not inst.recording.takes_dir:
         raise HTTPException(404)
     stem = Path(name).stem.lower()
-    signal = take.signals[0] if len(take.signals) == 1 else next(
-        (s for s in take.signals if re.search(rf"(^|[^a-z0-9]){re.escape(s.lower())}([^a-z0-9]|$)", stem)), None)
+    # A name with more than one signal in it (e.g. "piezo+mic", a channel each) says nothing about which is which.
+    named = [s for s in take.signals if split.names_signal(stem, s)]
+    signal = take.signals[0] if len(take.signals) == 1 else named[0] if len(named) == 1 else None
     body = await request.body()
     try:
         audio, sr = sf.read(io.BytesIO(body), always_2d=True)
@@ -964,8 +965,12 @@ def step_worksheet(ed: "Editor") -> None:
         if not found or importing:
             return
         take, hit = found
-        if (take.note, take.pass_id) != (note, pass_id):
+        if take.note != note:
             ui.notify("Hits can only move between the velocities of their own note.", type="warning")
+            return
+        if take.pass_id != pass_id:
+            ui.notify("A hit stays with the signals it was recorded with: move it within their lanes.",
+                      type="warning")
             return
         hit.layer_set = None if lane == take.lane else lane
         saved(take)
@@ -1503,19 +1508,25 @@ def step_worksheet(ed: "Editor") -> None:
                 ui.label(text or "silence with everything set up as for the takes, once per recording") \
                     .classes("text-sm opacity-70 truncate")
             names = signal_names()
-            for i, (take, result) in enumerate(zip(takes, results)):
+            for take, result in zip(takes, results):
                 recorded = result is not None and result.status != "missing"
+                # Sliced before each signal's level was kept: the recording's own, once.
+                pass_level = None
+                if result is not None and result.status == "noise_floor" and not result.levels_db:
+                    pass_level = result.level_db
+                    if pass_level is None and state["manifest"] and take.pass_id == recording_passes(inst)[0].id:
+                        pass_level = state["manifest"].noise_floor_db
                 with ui.row().classes("vi-lane items-start gap-2 w-full no-wrap") as row:
                     with controls_strip().style(f"height:{NOISE_ROW_H}px"):
                         record_button(take, recorded)
                     with ui.column().classes("vi-signals shrink-0" + (" vi-together" if len(take.signals) > 1
                                                                       else "")).style("gap:0"):
-                        for sid in take.signals:
+                        for k, sid in enumerate(take.signals):
                             with ui.row().classes("items-center gap-3 no-wrap").style(f"height:{NOISE_ROW_H}px"):
                                 ui.label(names.get(sid, sid)).classes("text-sm whitespace-nowrap").style("min-width:8ch")
                                 level = result.levels_db.get(sid) if result else None
-                                if level is None and result is not None and len(take.signals) == 1:
-                                    level = result.level_db
+                                if level is None and k == 0:
+                                    level = pass_level
                                 if level is not None:
                                     ui.label(f"{level:.1f} dBFS").classes("text-sm opacity-70 whitespace-nowrap")
                     with ui.row().classes("items-center min-w-0").style(f"height:{NOISE_ROW_H}px"):
@@ -1995,6 +2006,10 @@ def step_worksheet(ed: "Editor") -> None:
         chosen = split.told(inst, paths, pass_id)
         if chosen is not None:
             return chosen
+        # Dropped onto another recording's row, but named after its own signals: those decide.
+        if pass_id is not None and (by_name := split.told(inst, paths)) is not None:
+            ui.notify(f"{', '.join(x.name for x in paths)}: split for {by_name[0].name}, as the file names say.")
+            return by_name
         passes = recording_passes(inst)
         p = next((q for q in passes if q.id == pass_id), None) if pass_id else passes[0] if len(passes) == 1 else None
         if p is None:
@@ -2359,6 +2374,7 @@ def step_worksheet(ed: "Editor") -> None:
     def shown() -> str:
         """What the worksheet depends on in the spec; other edits (a name, a colour) don't redraw it."""
         return repr((rec.takes_dir, rec.samples_dir, rec.source, inst.note_lanes, inst.preset.velocity_splits,
+                     [(s.id, s.name) for s in inst.signals],
                      slicing_setup(inst), slicing.cleanup_setup(inst),
                      [e.model_dump() for e in inst.processing.cleanup_eqs],
                      [(t.key, t.files, t.hits, t.title) for t in plan_takes(inst)]))
