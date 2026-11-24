@@ -19,7 +19,7 @@ def test_off_builds_the_preset_as_before(built):
     assert doc.find("buses") is None and not any(s.get("output2Target") for s in doc.iter("sample"))
     assert [e.get("type") for e in doc.find("effects")][-1] == "reverb"
     assert not (first.bundle / reverb_send.IR_DIR).exists()
-    assert not any("attack's hiss" in line for line in first.info)
+    assert not any("reverb hiss" in line for line in first.info)
     before = first.preset_file.read_bytes()
 
     inst.preset.reverb_send = True
@@ -38,7 +38,8 @@ def test_on_sends_every_sample_to_a_reverb_bus_of_its_pitch(built):
     doc = _preset(result)
     assert "reverb" not in [e.get("type") for e in doc.find("effects")]
     buses = doc.find("buses").findall("bus")
-    assert any(line.startswith(f"Reverb without the attack's hiss: {len(buses)} reverbs") for line in result.info)
+    assert any(line.startswith("To avoid reverb hiss") and f"one of {len(buses)} buses" in line
+               for line in result.info)
     assert buses and all(float(b.get("busVolume")) == inst.preset.reverb for b in buses)
     for b in buses:
         conv = b.find("effects/effect")
@@ -162,7 +163,7 @@ def test_an_own_ir_plays_without_the_switch_on_one_unfiltered_bus(built, tmp_pat
     inst.preset.reverb_send = True
     on = bundle.build(inst)
     assert on.report.ok, on.report.errors
-    assert any("from hall.wav" in line and "attack's hiss" in line for line in on.info)
+    assert any("playing hall.wav" in line and "reverb hiss" in line for line in on.info)
     assert len(_preset(on).find("buses").findall("bus")) > 1
     filtered, _ = sf.read(str(on.bundle / reverb_send.ir_path(0)))
     assert np.abs(filtered[:100]).max() > 0

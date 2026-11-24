@@ -327,11 +327,16 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
         irs = reverb_send.write_irs(bundle, reverb_bands, inst.preset.reverb_room, inst.preset.reverb_damping, own,
                                     filtered=inst.preset.reverb_send)
         size = sum((bundle / p).stat().st_size for p in irs) / 1e6
-        source = "DecentSampler's reverb" if own is None else (
+        source = "DecentSampler's reverb (same room and damping)" if own is None else (
             f"{own.name}, cut to {reverb_send.IR_MAX_S:g} s" if reverb_send.too_long(own) else own.name)
         if inst.preset.reverb_send:
-            mapping.info.append(f"Reverb without the attack's hiss: {len(irs)} reverbs from {source}, one per few "
-                                f"semitones ({size:.1f} MB).")
+            width = reverb_send.band_width([reverb_send.sample_pitch(e.lo, e.hi) for e in mapping.notes])
+            mapping.info.append(
+                f"To avoid reverb hiss from attacks with high frequencies, every sample is also sent to one of "
+                f"{len(irs)} buses, one per {width} semitones. Each bus has a convolution reverb playing {source} "
+                f"with a −{abs(reverb_send.SHELF_DB):g} dB high shelf from {reverb_send.SHELF_ABOVE:g} × its "
+                f"middle note's pitch and a low-pass at {reverb_send.LOWPASS_HZ / 1000:g} kHz "
+                f"({len(irs)} impulse responses, {size:.1f} MB).")
         else:
             mapping.info.append(f"Reverb from {source} ({size:.1f} MB).")
     elif (bundle / reverb_send.IR_DIR).is_dir():

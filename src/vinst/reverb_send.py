@@ -96,12 +96,19 @@ def sample_pitch(lo: int, hi: int) -> int:
     return (lo + hi) // 2
 
 
+def band_width(pitches: list[int]) -> int:
+    """Semitones per band: BAND_SEMITONES, wider if that took more than DecentSampler's buses."""
+    if not pitches:
+        return BAND_SEMITONES
+    return max(BAND_SEMITONES, math.ceil((max(pitches) - min(pitches) + 1) / MAX_BUSES))
+
+
 def bands(pitches: list[int]) -> list[Band]:
-    """Bands of a few semitones over the samples' pitches, wider if more than DecentSampler's buses."""
+    """Bands of band_width semitones over the samples' pitches."""
     pitches = sorted(set(pitches))
     if not pitches:
         return []
-    width = max(BAND_SEMITONES, math.ceil((pitches[-1] - pitches[0] + 1) / MAX_BUSES))
+    width = band_width(pitches)
     out = []
     for start in range(pitches[0], pitches[-1] + 1, width):
         inside = [r for r in pitches if start <= r < start + width]
