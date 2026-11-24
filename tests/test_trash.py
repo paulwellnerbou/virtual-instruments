@@ -31,9 +31,11 @@ def disk(tmp_path):
     if sys.platform != "darwin" or not shutil.which("hdiutil"):
         pytest.skip("macOS disk images")
     image, mount = tmp_path / "disk.dmg", tmp_path / "mnt"
-    subprocess.run(["hdiutil", "create", "-quiet", "-size", "8m", "-fs", "ExFAT", "-volname", "VINSTTEST",
-                    str(image)], check=True)
-    subprocess.run(["hdiutil", "attach", "-quiet", "-nobrowse", "-mountpoint", str(mount), str(image)], check=True)
+    for step in (["create", "-quiet", "-size", "8m", "-fs", "ExFAT", "-volname", "VINSTTEST", str(image)],
+                 ["attach", "-quiet", "-nobrowse", "-mountpoint", str(mount), str(image)]):
+        done = subprocess.run(["hdiutil", *step], capture_output=True, text=True)
+        if done.returncode:
+            pytest.skip(f"hdiutil {step[0]} isn't allowed here: {done.stderr.strip()}")
     yield mount
     subprocess.run(["hdiutil", "detach", "-quiet", "-force", str(mount)], check=False)
 
@@ -61,8 +63,23 @@ def test_a_file_that_isnt_there_is_an_error_not_a_missing_trash(disk):
 
 def test_without_the_system_call_there_is_no_trash(monkeypatch, tmp_path):
     monkeypatch.setattr(trash, "_objc", lambda: None)
+    assert not trash.available()
     (tmp_path / "a.wav").write_bytes(b"x")
     with pytest.raises(trash.NoTrash):
         SYSTEM_TRASH(tmp_path / "a.wav")
     trash.remove(tmp_path / "a.wav")
     assert not (tmp_path / "a.wav").exists()
+
+
+def test_any_refusal_on_a_network_disk_means_it_has_no_trash(disk, monkeypatch):
+    monkeypatch.setattr(trash, "_on_local_disk", lambda objc, url: False)
+    with pytest.raises(trash.NoTrash):
+        SYSTEM_TRASH(disk / "gone.wav")  # refused for another reason: there, too, it can't go to a Trash
+
+
+def test_a_name_the_system_cant_take_is_an_error_not_a_crash(tmp_path):
+    if not trash.available():
+        pytest.skip("macOS only")
+    with pytest.raises(OSError) as e:
+        SYSTEM_TRASH(tmp_path / "bad\udcff.wav")
+    assert not isinstance(e.value, trash.NoTrash)

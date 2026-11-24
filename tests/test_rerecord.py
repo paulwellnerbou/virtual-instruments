@@ -775,3 +775,34 @@ def test_on_a_disk_without_a_trash_recordings_stay_until_deleted_for_good(uke, m
     after, found = discard.delete(uke, kept, {t.key}, for_good=True)
     assert not path.exists() and found.for_good == 1 and result(after, t.key).status == "missing"
     assert discard.went(found) == "1 file (" + discard.size_text(found.size) + ") deleted."
+
+
+def test_an_unexpected_error_keeps_that_file_and_the_others_still_go(uke, monkeypatch):
+    from vinst import trash
+
+    stuck, other = lane(uke, "p"), lane(uke, "f")
+    stuck_path = write(uke, stuck.files[0], take_audio(stuck, (0.3,)))
+    other_path = write(uke, other.files[0], take_audio(other, (0.7,)))
+    manifest = process(uke)
+    to_bin = trash._system_trash
+
+    def system_trash(p):
+        if p == stuck_path:
+            raise ValueError("not an OSError")
+        return to_bin(p)
+
+    monkeypatch.setattr(trash, "_system_trash", system_trash)
+    after, found = discard.delete(uke, manifest, {stuck.key, other.key})
+    assert found.failed == [stuck_path] and stuck_path.exists() and not other_path.exists()
+    assert result(after, stuck.key).hits and result(after, other.key).status == "missing"
+
+
+def test_after_deleting_trashed_and_deleted_files_are_told_apart(tmp_path):
+    a, b, c = tmp_path / "a.wav", tmp_path / "b.wav", tmp_path / "c.wav"
+    found = discard.Found(files=[a, b, c], sizes={a: 2_000_000, b: 3_000_000, c: 5_000_000}, trashed=1, for_good=1,
+                          failed=[c])
+    assert discard.went(found) == "2 files (5 MB): 1 moved to the Trash (empty it to free the space), 1 deleted."
+    found = discard.Found(files=[a], sizes={a: 2_000_000}, for_good=1)
+    assert discard.went(found) == "1 file (2 MB) deleted."
+    found = discard.Found(files=[a, b], sizes={a: 2_000_000, b: 3_000_000}, trashed=2)
+    assert discard.went(found) == "2 files (5 MB) moved to the Trash; empty it to free the space."

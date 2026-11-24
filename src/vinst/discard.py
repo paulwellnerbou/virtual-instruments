@@ -35,8 +35,13 @@ class Found:
     samples_size: int = 0
     failed: list[Path] = field(default_factory=list)  # after deleting: files that couldn't go
     no_trash: list[Path] = field(default_factory=list)  # after deleting: kept, as their disk has no Trash
+    trashed: int = 0  # after deleting: files moved to the Trash
     for_good: int = 0  # after deleting with for_good: files deleted, not moved to the Trash
     files_of: dict[str, list[Path]] = field(default_factory=dict, repr=False)
+    sizes: dict[Path, int] = field(default_factory=dict, repr=False)  # of the files, as found
+
+    def size_of(self, paths: list[Path]) -> int:
+        return sum(self.sizes.get(p, 0) for p in paths)
 
 
 def _size(path: Path) -> int:
@@ -54,12 +59,15 @@ def size_text(n: int) -> str:
 
 def went(found: Found) -> str:
     """What happened, after deleting."""
-    stayed = found.failed + found.no_trash
-    n = len(found.files) - len(stayed)
-    size = size_text(found.size - sum(_size(p) for p in stayed))  # those that stayed are still there
-    if found.for_good == n:
+    stayed = set(found.failed + found.no_trash)
+    gone = [p for p in found.files if p not in stayed]
+    size = size_text(found.size_of(gone))
+    n, t, d = len(gone), found.trashed, found.for_good
+    if not t:
         return f"{n} file{'' if n == 1 else 's'} ({size}) deleted."
-    return f"{n} file{'' if n == 1 else 's'} ({size}) moved to the Trash; empty it to free the space."
+    if not d:
+        return f"{n} file{'' if n == 1 else 's'} ({size}) moved to the Trash; empty it to free the space."
+    return f"{n} files ({size}): {t} moved to the Trash (empty it to free the space), {d} deleted."
 
 
 def takes_folder(inst: Instrument) -> Path | None:
@@ -101,7 +109,8 @@ def find(inst: Instrument, manifest: Manifest | None, keys: set[str] | None = No
         gone = [r for r in manifest.takes if keys is None or r.key in keys]
         out.keys |= {r.key for r in gone if r.status != "missing"}
         out.samples = [folder / f for r in gone for h in r.hits for f in h.files.values() if (folder / f).is_file()]
-    out.size = sum(_size(p) for p in out.files)
+    out.sizes = {p: _size(p) for p in out.files}
+    out.size = sum(out.sizes.values())
     out.samples_size = sum(_size(p) for p in out.samples)
     return out
 
@@ -120,6 +129,7 @@ def delete(inst: Instrument, manifest: Manifest | None, keys: set[str] | None = 
         try:
             # One by one: Put Back then returns each where it was, not a folder of them all.
             trash(p)
+            found.trashed += 1
         except NoTrash:
             if not for_good:
                 found.no_trash.append(p)
@@ -129,7 +139,7 @@ def delete(inst: Instrument, manifest: Manifest | None, keys: set[str] | None = 
                 found.for_good += 1
             except OSError:
                 found.failed.append(p)
-        except OSError:
+        except Exception:  # whatever went wrong, the others still go and the manifest follows what went
             found.failed.append(p)
     stayed_files = found.failed + found.no_trash
     takes_meta.forget(inst.meta.slug, [p.name for p in found.files if p not in stayed_files])

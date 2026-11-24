@@ -1,6 +1,5 @@
 """The instrument builder wizard (NiceGUI)."""
 
-import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -31,7 +30,7 @@ from vinst.spec import (
     Sound,
     slugify,
 )
-from vinst.trash import NoTrash, remove, trash
+from vinst.trash import NoTrash, available, remove, trash
 from vinst.ui import anim, keyboard, recording, theme
 from vinst.ui.controls import NumberField, Segmented
 from vinst.ui.build_steps import extra_use, step_build, step_sound, velocity_layers
@@ -245,7 +244,7 @@ async def delete_dialog(slug: str, name: str, inst: Instrument | None) -> None:
             out.append("the instrument installed in DecentSampler's library")
         return out
 
-    where = "go to the Trash" if sys.platform == "darwin" else "are deleted"
+    where = "go to the Trash" if available() else "are deleted"
     def gone(path: Path) -> bool:
         """To the Trash (True), or deleted where there's none: it holds only settings and builds."""
         try:
@@ -263,8 +262,9 @@ async def delete_dialog(slug: str, name: str, inst: Instrument | None) -> None:
         if found is not None:
             n = len(found.files)
             samples = f" and sliced samples ({discard.size_text(found.samples_size)})" if found.samples else ""
+            how = "" if available() else ", deleted for good"
             also = ui.checkbox(f"Also its recordings ({n} file{'' if n == 1 else 's'}, "
-                               f"{discard.size_text(found.size)}){samples}",
+                               f"{discard.size_text(found.size)}{how}){samples}",
                                on_change=lambda e: stay.refresh(e.value)).classes("text-sm")
 
         @ui.refreshable
@@ -293,7 +293,7 @@ async def delete_dialog(slug: str, name: str, inst: Instrument | None) -> None:
                             ui.navigate.to("/")
                             return
                         if done.no_trash:
-                            ask_for_good(done.no_trash)
+                            ask_for_good(done.no_trash, done.trashed)
                             return
                     went = gone(folder)
                     if builds.exists():
@@ -305,17 +305,18 @@ async def delete_dialog(slug: str, name: str, inst: Instrument | None) -> None:
                 ui.notify(f"“{name}” moved to the Trash." if went else f"“{name}” deleted.", type="positive")
                 ui.navigate.to("/")
 
-            ui.button("Delete", on_click=lambda: go()).props("color=negative")
+            ui.button("Delete", on_click=lambda: go(for_good=not available())).props("color=negative")
 
-    def ask_for_good(files: list[Path]) -> None:
+    def ask_for_good(files: list[Path], trashed: int) -> None:
         """Its recordings on a disk without a Trash, e.g. a network disk: deleting them can't be undone."""
         n = len(files)
+        others = f" The other {trashed} {'is' if trashed == 1 else 'are'} in the Trash already." if trashed else ""
         card.clear()
         with card:
             ui.label("Delete its recordings for good?").classes("text-lg font-medium")
             ui.label(f"{n} recording file{'' if n == 1 else 's'} {'is' if n == 1 else 'are'} on a disk without a "
-                     f"Trash, such as a network disk, so deleting {'it' if n == 1 else 'them'} can't be undone. The "
-                     f"others are in the Trash already.").classes("text-sm")
+                     f"Trash, such as a network disk, so deleting {'it' if n == 1 else 'them'} can't be undone."
+                     f"{others}").classes("text-sm")
             with ui.row().classes("w-full justify-end"):
                 def keep() -> None:
                     dialog.close()

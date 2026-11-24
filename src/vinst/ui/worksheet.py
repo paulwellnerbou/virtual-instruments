@@ -22,7 +22,7 @@ from fastapi import HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from nicegui import app, background_tasks, run, ui
 
-from vinst import aims, cleanup_eq, discard, loops, relocate, review, slicing, split, store, takes_meta
+from vinst import aims, cleanup_eq, discard, loops, relocate, review, slicing, split, store, takes_meta, trash
 from vinst import notes as note_names
 from vinst.bundle import CLEANUP_MESSAGE, FINDER_MESSAGE, STALE_MESSAGE, changed_message, eq_message
 from vinst.plan import (
@@ -1379,8 +1379,7 @@ def step_worksheet(ed: "Editor") -> None:
 
     def ask_for_good(keys: set[str] | None, found: discard.Found) -> None:
         """Some files are on a disk without a Trash, e.g. a network disk: deleting them can't be undone."""
-        n, size = len(found.no_trash), discard.size_text(sum(p.stat().st_size for p in found.no_trash
-                                                                 if p.exists()))
+        n, size = len(found.no_trash), discard.size_text(found.size_of(found.no_trash))
         lane_card.clear()
         with lane_card:
             ui.label("Delete them for good?").classes("text-lg font-medium")
@@ -1396,6 +1395,12 @@ def step_worksheet(ed: "Editor") -> None:
                     .props("color=negative")
         lane_dialog.open()
 
+    def goes(n: int) -> str:
+        """How the files go, asked before: to the Trash, or for good on a system without one."""
+        if trash.available():
+            return "goes to the Trash" if n == 1 else "go to the Trash"
+        return "is deleted for good" if n == 1 else "are deleted for good"
+
     def delete_take(take: TakeResult) -> None:
         found = discard.find(inst, state["manifest"], {take.key})
         if not found.files:
@@ -1408,12 +1413,13 @@ def step_worksheet(ed: "Editor") -> None:
             hits = f"{len(take.hits)} hit{'' if len(take.hits) == 1 else 's'}"
             n = len(found.files)
             ui.label(f"{plain_title(take)}, {hits}. Its file{'' if n == 1 else 's'} ({discard.size_text(found.size)}) "
-                     f"{'goes' if n == 1 else 'go'} to the Trash; the sliced samples and the decisions about its hits "
+                     f"{goes(n)}; the sliced samples and the decisions about its hits "
                      f"(rejections, moves, cuts set by hand) are deleted.").classes("text-sm")
             ui.label(", ".join(p.name for p in found.files)).classes("text-xs font-mono opacity-60")
             with ui.row().classes("w-full justify-end"):
                 ui.button("Cancel", on_click=lane_dialog.close).props("flat")
-                ui.button("Delete", on_click=lambda: delete_recordings({take.key})).props("color=negative")
+                ui.button("Delete", on_click=lambda: delete_recordings({take.key}, for_good=not trash.available())) \
+                    .props("color=negative")
         lane_dialog.open()
 
     async def delete_all() -> None:
@@ -1434,7 +1440,7 @@ def step_worksheet(ed: "Editor") -> None:
             ui.label("Delete all recordings?").classes("text-lg font-medium")
             n = len(found.files)
             ui.label(f"{n} file{'' if n == 1 else 's'} ({discard.size_text(found.size)}) from {folder.name} "
-                     f"{'goes' if n == 1 else 'go'} to the Trash, where Put Back returns them. Their sliced samples "
+                     f"{goes(n)}{', where Put Back returns them' if trash.available() else ''}. Their sliced samples "
                      f"({discard.size_text(found.samples_size)}) and every decision about hits are deleted.") \
                 .classes("text-sm")
             ui.label("Takes of notes, velocities, signals and extras the instrument no longer has go too. Its "
@@ -1442,7 +1448,8 @@ def step_worksheet(ed: "Editor") -> None:
                      "the folder.").classes("text-sm opacity-70")
             with ui.row().classes("w-full justify-end"):
                 ui.button("Cancel", on_click=lane_dialog.close).props("flat")
-                ui.button("Delete all", on_click=lambda: delete_recordings(None)).props("color=negative")
+                ui.button("Delete all", on_click=lambda: delete_recordings(None, for_good=not trash.available())) \
+                    .props("color=negative")
         lane_dialog.open()
 
     def eq_tip(take: TakeResult) -> str:
