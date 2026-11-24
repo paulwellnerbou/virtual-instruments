@@ -19,9 +19,13 @@ class Rig:
     def __init__(self, monkeypatch) -> None:
         self.devices = [recorder.Device(0, "Fake", 2, SR)]
         self.refuse = False
+        self.refuse_output = False
+        self.output_channels = 2
         self.scans: list[int] = []  # streams open at each re-scan of the devices
+        self.opened: list[dict] = []  # what each stream was opened with
         monkeypatch.setattr(recorder, "input_devices", self.input_devices)
-        monkeypatch.setattr(recorder, "_sd", lambda: SimpleNamespace(InputStream=self.stream))
+        monkeypatch.setattr(recorder, "_sd", lambda: SimpleNamespace(InputStream=self.stream, Stream=self.stream))
+        monkeypatch.setattr(recorder, "output_channels", lambda: self.output_channels)
         monkeypatch.setattr(store, "load_settings", lambda: SimpleNamespace(input_device="Fake"))
         monkeypatch.setattr(recording, "_monitors", [])
         self.inst = defaults.new_instrument("Mini", InstrumentType.PLUCKED)
@@ -33,9 +37,10 @@ class Rig:
             self.scans.append(recorder.Recorder.open_count)
         return list(self.devices)
 
-    def stream(self, **_):
-        if self.refuse:
+    def stream(self, **kw):
+        if self.refuse or (self.refuse_output and isinstance(kw["device"], tuple)):
             raise OSError("device busy")
+        self.opened.append(kw)
         return SimpleNamespace(start=lambda: None, stop=lambda: None, close=lambda: None)
 
     def set(self, obj, attr, value) -> None:
@@ -76,6 +81,36 @@ def test_monitor_opens_the_input_and_lets_go_for_a_take(monkeypatch):
         recording.stop_monitors()  # as a take or Detect does before opening the interface
         await asyncio.sleep(0.05)
         assert streams() == 0 and not lit(user)
+
+    run(monkeypatch, exercise)
+
+
+def test_monitor_plays_the_input_on_the_sound_output(monkeypatch):
+    async def exercise(user, rig, streams):
+        await click(user, "graphic_eq")
+        assert rig.opened[-1]["device"] == (0, None)  # the interface in, the Mac's default output out
+        assert rig.opened[-1]["channels"] == (1, 2) and rig.opened[-1]["latency"] == "low"
+
+    run(monkeypatch, exercise)
+
+
+def test_monitor_without_a_sound_output_shows_the_level(monkeypatch):
+    async def exercise(user, rig, streams):
+        rig.output_channels = 0
+        await click(user, "graphic_eq")
+        assert streams() == 1 and lit(user)
+        assert len(rig.opened) == 1 and rig.opened[0]["device"] == 0  # the interface only
+
+    run(monkeypatch, exercise)
+
+
+def test_monitor_whose_output_refuses_still_shows_the_level(monkeypatch):
+    async def exercise(user, rig, streams):
+        rig.refuse_output = True
+        await click(user, "graphic_eq")
+        assert streams() == 1 and lit(user)
+        assert rig.opened[-1]["device"] == 0
+        await user.should_see("level only")
 
     run(monkeypatch, exercise)
 

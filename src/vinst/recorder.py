@@ -61,6 +61,14 @@ def input_devices(rescan: bool = False) -> list[Device]:
         return []
 
 
+def output_channels() -> int:
+    """Channels a monitor plays on, on the Mac's sound output: 2, 1 for a mono one, 0 if there is none."""
+    try:
+        return min(2, int(_sd().query_devices(kind="output")["max_output_channels"]))
+    except Exception:  # no PortAudio, or no default output (sounddevice.PortAudioError)
+        return 0
+
+
 def find_device(name: str, devices: list[Device]) -> Device | None:
     """The named device; with no name, the system's default input. None if it isn't connected."""
     if name or not devices:
@@ -111,7 +119,9 @@ class Recorder:
     open_count = 0
 
     def __init__(self, device: Device, channels: dict[str, int], sample_rate: int,
-                 stream_factory: Callable[..., Any] | None = None) -> None:
+                 stream_factory: Callable[..., Any] | None = None, play_channels: int = 0) -> None:
+        """`play_channels`: also play the inputs, mixed, on the Mac's sound output with this many
+        channels (see output_channels); at low latency, as someone listens while playing."""
         self.signals = list(channels)
         self.columns = [channels[s] - 1 for s in self.signals]
         self.sample_rate = sample_rate
@@ -131,9 +141,15 @@ class Recorder:
         self._skip = 0
         self._lock = threading.Lock()
         self.closed = False
-        factory = stream_factory or _sd().InputStream
-        self.stream = factory(device=device.index, channels=max(self.columns) + 1, samplerate=sample_rate,
-                              dtype="float32", latency="high", callback=self._callback)
+        inputs = max(self.columns) + 1
+        if play_channels:
+            factory = stream_factory or _sd().Stream
+            self.stream = factory(device=(device.index, None), channels=(inputs, play_channels),
+                                  samplerate=sample_rate, dtype="float32", latency="low", callback=self._play)
+        else:
+            factory = stream_factory or _sd().InputStream
+            self.stream = factory(device=device.index, channels=inputs, samplerate=sample_rate,
+                                  dtype="float32", latency="high", callback=self._callback)
         Recorder.open_count += 1
         try:
             self.stream.start()
@@ -162,6 +178,11 @@ class Recorder:
                 if peak >= CLIP_LEVEL:
                     self._clipped.add(s)
             self._queue.put(block.copy())
+
+    def _play(self, indata: np.ndarray, outdata: np.ndarray, frames: int, time: Any, status: Any) -> None:
+        self._callback(indata, frames, time, status)
+        mix = np.clip(np.sum(indata[:, self.columns], axis=1), -1.0, 1.0)
+        outdata[:] = mix[:, None]
 
     def levels(self) -> dict[str, float]:
         """Peak level per signal in dBFS since the last call."""

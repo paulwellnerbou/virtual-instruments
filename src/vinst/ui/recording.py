@@ -556,8 +556,8 @@ def input_settings(ed: "Editor") -> None:
                     on = there and s.id in state["monitor"]
                     ui.button("Monitor", icon="graphic_eq", on_click=lambda _, sid=s.id: toggle(sid)) \
                         .props("unelevated dense no-caps color=primary" if on else "flat dense no-caps") \
-                        .tooltip("Show this input's level, and its noise while nothing is played. To hear it, "
-                                 "use the interface's direct monitoring.") \
+                        .tooltip("Play this input on the Mac's sound output, and show its level and its noise "
+                                 "while nothing is played. With a microphone, use headphones.") \
                         .set_enabled(there)
                 if on:
                     with form.setting(""):
@@ -579,9 +579,18 @@ def input_settings(ed: "Editor") -> None:
         close_probe()
         if not want or device is None:
             return
+        play = recorder.output_channels()
         try:
-            # At the interface's own rate: monitoring works before the instrument's rate matches it.
-            state["probe"] = recorder.Recorder(device, want, device.sample_rate)
+            try:
+                # At the interface's own rate: monitoring works before the instrument's rate matches it.
+                state["probe"] = recorder.Recorder(device, want, device.sample_rate, play_channels=play)
+            except Exception as e:
+                if not play:
+                    raise
+                # The output alone may refuse (taken by another app, AirPlay gone): the level still shows.
+                state["probe"] = recorder.Recorder(device, want, device.sample_rate)
+                ui.notify(f"Monitor shows the level only: the Mac's sound output couldn't be opened ({e}).",
+                          type="warning", multi_line=True)
         except Exception as e:
             state["monitor"].clear()
             ui.notify(f"Couldn't open {device.name}: {e}", type="negative")
