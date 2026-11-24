@@ -2,7 +2,6 @@
 
 import io
 import os
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -659,13 +658,6 @@ def test_a_dropped_file_whose_signal_isnt_named_waits_to_be_asked(uke):
     assert both["ask"]  # a channel each, but which is which?
 
 
-@pytest.fixture
-def trash_bin(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path / "user"))  # its Trash, not the real one
-    (tmp_path / "user" / ".Trash").mkdir(parents=True)
-    return tmp_path / "user" / ".Trash"
-
-
 def test_deleting_a_recording_takes_its_samples_and_decisions_and_keeps_the_others(uke, trash_bin):
     take, other = lane(uke, "f"), lane(uke, "p")
     first = write(uke, take.files[0], take_audio(take, (0.7, 0.72)), grid=[0.5, 3.5])
@@ -682,8 +674,7 @@ def test_deleting_a_recording_takes_its_samples_and_decisions_and_keeps_the_othe
     assert sorted(found.files) == sorted([first, more]) and found.size > 0 and found.samples_size > 0
     after, _ = discard.delete(uke, manifest, {take.key, more_key})
     assert not first.exists() and not more.exists() and kept.exists()
-    if sys.platform == "darwin":
-        assert (trash_bin / first.name).exists()
+    assert (trash_bin / first.name).exists()
     assert not any(p.exists() for p in samples) and all(p.exists() for p in kept_samples)
     assert result(after, take.key).status == "missing" and not result(after, take.key).hits
     assert all(t.key != more_key for t in after.takes)  # not a planned recording: gone, not unrecorded
@@ -711,9 +702,7 @@ def test_deleting_all_recordings_leaves_other_files_in_the_folder(uke, trash_bin
     assert sorted(p.name for p in takes_dir.iterdir() if p.is_file()) == ["my-scale.wav", "notes.txt"]
     assert not any(p.exists() for p in sliced)
     assert all(r.status == "missing" for r in after.takes) and after.counts()["hits"] == 0
-    if sys.platform == "darwin":
-        (folder,) = trash_bin.iterdir()
-        assert folder.name == "Uke recordings" and len(list(folder.iterdir())) == 4
+    assert sorted(p.name for p in trash_bin.iterdir()) == sorted(p.name for p in found.files)  # each on its own
     assert discard.find(uke, after, None).files == []
 
 
@@ -767,3 +756,53 @@ def test_instruments_recording_into_one_folder_are_told(uke, tmp_path):
     other.recording.takes_dir = str(tmp_path / "own")
     store.save(other)
     assert discard.sharing(uke) == []
+
+
+def test_on_a_disk_without_a_trash_recordings_stay_until_deleted_for_good(uke, monkeypatch):
+    from vinst import trash
+
+    t = lane(uke, "p")
+    path = write(uke, t.files[0], take_audio(t, (0.3, 0.35)))
+    manifest = process(uke)
+
+    def no_trash(p):
+        raise trash.NoTrash(f"{p.name}: its disk has no Trash")
+
+    monkeypatch.setattr(trash, "_system_trash", no_trash)
+    kept, found = discard.delete(uke, manifest, {t.key})
+    assert found.no_trash == [path] and path.exists() and not found.failed
+    assert [h.id for h in result(kept, t.key).hits] == [h.id for h in result(manifest, t.key).hits]
+    after, found = discard.delete(uke, kept, {t.key}, for_good=True)
+    assert not path.exists() and found.for_good == 1 and result(after, t.key).status == "missing"
+    assert discard.went(found) == "1 file (" + discard.size_text(found.size) + ") deleted."
+
+
+def test_an_unexpected_error_keeps_that_file_and_the_others_still_go(uke, monkeypatch):
+    from vinst import trash
+
+    stuck, other = lane(uke, "p"), lane(uke, "f")
+    stuck_path = write(uke, stuck.files[0], take_audio(stuck, (0.3,)))
+    other_path = write(uke, other.files[0], take_audio(other, (0.7,)))
+    manifest = process(uke)
+    to_bin = trash._system_trash
+
+    def system_trash(p):
+        if p == stuck_path:
+            raise ValueError("not an OSError")
+        return to_bin(p)
+
+    monkeypatch.setattr(trash, "_system_trash", system_trash)
+    after, found = discard.delete(uke, manifest, {stuck.key, other.key})
+    assert found.failed == [stuck_path] and stuck_path.exists() and not other_path.exists()
+    assert result(after, stuck.key).hits and result(after, other.key).status == "missing"
+
+
+def test_after_deleting_trashed_and_deleted_files_are_told_apart(tmp_path):
+    a, b, c = tmp_path / "a.wav", tmp_path / "b.wav", tmp_path / "c.wav"
+    found = discard.Found(files=[a, b, c], sizes={a: 2_000_000, b: 3_000_000, c: 5_000_000}, trashed=1, for_good=1,
+                          failed=[c])
+    assert discard.went(found) == "2 files (5 MB): 1 moved to the Trash (empty it to free the space), 1 deleted."
+    found = discard.Found(files=[a], sizes={a: 2_000_000}, for_good=1)
+    assert discard.went(found) == "1 file (2 MB) deleted."
+    found = discard.Found(files=[a, b], sizes={a: 2_000_000, b: 3_000_000}, trashed=2)
+    assert discard.went(found) == "2 files (5 MB) moved to the Trash; empty it to free the space."

@@ -1,5 +1,28 @@
 """Shared test helpers."""
 
+import shutil
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def trash_bin(tmp_path, monkeypatch):
+    """A Trash of the test's own: nothing a test deletes reaches the real one."""
+    from vinst import trash
+
+    bin_ = tmp_path / "Trash"
+    bin_.mkdir()
+
+    def system_trash(path):
+        target, n = bin_ / path.name, 2
+        while target.exists():
+            target, n = bin_ / f"{path.stem} {n}{path.suffix}", n + 1
+        shutil.move(str(path), str(target))
+        return target
+
+    monkeypatch.setattr(trash, "_system_trash", system_trash)
+    return bin_
+
 
 def piezo_and_mic(inst):
     """The two-signal setup most slicing/preset tests exercise."""

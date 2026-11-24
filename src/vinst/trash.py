@@ -1,137 +1,113 @@
-"""Moving files to the Trash: on macOS into the Trash of the disk they are on, elsewhere deleting them.
+"""Moving files to the Trash with the system's own call (NSFileManager), as the Finder does: into the Trash of
+the disk they're on, with what Put Back needs to return them where they were.
 
-A network disk has no Trash (the Finder deletes from it at once), so files there are deleted too;
-has_trash tells beforehand, for the question asked before deleting.
+A disk without a Trash (a network disk: the Finder deletes from it at once) raises NoTrash; on a system other
+than macOS there's no Trash at all (available() is False). The caller asks before deleting such files for good.
 """
 
 import ctypes
 import ctypes.util
-import os
 import shutil
 import sys
-import time
-from collections.abc import Callable
-from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
-MNT_LOCAL = 0x1000
-MNT_RDONLY = 0x1
+NS_FEATURE_UNSUPPORTED_ERROR = 3328  # NSFileManager's answer for a disk without a Trash
 
 
-class _StatFs(ctypes.Structure):
-    """struct statfs with 64-bit inodes (sys/mount.h)."""
-
-    _fields_ = [("f_bsize", ctypes.c_uint32), ("f_iosize", ctypes.c_int32), ("f_blocks", ctypes.c_uint64),
-                ("f_bfree", ctypes.c_uint64), ("f_bavail", ctypes.c_uint64), ("f_files", ctypes.c_uint64),
-                ("f_ffree", ctypes.c_uint64), ("f_fsid", ctypes.c_int32 * 2), ("f_owner", ctypes.c_uint32),
-                ("f_type", ctypes.c_uint32), ("f_flags", ctypes.c_uint32), ("f_fssubtype", ctypes.c_uint32),
-                ("f_fstypename", ctypes.c_char * 16), ("f_mntonname", ctypes.c_char * 1024),
-                ("f_mntfromname", ctypes.c_char * 1024), ("f_flags_ext", ctypes.c_uint32),
-                ("f_reserved", ctypes.c_uint32 * 7)]
-
-
-@dataclass(frozen=True)
-class Mount:
-    point: Path
-    flags: int
+class NoTrash(OSError):
+    """There's no Trash for this file: deleting it would be for good."""
 
 
 @cache
-def _statfs() -> Callable | None:
+def _objc() -> ctypes.CDLL | None:
+    if sys.platform != "darwin":
+        return None
     try:
-        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
-        # On Intel Macs the plain symbol is the 32-bit-inode layout.
-        return getattr(libc, "statfs$INODE64", None) or libc.statfs
-    except (OSError, AttributeError):
+        objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
+        foundation = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/Foundation.framework/Foundation")
+        objc.volume_is_local_key = ctypes.c_void_p.in_dll(foundation, "NSURLVolumeIsLocalKey").value
+    except (OSError, ValueError):
         return None
+    objc.objc_getClass.restype = ctypes.c_void_p
+    objc.objc_getClass.argtypes = [ctypes.c_char_p]
+    objc.sel_registerName.restype = ctypes.c_void_p
+    objc.sel_registerName.argtypes = [ctypes.c_char_p]
+    objc.objc_autoreleasePoolPush.restype = ctypes.c_void_p
+    objc.objc_autoreleasePoolPop.argtypes = [ctypes.c_void_p]
+    return objc
 
 
-def mount_of(path: Path) -> Mount | None:
-    """The disk `path` is on (its nearest existing folder's); None where that can't be told."""
-    fn = _statfs() if sys.platform == "darwin" else None
-    if fn is None:
-        return None
-    while not path.exists() and path.parent != path:
-        path = path.parent
-    buf = _StatFs()
-    if fn(os.fsencode(str(path)), ctypes.byref(buf)) != 0:
-        return None
-    return Mount(Path(os.fsdecode(buf.f_mntonname)), buf.f_flags)
+def _send(objc: ctypes.CDLL, restype: object, receiver: object, selector: str, *args: tuple[object, object]) -> object:
+    """[receiver selector:args…]; each arg is (ctypes type, value). objc_msgSend must be called through a
+    prototype of the method's own types, not as a variadic function."""
+    fn = ctypes.CFUNCTYPE(restype, ctypes.c_void_p, ctypes.c_void_p, *(t for t, _ in args))(
+        ctypes.cast(objc.objc_msgSend, ctypes.c_void_p).value)
+    return fn(receiver, objc.sel_registerName(selector.encode()), *(v for _, v in args))
 
 
-def bin_for(path: Path) -> Path | None:
-    """The Trash the Finder uses for `path`: the home folder's, or on another disk that disk's `.Trashes`, so
-    nothing is copied across disks and the space is freed where it was taken. None: the disk has none."""
-    home = Path.home() / ".Trash"
-    mount = mount_of(path)
-    if mount is None:
-        return home
-    own = mount_of(Path.home())
-    if own is not None and own.point == mount.point:
-        return home
-    if not mount.flags & MNT_LOCAL or mount.flags & MNT_RDONLY:
-        return None
-    return mount.point / ".Trashes" / str(os.getuid())
+def _text(objc: ctypes.CDLL, ns_string: int | None) -> str:
+    raw = _send(objc, ctypes.c_char_p, ns_string, "UTF8String") if ns_string else None
+    return raw.decode() if raw else ""
 
 
-def has_trash(path: Path) -> bool:
-    """Whether deleting `path` moves it to a Trash, or deletes it for good."""
-    return sys.platform == "darwin" and bin_for(path) is not None
+def available() -> bool:
+    """Whether this system has a Trash the app can move files to (macOS)."""
+    return _objc() is not None
 
 
-def _free_name(folder: Path, name: str) -> Path:
-    target = folder / name
-    if target.exists():  # as the Finder names a second item of the same name
-        target = folder / f"{name} {time.strftime('%H.%M.%S')}"
-    n = 2
-    while target.exists():
-        target = folder / f"{name} {time.strftime('%H.%M.%S')} {n}"
-        n += 1
-    return target
+def _on_local_disk(objc: ctypes.CDLL, url: int) -> bool:
+    """[url getResourceValue:… forKey:NSURLVolumeIsLocalKey …]; True when that can't be told."""
+    value, error = ctypes.c_void_p(), ctypes.c_void_p()
+    ok = _send(objc, ctypes.c_bool, url, "getResourceValue:forKey:error:",
+               (ctypes.POINTER(ctypes.c_void_p), ctypes.byref(value)), (ctypes.c_void_p, objc.volume_is_local_key),
+               (ctypes.POINTER(ctypes.c_void_p), ctypes.byref(error)))
+    return not ok or not value.value or bool(_send(objc, ctypes.c_bool, value.value, "boolValue"))
 
 
-def _remove(path: Path) -> None:
-    shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink()
+def _system_trash(path: Path) -> Path | None:
+    """[NSFileManager trashItemAtURL:…]: where `path` went in the Trash, if the system says."""
+    objc = _objc()
+    if objc is None:
+        raise NoTrash(f"No Trash on this system for {path.name}")
+    try:
+        raw = str(path).encode()
+    except UnicodeEncodeError:
+        raise OSError(f"{path.name}: its name isn't valid UTF-8, so it can't be moved to the Trash") from None
+    pool = objc.objc_autoreleasePoolPush()
+    try:
+        cls = objc.objc_getClass
+        string = _send(objc, ctypes.c_void_p, cls(b"NSString"), "stringWithUTF8String:", (ctypes.c_char_p, raw))
+        # A nil URL would raise an Objective-C exception, which ends the whole process.
+        url = _send(objc, ctypes.c_void_p, cls(b"NSURL"), "fileURLWithPath:", (ctypes.c_void_p, string)) \
+            if string else None
+        if not url:
+            raise OSError(f"{path.name}: its name can't be handed to the system")
+        manager = _send(objc, ctypes.c_void_p, cls(b"NSFileManager"), "defaultManager")
+        went, error = ctypes.c_void_p(), ctypes.c_void_p()
+        ok = _send(objc, ctypes.c_bool, manager, "trashItemAtURL:resultingItemURL:error:",
+                   (ctypes.c_void_p, url), (ctypes.POINTER(ctypes.c_void_p), ctypes.byref(went)),
+                   (ctypes.POINTER(ctypes.c_void_p), ctypes.byref(error)))
+        if ok:
+            where = _text(objc, _send(objc, ctypes.c_void_p, went.value, "path")) if went.value else ""
+            return Path(where) if where else None
+        code = _send(objc, ctypes.c_long, error.value, "code") if error.value else 0
+        domain = _text(objc, _send(objc, ctypes.c_void_p, error.value, "domain")) if error.value else ""
+        why = _text(objc, _send(objc, ctypes.c_void_p, error.value, "localizedDescription")) if error.value else ""
+        # The code a network disk answers with isn't documented: any refusal there means it has no Trash.
+        if code == NS_FEATURE_UNSUPPORTED_ERROR or not _on_local_disk(objc, url):
+            raise NoTrash(f"{path.name}: its disk has no Trash ({domain} {code})")
+        raise OSError(f"{path.name}: {why or 'it could not be moved to the Trash'} ({domain} {code})")
+    finally:
+        objc.objc_autoreleasePoolPop(pool)
 
 
 def trash(path: Path) -> Path | None:
-    """Moves `path` to the Trash and returns where it went; None when it was deleted (see has_trash)."""
-    bin_ = bin_for(path) if sys.platform == "darwin" else None
-    if bin_ is None:
-        _remove(path)
-        return None
-    bin_.mkdir(mode=0o700, parents=True, exist_ok=True)
-    target = _free_name(bin_, path.name)
-    shutil.move(str(path), str(target))
-    return target
+    """Moves `path` (a file or folder) to the Trash and returns where it went, if the system says.
+    NoTrash: there is none for it."""
+    return _system_trash(path)
 
 
-def trash_together(paths: list[Path], name: str,
-                   progress: Callable[[int, int, str], None] | None = None) -> tuple[Path | None, list[Path]]:
-    """Moves the files to one folder `name` in the Trash, to be put back in one go, or deletes them where there
-    is no Trash. Returns that folder (None when deleted or nothing went) and the files that couldn't go."""
-    paths = [p for p in paths if p.exists()]
-    if not paths:
-        return None, []
-    bin_ = bin_for(paths[0]) if sys.platform == "darwin" else None
-    folder = None
-    if bin_ is not None:
-        bin_.mkdir(mode=0o700, parents=True, exist_ok=True)
-        folder = _free_name(bin_, name)
-        folder.mkdir()
-    failed = []
-    for i, p in enumerate(paths):
-        if progress:
-            progress(i, len(paths), p.name)
-        try:
-            if folder is None:
-                _remove(p)
-            else:
-                shutil.move(str(p), str(_free_name(folder, p.name)))
-        except OSError:
-            failed.append(p)
-    if folder is not None and len(failed) == len(paths):
-        folder.rmdir()
-        folder = None
-    return folder, failed
+def remove(path: Path) -> None:
+    """Deletes `path` for good."""
+    shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink()
