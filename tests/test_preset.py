@@ -1,3 +1,4 @@
+import math
 import os
 import zipfile
 from pathlib import Path
@@ -401,6 +402,18 @@ def test_blend_knob_shows_its_unit_where_it_fits(two_passes):
     assert knob.shown_label(50) == "Drive"  # a row of many knobs shrinks them
 
 
+def test_blend_knob_starts_where_set(two_passes):
+    two_passes.preset.pass_mode = "layer"
+    two_passes.preset.mix = 25
+    controls = ["mix", "tone"]
+    knobs = preset.knobs_for(two_passes, controls, preset.effects_for(two_passes, controls))
+    assert knobs[0].value == 25
+    vols = preset.initial_tag_volumes(two_passes, knobs)
+    a, b = preset.mixable_signals(two_passes)
+    assert vols[a.id] == pytest.approx(math.cos(math.pi / 8), abs=0.01)
+    assert vols[b.id] == pytest.approx(math.sin(math.pi / 8), abs=0.01)
+
+
 def test_build_refuses_hits_sliced_under_another_setup(built):
     inst, _ = built
     moved = inst.model_copy(deep=True)
@@ -649,8 +662,8 @@ def test_the_low_cut_knob_blends_the_uncut_and_the_cut_sample(built, monkeypatch
     assert not result.report.errors
     xml = etree.parse(str(result.preset_file))
     knob = next(k for k in xml.iter("labeled-knob") if k.get("label") == "Low cut %")
-    assert (float(knob.get("minValue")), float(knob.get("value")), float(knob.get("maxValue"))) == (0, 100, 100)
-    assert float(next(t for t in xml.iter("tag") if t.get("name") == LOW_TAG).get("volume")) == 0  # the full cut
+    assert (float(knob.get("minValue")), float(knob.get("value")), float(knob.get("maxValue"))) == (0, 0, 100)
+    assert float(next(t for t in xml.iter("tag") if t.get("name") == LOW_TAG).get("volume")) == 1  # as recorded
     notes = next(g for g in xml.iter("group") if "notes" in g.get("tags").split(","))
     low = next(g for g in xml.iter("group") if LOW_TAG in g.get("tags").split(","))
     pairs = list(zip(notes.iter("sample"), low.iter("sample")))
@@ -669,7 +682,7 @@ def test_the_low_cut_knob_blends_the_uncut_and_the_cut_sample(built, monkeypatch
         f = np.fft.rfftfreq(len(x), 1 / sr)
         return spec[f < lowcut.frequency(int(a.get("rootNote")), 0.6)].sum() / spec.sum()
 
-    assert below(cut) < below(cut + 0.5 * part) < below(src)  # 100 %, where it starts; 50 %
+    assert below(cut) < below(cut + 0.5 * part) < below(src)  # 100 %; 50 %
     assert below(cut + part) == pytest.approx(below(src), rel=0.02)  # at 0 %: no low cut
 
 
@@ -1030,6 +1043,53 @@ def test_evening_out_hears_the_equalizer(built):
     flat = bundle.measured(inst, manifest, False, [EqBand(gain_db=0)])
     assert [h.rms_db for t in flat.takes for h in t.hits] == pytest.approx(
         [h.rms_db for t in manifest.takes for h in t.hits], abs=0.01)
+
+
+def test_evening_out_hears_the_low_cut_halfway(built):
+    import soundfile as sf
+
+    from vinst import lowcut
+    from vinst.slicing import db
+
+    inst, manifest = built
+    p = inst.processing
+    after = bundle.measured(inst, manifest, True, [])
+    t, h = next((t, h) for t in manifest.takes if t.kind == "note" and t.midi is not None for h in t.hits
+                if not h.rejected)
+    x, sr = sf.read(str(Path(manifest.samples_dir) / h.files[t.signals[0]]), always_2d=True)
+    x = x[:, 0]
+    n = int(bundle.LOUDNESS_WINDOW_S * sr)
+
+    def rms_db(y):
+        return float(db(np.sqrt(np.mean(y[:n] ** 2))))
+
+    taken = lowcut.removed(x, sr, t.midi, p.low_cut_below, p.low_cut_db)[1]
+    hit = next(a for a in next(a for a in after.takes if a.key == t.key).hits if a.files == h.files)
+    change = hit.rms_db - h.rms_db
+    assert change == pytest.approx(rms_db(x - 0.5 * taken) - rms_db(x), abs=0.02)
+    assert rms_db(x - taken) - rms_db(x) < change < 0  # less than the full cut takes off
+
+
+def test_the_soundfont_has_the_low_cut_as_loudness_is_evened_out_for_it(built, monkeypatch):
+    import soundfile as sf
+
+    from vinst import lowcut
+
+    inst, _ = built
+    inst.processing.low_cut = True
+    monkeypatch.setattr(inst.processing, "low_cut_db", 20.0)
+
+    def low_share(share):  # how much of the soundfont's energy lies under the lowest note's cut
+        monkeypatch.setattr(lowcut, "EVEN_SHARE", share)
+        result = bundle.build(inst)
+        roots = [int(s.get("rootNote")) for s in etree.parse(str(result.preset_file)).iter("sample")]
+        sr = sf.info(str(next((result.bundle / preset.SAMPLES_DIR).iterdir()))).samplerate
+        x = _smpl(result.soundfont.read_bytes())
+        spec = np.abs(np.fft.rfft(x)) ** 2
+        f = np.fft.rfftfreq(len(x), 1 / sr)
+        return spec[f < lowcut.frequency(min(roots), 0.6)].sum() / spec.sum()
+
+    assert low_share(1.0) < low_share(0.5) < low_share(0.0)
 
 
 def test_the_mod_wheel_leaves_the_equalizer_alone(built):

@@ -14,6 +14,9 @@ if TYPE_CHECKING:
     from vinst.spec import Instrument
 
 ORDER = 6  # steep, so the note's pitch just above the cut is left alone (< 0.3 dB at 0.75×)
+# How much of the cut loudness is evened out for, and the soundfont has: the Low cut knob at 50 %, so
+# neither end of the knob is far from even.
+EVEN_SHARE = 0.5
 
 
 def applies(inst: "Instrument") -> bool:

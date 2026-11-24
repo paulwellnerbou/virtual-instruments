@@ -158,8 +158,8 @@ def eq_now(inst: Instrument) -> list[EqBand]:
 
 def measured(inst: Instrument, manifest: Manifest, cutting: bool, bands: list[EqBand],
              step: Callable[[int, int], None] | None = None) -> Manifest:
-    """`manifest` with each note's loudness as it is after the low cut and the equalizer (as its knobs
-    start), so evening out and the level work with what's played."""
+    """`manifest` with each note's loudness as it is after the low cut (at lowcut.EVEN_SHARE) and the
+    equalizer (as its knobs start), so evening out and the level work with what's played."""
     p = inst.processing
     out = manifest.model_copy(deep=True)
     folder = Path(manifest.samples_dir)
@@ -173,7 +173,10 @@ def measured(inst: Instrument, manifest: Manifest, cutting: bool, bands: list[Eq
                 continue
             audio, sr = sf.read(str(src), always_2d=True, dtype="float64")
             x = audio[:, 0]  # the first signal's first channel, as slicing measures loudness
-            y = lowcut.reduce(x, sr, t.midi, p.low_cut_below, p.low_cut_db) if cutting else x
+            if cutting:
+                y = x - lowcut.EVEN_SHARE * lowcut.removed(x, sr, t.midi, p.low_cut_below, p.low_cut_db)[1]
+            else:
+                y = x
             y = eq.apply(y, sr, bands)
             n = int(LOUDNESS_WINDOW_S * sr)
             h.rms_db += round(float(db(np.sqrt(np.mean(y[:n] ** 2))) - db(np.sqrt(np.mean(x[:n] ** 2)))), 2)

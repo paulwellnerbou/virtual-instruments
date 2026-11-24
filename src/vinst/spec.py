@@ -319,6 +319,8 @@ class Preset(BaseModel):
     balance: bool = False
     balance_tolerance_db: float = Field(default=3.0, ge=0, le=12)
     controls: list[str] = ["mix", "tone", "release", "reverb", "noise"]  # the low cut's: see Processing.low_cut
+    # Where the knob blending two signals starts, in % of the second (e.g. Drive %).
+    mix: float = Field(default=50.0, ge=0, le=100)
     tone: float = Field(default=1.0, ge=0, le=1)
     eq: list[EqBand] = Field(default_factory=default_eq, max_length=8)
     reverb: float = Field(default=0.15, ge=0, le=1)

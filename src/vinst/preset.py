@@ -420,6 +420,8 @@ def equal_power_table(rising: bool, top: float = 1) -> str:
     return ";".join(pts)
 
 
+MIX_FALLING, MIX_RISING = equal_power_table(rising=False, top=100), equal_power_table(rising=True, top=100)
+
 LABEL_CHAR_W = 8.4  # a full-size knob's label has room for about 10 characters
 
 
@@ -570,11 +572,11 @@ def knobs_for(inst: Instrument, controls: list[str], effects: list[str], buses: 
     for c in controls:
         if c == "mix" and len(mixable_signals(inst)) == 2:
             a, b = mixable_signals(inst)
-            knobs.append(Knob("mix", b.name, 0, 100, 50, [
+            knobs.append(Knob("mix", b.name, 0, 100, p.mix, [
                 dict(type="amp", level="tag", identifier=a.id, parameter="AMP_VOLUME", translation="table",
-                     translationTable=equal_power_table(rising=False, top=100)),
+                     translationTable=MIX_FALLING),
                 dict(type="amp", level="tag", identifier=b.id, parameter="AMP_VOLUME", translation="table",
-                     translationTable=equal_power_table(rising=True, top=100)),
+                     translationTable=MIX_RISING),
             ], tooltip=f"0 %: only {a.name}, 100 %: only {b.name}, between: both blended", unit="%"))
         elif c == "mix":
             for sig in mixable_signals(inst):
@@ -597,7 +599,7 @@ def knobs_for(inst: Instrument, controls: list[str], effects: list[str], buses: 
         elif c == "lowcut":
             # 0 %: as recorded, 100 %: the cut set when building; between, a blend of the two.
             # A knob shows a bare number; its label has room for about 10 characters.
-            knobs.append(Knob("lowcut", "Low cut %", 0, 100, 100, [
+            knobs.append(Knob("lowcut", "Low cut %", 0, 100, 0, [
                 dict(type="amp", level="tag", identifier=LOW_TAG, parameter="AMP_VOLUME", translation="table",
                      translationTable="0,1;100,0;100.001,0")],
                 tooltip=f"The low resonance below each note's pitch, e.g. of the body after a pluck: 0 % as "
@@ -629,7 +631,8 @@ def initial_tag_volumes(inst: Instrument, knobs: list[Knob]) -> dict[str, float]
     for k in knobs:
         if k.key == "mix":
             a, b = mixable_signals(inst)
-            vols[a.id] = vols[b.id] = round(math.cos(math.pi / 4), 3)
+            vols[a.id] = round(table_value(MIX_FALLING, k.value), 3)
+            vols[b.id] = round(table_value(MIX_RISING, k.value), 3)
         elif k.key.startswith("mix-"):
             vols[k.key[4:]] = k.value
     return vols
@@ -810,7 +813,7 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
     for tag, vol in initial_tag_volumes(inst, knobs).items():
         _el(tags_el, "tag", name=tag, volume=float(vol))
     if "lowcut" in knob_index:
-        _el(tags_el, "tag", name=LOW_TAG, volume=0.0)  # the knob starts at the full cut
+        _el(tags_el, "tag", name=LOW_TAG, volume=1.0)  # the knob starts as recorded
     if mapping.release:
         _el(tags_el, "tag", name=RELEASE_TAG, volume=0.5 if "noise" in knob_index else 1.0)
 

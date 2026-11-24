@@ -541,6 +541,13 @@ def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
                          "through the EQ. MuseScore's soundfont gets the EQ built into its samples.") \
                     .classes("text-xs opacity-70 max-w-3xl")
                 equalizer(ed)
+        elif key == "mix" and len(mixable_signals(inst)) == 2:
+            a, b = mixable_signals(inst)
+            with Collapse(on, inner_classes="flex flex-col gap-1 pl-12 pt-2") as settings:
+                ed.number("Starts at", p, "mix", cast=float, min=0, max=100, step=5, precision=0,
+                          suffix="%").classes("w-28")
+                ui.label(f"Where the {b.name} knob starts: 0 % plays only {a.name}, 100 % only {b.name}, "
+                         f"between both blended.").classes("text-xs opacity-70 max-w-3xl")
         elif key in ("lowcut", "tone", "reverb", "chorus"):
             with Collapse(on, inner_classes="flex flex-col gap-1 pl-12 pt-2") as settings:
                 with ui.row().classes("items-center gap-2"):
@@ -587,10 +594,11 @@ def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
                     ui.label("E.g. the low resonance of a ukulele's body that rings on after the pluck; the note itself, from its pitch up, "
                              "stays as it is. A curve, not a step, as drawn: the full amount well below the share "
                              "set, less towards it, almost nothing at the pitch. The knob blends "
-                             "between the samples as recorded (0 %) and with this cut (100 %, where it starts). "
+                             "between the samples as recorded (0 %, where it starts) and with this cut (100 %). "
                              "Applied when building, so no slicing is needed; the instrument then also carries "
-                             "what was cut out. Loudness is evened out for the full cut, so notes with much "
-                             "low resonance play louder with the knob turned down.").classes("text-xs opacity-70 max-w-3xl")
+                             "what was cut out. Loudness is evened out halfway (50 %), so notes with much low "
+                             "resonance play a little louder at 0 % and a little quieter at 100 %. MuseScore's "
+                             "soundfont has the cut at 50 %.").classes("text-xs opacity-70 max-w-3xl")
 
 
 def extra_use(ed: "Editor", x: Extra) -> None:
