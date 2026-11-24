@@ -1026,7 +1026,7 @@ def step_worksheet(ed: "Editor") -> None:
                     ui.label(k).classes("opacity-70")
                     ui.label(v)
             if take.envelope:
-                with ui.row().classes("w-full items-center justify-between no-wrap"):
+                with ui.row().classes("w-full items-center justify-between gap-y-1"):
                     ui.label("Where it was cut in its recording").classes("text-xs opacity-60")
                     recording_actions(take)
                 if importing or not take.length:
@@ -1131,7 +1131,7 @@ def step_worksheet(ed: "Editor") -> None:
         """What can be done with the whole recording a hit is from."""
         if importing:
             return
-        with ui.row().classes("gap-1 no-wrap"):
+        with ui.row().classes("gap-1 justify-end ml-auto"):
             if take.cut_by_hand:
                 ui.button("Find hits automatically", on_click=lambda: reslice(take, by_hand=False)) \
                     .props("flat dense no-caps size=sm") \
@@ -1210,7 +1210,7 @@ def step_worksheet(ed: "Editor") -> None:
             ui.label(plain_title(take)).classes("text-lg font-medium")
             ui.label("No hit was found in this recording. Drag the blue lines over the one you played to cut "
                      "it by hand.").classes("text-sm opacity-80")
-            with ui.row().classes("w-full items-center justify-between no-wrap"):
+            with ui.row().classes("w-full items-center justify-between gap-y-1"):
                 ui.label("The recording").classes("text-xs opacity-60")
                 recording_actions(take)
             if take.length:
