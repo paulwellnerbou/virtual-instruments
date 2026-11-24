@@ -1325,8 +1325,9 @@ def step_worksheet(ed: "Editor") -> None:
                 ui.button("Move", on_click=go)
         lane_dialog.open()
 
-    async def delete_recordings(keys: set[str] | None) -> None:
-        """Deletes the recordings `keys`, or with None all of them; see vinst.discard."""
+    async def delete_recordings(keys: set[str] | None, for_good: bool = False) -> None:
+        """Deletes the recordings `keys`, or with None all of them; see vinst.discard. Files on a disk without
+        a Trash are only deleted `for_good`, after asking."""
         lane_dialog.close()
         dialog.close()
         while state["busy"]:  # a slice running now would write the samples back
@@ -1343,7 +1344,7 @@ def step_worksheet(ed: "Editor") -> None:
         found = None
         try:
             manifest, found = await run.io_bound(discard.delete, inst.model_copy(deep=True), state["manifest"],
-                                                 keys, report)
+                                                 keys, report, for_good)
         except Exception as e:  # unexpected I/O errors: show them instead of failing silently
             ui.notify(f"Deleting failed: {e}", type="negative", multi_line=True)
             manifest = None
@@ -1366,13 +1367,34 @@ def step_worksheet(ed: "Editor") -> None:
         ed.refresh()
         if found is None:
             return
-        if len(found.files) > len(found.failed):
+        if len(found.files) > len(found.failed) + len(found.no_trash):
             ui.notify(discard.went(found), type="positive")
+        if found.no_trash:
+            ask_for_good(keys, found)
         if found.failed:
             names = ", ".join(p.name for p in found.failed[:5]) + (" …" if len(found.failed) > 5 else "")
             ui.notify(f"{len(found.failed)} file{'' if len(found.failed) == 1 else 's'} couldn't be deleted and "
                       f"stay{'s' if len(found.failed) == 1 else ''}, with their samples: {names}",
                       type="warning", multi_line=True)
+
+    def ask_for_good(keys: set[str] | None, found: discard.Found) -> None:
+        """Some files are on a disk without a Trash, e.g. a network disk: deleting them can't be undone."""
+        n, size = len(found.no_trash), discard.size_text(sum(p.stat().st_size for p in found.no_trash
+                                                                 if p.exists()))
+        lane_card.clear()
+        with lane_card:
+            ui.label("Delete them for good?").classes("text-lg font-medium")
+            ui.label(f"{n} file{'' if n == 1 else 's'} ({size}) {'is' if n == 1 else 'are'} on a disk without a "
+                     f"Trash, such as a network disk. Deleting {'it' if n == 1 else 'them'} can't be undone; kept, "
+                     f"{'it stays' if n == 1 else 'they stay'} in the worksheet with {'its' if n == 1 else 'their'} "
+                     f"hits.").classes("text-sm")
+            ui.label(", ".join(p.name for p in found.no_trash[:5]) + (" …" if n > 5 else "")) \
+                .classes("text-xs font-mono opacity-60")
+            with ui.row().classes("w-full justify-end"):
+                ui.button("Keep them", on_click=lane_dialog.close).props("flat")
+                ui.button("Delete for good", on_click=lambda: delete_recordings(keys, for_good=True)) \
+                    .props("color=negative")
+        lane_dialog.open()
 
     def delete_take(take: TakeResult) -> None:
         found = discard.find(inst, state["manifest"], {take.key})
@@ -1386,7 +1408,7 @@ def step_worksheet(ed: "Editor") -> None:
             hits = f"{len(take.hits)} hit{'' if len(take.hits) == 1 else 's'}"
             n = len(found.files)
             ui.label(f"{plain_title(take)}, {hits}. Its file{'' if n == 1 else 's'} ({discard.size_text(found.size)}) "
-                     f"{discard.goes(n, found.permanent)}; the sliced samples and the decisions about its hits "
+                     f"{'goes' if n == 1 else 'go'} to the Trash; the sliced samples and the decisions about its hits "
                      f"(rejections, moves, cuts set by hand) are deleted.").classes("text-sm")
             ui.label(", ".join(p.name for p in found.files)).classes("text-xs font-mono opacity-60")
             with ui.row().classes("w-full justify-end"):
@@ -1411,10 +1433,8 @@ def step_worksheet(ed: "Editor") -> None:
         with lane_card:
             ui.label("Delete all recordings?").classes("text-lg font-medium")
             n = len(found.files)
-            trash_folder = "" if found.permanent else \
-                f" in one folder, “{inst.meta.name} recordings”, to put back if needed"
             ui.label(f"{n} file{'' if n == 1 else 's'} ({discard.size_text(found.size)}) from {folder.name} "
-                     f"{discard.goes(n, found.permanent)}{trash_folder}. Their sliced samples "
+                     f"{'goes' if n == 1 else 'go'} to the Trash, where Put Back returns them. Their sliced samples "
                      f"({discard.size_text(found.samples_size)}) and every decision about hits are deleted.") \
                 .classes("text-sm")
             ui.label("Takes of notes, velocities, signals and extras the instrument no longer has go too. Its "

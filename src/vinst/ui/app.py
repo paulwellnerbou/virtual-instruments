@@ -31,7 +31,7 @@ from vinst.spec import (
     Sound,
     slugify,
 )
-from vinst.trash import trash
+from vinst.trash import NoTrash, remove, trash
 from vinst.ui import anim, keyboard, recording, theme
 from vinst.ui.controls import NumberField, Segmented
 from vinst.ui.build_steps import extra_use, step_build, step_sound, velocity_layers
@@ -246,7 +246,16 @@ async def delete_dialog(slug: str, name: str, inst: Instrument | None) -> None:
         return out
 
     where = "go to the Trash" if sys.platform == "darwin" else "are deleted"
-    with ui.dialog() as dialog, ui.card().classes("w-[32rem] max-w-full"):
+    def gone(path: Path) -> bool:
+        """To the Trash (True), or deleted where there's none: it holds only settings and builds."""
+        try:
+            trash(path)
+            return True
+        except NoTrash:
+            remove(path)
+            return False
+
+    with ui.dialog() as dialog, ui.card().classes("w-[32rem] max-w-full") as card:
         ui.label(f"Delete “{name}”?").classes("text-lg font-medium")
         ui.label(f"Its settings and review decisions (rejections, velocities, cuts set by hand) {where}, "
                  f"with its builds.").classes("text-sm")
@@ -257,8 +266,6 @@ async def delete_dialog(slug: str, name: str, inst: Instrument | None) -> None:
             also = ui.checkbox(f"Also its recordings ({n} file{'' if n == 1 else 's'}, "
                                f"{discard.size_text(found.size)}){samples}",
                                on_change=lambda e: stay.refresh(e.value)).classes("text-sm")
-            if found.permanent:
-                ui.label(f"Its recordings {discard.goes(n, True)}.").classes("text-sm text-orange-600")
 
         @ui.refreshable
         def stay(with_recordings: bool = False) -> None:
@@ -270,21 +277,27 @@ async def delete_dialog(slug: str, name: str, inst: Instrument | None) -> None:
         with ui.row().classes("w-full justify-end"):
             ui.button("Cancel", on_click=dialog.close).props("flat")
 
-            async def go() -> None:
+            async def go(for_good: bool = False) -> None:
+                nonlocal manifest
                 try:
                     if also is not None and also.value and inst is not None:
-                        after, done = await nicegui.run.io_bound(discard.delete, inst, manifest, None)
+                        after, done = await nicegui.run.io_bound(discard.delete, inst, manifest, None, None,
+                                                                 for_good)
                         if after is not None:  # the instrument stays when some couldn't go: as they are now
                             review.save(after, store.manifest_path(slug))
+                            manifest = after
                         if done.failed:
                             dialog.close()
                             ui.notify(f"{len(done.failed)} of its recordings couldn't be deleted, e.g. "
                                       f"{done.failed[0].name}; “{name}” is kept.", type="warning", multi_line=True)
                             ui.navigate.to("/")
                             return
-                    went = trash(folder)
+                        if done.no_trash:
+                            ask_for_good(done.no_trash)
+                            return
+                    went = gone(folder)
                     if builds.exists():
-                        trash(builds)
+                        gone(builds)
                 except Exception as e:  # I/O errors: shown, the dialog stays
                     ui.notify(f"Couldn't delete it: {e}", type="negative", multi_line=True)
                     return
@@ -292,7 +305,26 @@ async def delete_dialog(slug: str, name: str, inst: Instrument | None) -> None:
                 ui.notify(f"“{name}” moved to the Trash." if went else f"“{name}” deleted.", type="positive")
                 ui.navigate.to("/")
 
-            ui.button("Delete", on_click=go).props("color=negative")
+            ui.button("Delete", on_click=lambda: go()).props("color=negative")
+
+    def ask_for_good(files: list[Path]) -> None:
+        """Its recordings on a disk without a Trash, e.g. a network disk: deleting them can't be undone."""
+        n = len(files)
+        card.clear()
+        with card:
+            ui.label("Delete its recordings for good?").classes("text-lg font-medium")
+            ui.label(f"{n} recording file{'' if n == 1 else 's'} {'is' if n == 1 else 'are'} on a disk without a "
+                     f"Trash, such as a network disk, so deleting {'it' if n == 1 else 'them'} can't be undone. The "
+                     f"others are in the Trash already.").classes("text-sm")
+            with ui.row().classes("w-full justify-end"):
+                def keep() -> None:
+                    dialog.close()
+                    ui.notify(f"“{name}” is kept, with the recordings that are left.", type="info")
+                    ui.navigate.to("/")
+
+                ui.button(f"Keep them and “{name}”", on_click=keep).props("flat no-caps")
+                ui.button("Delete for good", on_click=lambda: go(for_good=True)).props("color=negative")
+
     dialog.open()
 
 

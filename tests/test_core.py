@@ -178,16 +178,12 @@ def test_ensure_folder_never_fakes_a_disconnected_disk(tmp_path):
     assert nearest_existing(tmp_path / "missing" / "deeper") == tmp_path
 
 
-def test_a_deleted_instrument_goes_to_the_trash_and_its_recordings_stay(tmp_path, monkeypatch):
-    import sys
-
+def test_a_deleted_instrument_goes_to_the_trash_and_its_recordings_stay(tmp_path, monkeypatch, trash_bin):
     from vinst import defaults, store
     from vinst.spec import InstrumentType
     from vinst.trash import trash
 
     monkeypatch.setenv("VINST_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("HOME", str(tmp_path / "user"))  # its Trash, not the real one
-    (tmp_path / "user" / ".Trash").mkdir(parents=True)
     takes = tmp_path / "takes"
     takes.mkdir()
     (takes / "060_C-0_p_pickup.wav").write_bytes(b"audio")
@@ -196,8 +192,7 @@ def test_a_deleted_instrument_goes_to_the_trash_and_its_recordings_stay(tmp_path
     inst = store.create(inst)
     went = trash(store.instrument_dir(inst.meta.slug))
     assert not store.exists(inst.meta.slug) and (takes / "060_C-0_p_pickup.wav").exists()
-    if sys.platform == "darwin":
-        assert went == tmp_path / "user" / ".Trash" / inst.meta.slug and (went / store.SPEC_FILE).exists()
+    assert went == trash_bin / inst.meta.slug and (went / store.SPEC_FILE).exists()
 
 
 def test_nothing_is_written_for_a_deleted_instrument(tmp_path, monkeypatch):

@@ -1,12 +1,11 @@
 """Deleting recordings, one or all of an instrument's, with the samples sliced from them.
 
-Recordings go to the Trash, to be put back if deleted by mistake (on a disk without one they're
-deleted for good, and the question before says so); their sliced samples are deleted outright, as
-slicing the recordings again writes them anew.
+Recordings go to the Trash, where Put Back returns them; on a disk without a Trash they stay until
+asked again (see Found.no_trash). Their sliced samples are deleted outright, as slicing the
+recordings again writes them anew.
 """
 
 import re
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,7 +15,7 @@ from vinst.plan import plan_takes
 from vinst.review import Manifest, TakeResult
 from vinst.slicing import check_all_lanes, process_take, recordings, remove_stale_files
 from vinst.spec import Instrument
-from vinst.trash import has_trash, trash, trash_together
+from vinst.trash import NoTrash, remove, trash
 
 # The names the app gives takes: notes ("060_C-0_p_pickup.wav"), the noise floor and extras, also of
 # notes, velocities, signals and extras the instrument no longer has; ".part": a recording cut short.
@@ -34,8 +33,9 @@ class Found:
     samples: list[Path] = field(default_factory=list)
     size: int = 0
     samples_size: int = 0
-    permanent: bool = False  # no Trash for the recordings: deleted for good
     failed: list[Path] = field(default_factory=list)  # after deleting: files that couldn't go
+    no_trash: list[Path] = field(default_factory=list)  # after deleting: kept, as their disk has no Trash
+    for_good: int = 0  # after deleting with for_good: files deleted, not moved to the Trash
     files_of: dict[str, list[Path]] = field(default_factory=dict, repr=False)
 
 
@@ -52,19 +52,12 @@ def size_text(n: int) -> str:
     return f"{n / 1e6:.0f} MB" if n >= 1e6 else f"{max(1, round(n / 1e3))} kB" if n else "0 kB"
 
 
-def goes(n: int, permanent: bool) -> str:
-    """How `n` files go, for the question before deleting them."""
-    if permanent:
-        why = " (that disk has no Trash)" if sys.platform == "darwin" else ""
-        return ("is" if n == 1 else "are") + f" deleted for good{why}"
-    return ("goes" if n == 1 else "go") + " to the Trash"
-
-
 def went(found: Found) -> str:
     """What happened, after deleting."""
-    n = len(found.files) - len(found.failed)
-    size = size_text(found.size - sum(_size(p) for p in found.failed))  # those that failed are still there
-    if found.permanent:
+    stayed = found.failed + found.no_trash
+    n = len(found.files) - len(stayed)
+    size = size_text(found.size - sum(_size(p) for p in stayed))  # those that stayed are still there
+    if found.for_good == n:
         return f"{n} file{'' if n == 1 else 's'} ({size}) deleted."
     return f"{n} file{'' if n == 1 else 's'} ({size}) moved to the Trash; empty it to free the space."
 
@@ -110,32 +103,40 @@ def find(inst: Instrument, manifest: Manifest | None, keys: set[str] | None = No
         out.samples = [folder / f for r in gone for h in r.hits for f in h.files.values() if (folder / f).is_file()]
     out.size = sum(_size(p) for p in out.files)
     out.samples_size = sum(_size(p) for p in out.samples)
-    out.permanent = bool(out.files) and not has_trash(out.files[0])
     return out
 
 
 def delete(inst: Instrument, manifest: Manifest | None, keys: set[str] | None = None,
-           progress: Progress | None = None) -> tuple[Manifest | None, Found]:
+           progress: Progress | None = None, for_good: bool = False) -> tuple[Manifest | None, Found]:
     """Deletes the recordings `keys` (all with None, see find) and returns the manifest without them: a
     planned recording is then not recorded, others are gone. Rejections and cuts of their hits go too.
-    A recording whose files couldn't all go (Found.failed) stays in the manifest, to be sliced again.
-    `inst` is only read; clean-up EQs that picked them are left to cleanup_eq.forget_missing."""
+    Files on a disk without a Trash stay (Found.no_trash), unless `for_good`; a recording whose files
+    didn't all go stays in the manifest. `inst` is only read; clean-up EQs that picked them are left to
+    cleanup_eq.forget_missing."""
     found = find(inst, manifest, keys)
-    if keys is None:
-        _, found.failed = trash_together(found.files, f"{inst.meta.name} recordings", progress)
-    else:
-        for i, p in enumerate(found.files):
-            if progress:
-                progress(i, len(found.files), p.name)
+    for i, p in enumerate(found.files):
+        if progress:
+            progress(i, len(found.files), p.name)
+        try:
+            # One by one: Put Back then returns each where it was, not a folder of them all.
+            trash(p)
+        except NoTrash:
+            if not for_good:
+                found.no_trash.append(p)
+                continue
             try:
-                trash(p)
+                remove(p)
+                found.for_good += 1
             except OSError:
                 found.failed.append(p)
-    takes_meta.forget(inst.meta.slug, [p.name for p in found.files if p not in found.failed])
+        except OSError:
+            found.failed.append(p)
+    stayed_files = found.failed + found.no_trash
+    takes_meta.forget(inst.meta.slug, [p.name for p in found.files if p not in stayed_files])
     if manifest is None:
         return None, found
     out = manifest.model_copy(deep=True)
-    failed = {p.name for p in found.failed}
+    failed = {p.name for p in stayed_files}
 
     def stayed(r: TakeResult) -> bool:
         if r.key in found.files_of:

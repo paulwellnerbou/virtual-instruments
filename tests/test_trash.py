@@ -1,67 +1,68 @@
-"""The Trash of the disk a file is on, and none on a network disk."""
+"""The system's own Trash call, on a disk image of the test's own."""
 
+import shutil
+import subprocess
 import sys
+import time
+from pathlib import Path
 
 import pytest
 
 from vinst import trash
-from vinst.trash import MNT_LOCAL, Mount
 
-pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="the Trash is the Finder's")
+SYSTEM_TRASH = trash._system_trash  # before the autouse fixture swaps it for a test Trash
+
+
+def put_back_recorded(trashes: Path, name: str) -> bool:
+    """The Finder's Put Back records (ptbL, ptbN) for `name`, written a moment after the move."""
+    store = trashes / ".DS_Store"
+    for _ in range(50):
+        data = store.read_bytes() if store.exists() else b""
+        at = data.find(name.encode("utf-16-be") + b"ptbL")
+        if at != -1:
+            return True
+        time.sleep(0.1)
+    return False
 
 
 @pytest.fixture
-def disks(tmp_path, monkeypatch):
-    """The home folder on one disk; `ext` a local disk of its own, `nas` a network one."""
-    home, ext, nas = tmp_path / "home", tmp_path / "ext", tmp_path / "nas"
-    for d in (home / ".Trash", ext, nas):
-        d.mkdir(parents=True)
-    monkeypatch.setenv("HOME", str(home))
-    mounts = {home: Mount(tmp_path, MNT_LOCAL), ext: Mount(ext, MNT_LOCAL), nas: Mount(nas, 0)}
-
-    def mount_of(path):
-        return next((m for root, m in mounts.items() if path.is_relative_to(root)), mounts[home])
-
-    monkeypatch.setattr(trash, "mount_of", mount_of)
-    return home, ext, nas
+def disk(tmp_path):
+    """A small disk of its own, attached for the test: nothing reaches the real Trash."""
+    if sys.platform != "darwin" or not shutil.which("hdiutil"):
+        pytest.skip("macOS disk images")
+    image, mount = tmp_path / "disk.dmg", tmp_path / "mnt"
+    subprocess.run(["hdiutil", "create", "-quiet", "-size", "8m", "-fs", "ExFAT", "-volname", "VINSTTEST",
+                    str(image)], check=True)
+    subprocess.run(["hdiutil", "attach", "-quiet", "-nobrowse", "-mountpoint", str(mount), str(image)], check=True)
+    yield mount
+    subprocess.run(["hdiutil", "detach", "-quiet", "-force", str(mount)], check=False)
 
 
-def test_each_disk_has_its_own_trash_and_a_network_disk_none(disks):
+def test_files_go_to_their_disks_trash_where_put_back_finds_them(disk):
     import os
 
-    home, ext, nas = disks
-    assert trash.bin_for(home / "Music" / "a.wav") == home / ".Trash"
-    assert trash.bin_for(ext / "takes" / "a.wav") == ext / ".Trashes" / str(os.getuid())
-    assert trash.bin_for(nas / "a.wav") is None and not trash.has_trash(nas / "a.wav")
+    takes = disk / "takes"
+    takes.mkdir()
+    for name in ("060_C-0_p_pickup.wav", "060_C-0_f_pickup.wav"):
+        (takes / name).write_bytes(b"audio")
+    went = [SYSTEM_TRASH(takes / name) for name in ("060_C-0_p_pickup.wav", "060_C-0_f_pickup.wav")]
+    trashes = disk / ".Trashes" / str(os.getuid())
+    assert [p.parent for p in went] == [trashes, trashes] and all(p.exists() for p in went)
+    assert not any(takes.iterdir())
+    # Both, though trashed right after each other: the process lives on, as the app's server does.
+    assert put_back_recorded(trashes, "060_C-0_p_pickup.wav") and put_back_recorded(trashes, "060_C-0_f_pickup.wav")
 
 
-def test_files_go_to_their_disks_trash_or_for_good(disks):
-    import os
-
-    home, ext, nas = disks
-    on_ext, on_nas = ext / "a.wav", nas / "a.wav"
-    on_ext.write_bytes(b"a")
-    on_nas.write_bytes(b"a")
-    assert trash.trash(on_ext) == ext / ".Trashes" / str(os.getuid()) / "a.wav" and not on_ext.exists()
-    assert trash.trash(on_nas) is None and not on_nas.exists()
+def test_a_file_that_isnt_there_is_an_error_not_a_missing_trash(disk):
+    with pytest.raises(OSError) as e:
+        SYSTEM_TRASH(disk / "gone.wav")
+    assert not isinstance(e.value, trash.NoTrash)
 
 
-def test_together_in_one_folder_named_apart_from_an_earlier_one(disks, monkeypatch):
-    home, _, nas = disks
-    for name in ("a.wav", "b.wav"):
-        (home / name).write_bytes(b"x")
-    (home / ".Trash" / "Uke recordings").mkdir()
-    real_move = trash.shutil.move
-
-    def move(src, dst):
-        if src.endswith("b.wav"):
-            raise PermissionError("locked")
-        return real_move(src, dst)
-
-    monkeypatch.setattr(trash.shutil, "move", move)
-    folder, failed = trash.trash_together([home / "a.wav", home / "b.wav"], "Uke recordings")
-    assert folder.parent == home / ".Trash" and folder.name.startswith("Uke recordings ")
-    assert (folder / "a.wav").exists() and failed == [home / "b.wav"] and (home / "b.wav").exists()
-    (nas / "c.wav").write_bytes(b"x")
-    assert trash.trash_together([nas / "c.wav"], "Uke recordings") == (None, [])
-    assert not (nas / "c.wav").exists()
+def test_without_the_system_call_there_is_no_trash(monkeypatch, tmp_path):
+    monkeypatch.setattr(trash, "_objc", lambda: None)
+    (tmp_path / "a.wav").write_bytes(b"x")
+    with pytest.raises(trash.NoTrash):
+        SYSTEM_TRASH(tmp_path / "a.wav")
+    trash.remove(tmp_path / "a.wav")
+    assert not (tmp_path / "a.wav").exists()
