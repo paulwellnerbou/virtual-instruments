@@ -722,3 +722,48 @@ def test_without_a_manifest_the_recordings_still_go(uke, trash_bin):
     path = write(uke, t.files[0], take_audio(t, (0.3,)))
     after, found = discard.delete(uke, None, {t.key})
     assert after is None and found.files == [path] and not path.exists()
+
+
+def test_delete_all_takes_the_takes_of_notes_the_range_no_longer_has(uke, trash_bin):
+    low = lane(uke, "p")
+    write(uke, low.files[0], take_audio(low, (0.3,)))
+    partial = Path(uke.recording.takes_dir) / f"{low.files[0]}.part"  # a recording cut short
+    partial.write_bytes(b"x")
+    manifest = process(uke)
+    uke.range.strings = uke.range.strings[1:]  # its string, and so its notes, gone from the plan
+    assert all(t.note_base != low.note_base for t in plan_takes(uke))
+    after, found = discard.delete(uke, manifest, None)
+    assert Path(uke.recording.takes_dir) / low.files[0] in found.files and partial in found.files
+    assert not [p for p in Path(uke.recording.takes_dir).iterdir() if p.is_file()]
+    assert all(t.note != low.note_base for t in after.takes)
+
+
+def test_a_file_that_cant_go_keeps_its_recording(uke, trash_bin, monkeypatch):
+    stuck, other = lane(uke, "p"), lane(uke, "f")
+    write(uke, stuck.files[0], take_audio(stuck, (0.3, 0.35)))
+    write(uke, other.files[0], take_audio(other, (0.7,)))
+    manifest = process(uke)
+    real = discard.trash
+
+    def trash(path):
+        if path.name == stuck.files[0]:
+            raise PermissionError("locked")
+        return real(path)
+
+    monkeypatch.setattr(discard, "trash", trash)
+    after, found = discard.delete(uke, manifest, {stuck.key, other.key})
+    assert [p.name for p in found.failed] == [stuck.files[0]]
+    assert [h.id for h in result(after, stuck.key).hits] == [h.id for h in result(manifest, stuck.key).hits]
+    assert all((Path(after.samples_dir) / f).exists() for h in result(after, stuck.key).hits for f in h.files.values())
+    assert result(after, other.key).status == "missing"
+    assert "1 file" in discard.went(found)
+
+
+def test_instruments_recording_into_one_folder_are_told(uke, tmp_path):
+    other = defaults.new_instrument("Second uke", uke.meta.type)
+    other.recording.takes_dir = uke.recording.takes_dir + "/"
+    other = store.create(other)
+    assert discard.sharing(uke) == ["Second uke"] and discard.sharing(other) == ["Uke"]
+    other.recording.takes_dir = str(tmp_path / "own")
+    store.save(other)
+    assert discard.sharing(uke) == []

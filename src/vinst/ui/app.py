@@ -210,7 +210,7 @@ def home() -> None:
                 .classes("text-xs opacity-60")
 
 
-def delete_dialog(slug: str, name: str, inst: Instrument | None) -> None:
+async def delete_dialog(slug: str, name: str, inst: Instrument | None) -> None:
     """What goes and what stays, before anything is deleted."""
     from vinst import bundle, discard
 
@@ -220,20 +220,19 @@ def delete_dialog(slug: str, name: str, inst: Instrument | None) -> None:
         p, user = Path(path).expanduser(), Path.home()
         return f"~/{p.relative_to(user)}" if p.is_relative_to(user) else str(p)
 
-    # Its recordings can go too, unless another instrument records into the same folder.
-    found, manifest = None, None
-    if inst is not None and inst.recording.source != "samples" and inst.recording.takes_dir:
-        mine = Path(inst.recording.takes_dir).expanduser().resolve()
-        shared = any(o.meta.slug != slug and o.recording.takes_dir
-                     and Path(o.recording.takes_dir).expanduser().resolve() == mine for o in store.list_instruments())
-        if not shared:
-            try:
-                manifest = review.load(store.manifest_path(slug))
-            except Exception:  # unreadable: its samples stay, the recordings can still go
-                manifest = None
-            found = discard.find(inst, manifest, None)
-            if not found.files and not found.samples:
-                found = None
+    def look() -> tuple[discard.Found | None, review.Manifest | None]:
+        """Its recordings, which can go too unless another instrument records into the same folder."""
+        if inst is None or discard.takes_folder(inst) is None or discard.sharing(inst):
+            return None, None
+        try:
+            manifest = review.load(store.manifest_path(slug))
+        except Exception:  # unreadable: its samples stay, the recordings can still go
+            manifest = None
+        found = discard.find(inst, manifest, None)
+        return (found if found.files or found.samples else None), manifest
+
+    # Reads every file's size: off the event loop, which every open page waits on.
+    found, manifest = await nicegui.run.io_bound(look)
 
     def kept(with_recordings: bool) -> list[str]:
         out = []
@@ -258,6 +257,8 @@ def delete_dialog(slug: str, name: str, inst: Instrument | None) -> None:
             also = ui.checkbox(f"Also its recordings ({n} file{'' if n == 1 else 's'}, "
                                f"{discard.size_text(found.size)}){samples}",
                                on_change=lambda e: stay.refresh(e.value)).classes("text-sm")
+            if found.permanent:
+                ui.label(f"Its recordings {discard.goes(n, True)}.").classes("text-sm text-orange-600")
 
         @ui.refreshable
         def stay(with_recordings: bool = False) -> None:
@@ -272,11 +273,19 @@ def delete_dialog(slug: str, name: str, inst: Instrument | None) -> None:
             async def go() -> None:
                 try:
                     if also is not None and also.value and inst is not None:
-                        await nicegui.run.io_bound(discard.delete, inst, manifest, None)
+                        after, done = await nicegui.run.io_bound(discard.delete, inst, manifest, None)
+                        if after is not None:  # the instrument stays when some couldn't go: as they are now
+                            review.save(after, store.manifest_path(slug))
+                        if done.failed:
+                            dialog.close()
+                            ui.notify(f"{len(done.failed)} of its recordings couldn't be deleted, e.g. "
+                                      f"{done.failed[0].name}; “{name}” is kept.", type="warning", multi_line=True)
+                            ui.navigate.to("/")
+                            return
                     went = trash(folder)
                     if builds.exists():
                         trash(builds)
-                except OSError as e:
+                except Exception as e:  # I/O errors: shown, the dialog stays
                     ui.notify(f"Couldn't delete it: {e}", type="negative", multi_line=True)
                     return
                 dialog.close()
