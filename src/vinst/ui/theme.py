@@ -159,6 +159,9 @@ body.body--dark { background: var(--vi-bg); color: var(--vi-text); }
 .q-field--dense:not(.q-field--auto-height) .q-field__control, .q-field--dense .q-field__marginal { height: 36px; }
 .q-field--dense .q-field__native, .q-field--dense .q-field__input { min-height: 36px; }
 .q-field--dense.q-field--auto-height .q-field__control { min-height: 36px; }
+/* Its 28px line in the lower field: centred, level with the value and controls beside the field. */
+.q-field--dense:not(.q-field--labeled) .q-field__prefix,
+.q-field--dense:not(.q-field--labeled) .q-field__suffix { padding-top: 4px; padding-bottom: 4px; }
 /* A labelled select puts its value under the label, level with an input's. */
 .q-field--dense.q-field--auto-height.q-field--labeled .q-field__native { min-height: 22px; padding: 0 0 2px; }
 .q-field--dense.q-field--float .q-field__label { transform: translateY(-40%) scale(.8); }

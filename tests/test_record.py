@@ -65,6 +65,27 @@ def test_each_signal_is_written_from_its_input(tmp_path):
     assert stream.closed
 
 
+def test_a_playing_monitor_mixes_its_inputs_onto_the_output():
+    streams = []
+
+    def factory(**kw):
+        streams.append(kw)
+        return SimpleNamespace(start=lambda: None, stop=lambda: None, close=lambda: None)
+
+    rec = recorder.Recorder(recorder.Device(0, "Fake", 4, SR), {"piezo": 1, "mic": 3}, SR,
+                            stream_factory=factory, play_channels=2)
+    block = np.zeros((64, 3), dtype="float32")
+    block[:, 0], block[:, 1], block[:, 2] = 0.25, 0.9, 0.5  # input 2 isn't monitored
+    out = np.zeros((64, 2), dtype="float32")
+    streams[0]["callback"](block, out, 64, None, OK)
+    assert np.allclose(out, 0.75)
+    assert rec.levels()["mic"] == pytest.approx(-6.02, abs=0.01)  # metered as without playing
+    block[:, 0] = 0.8
+    streams[0]["callback"](block, out, 64, None, OK)
+    assert np.allclose(out, 1.0)  # clipped, not wrapped
+    rec.close()
+
+
 def test_rms_is_read_per_input_for_the_monitor():
     rec, stream = open_recorder({"piezo": 1, "mic": 2})
     block = np.zeros((SR // 10, 2))

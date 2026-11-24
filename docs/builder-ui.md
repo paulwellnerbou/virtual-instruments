@@ -49,7 +49,7 @@ Note names follow DecentSampler: middle C is C3 (MIDI 60).
 
 Record, check and fix everything in one place.
 
-**Beside the notes:** the takes folder, sample rate and bit depth, your audio interface and each signal's input ("Detect" finds it while you play; "Monitor" shows its level, and its noise while nothing is played), and the samples folder, with optional denoising, clean-up EQs and loops.
+**Beside the notes:** the takes folder, sample rate and bit depth, your audio interface and each signal's input ("Detect" finds it while you play; "Monitor" plays it on the Mac's sound output, a few hundredths of a second late, and shows its level, and its noise while nothing is played), and the samples folder, with optional denoising, clean-up EQs and loops.
 
 **The noise floor** comes first: 30 s of silence that tells the builder what is noise. Each signal gets its own, since every input has its own noise (a piezo is quieter than a mic with its gain far up); the card shows each one's level. Below it, a card per note and a row per **extra**.
 
