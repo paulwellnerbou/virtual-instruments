@@ -48,22 +48,6 @@ def reveal(path: Path) -> None:
         subprocess.run(["xdg-open", str(path.parent)], check=False)
 
 
-def trash(path: Path) -> Path | None:
-    """Moves `path` to the Trash on macOS and returns where it went; elsewhere deletes it (None)."""
-    import shutil
-    import time
-
-    if sys.platform == "darwin":
-        bin_ = Path.home() / ".Trash"
-        target = bin_ / path.name
-        if target.exists():  # as the Finder names a second item of the same name
-            target = bin_ / f"{path.name} {time.strftime('%H.%M.%S')}"
-        shutil.move(str(path), str(target))
-        return target
-    shutil.rmtree(path) if path.is_dir() else path.unlink()
-    return None
-
-
 def can_choose_folder() -> bool:
     return sys.platform == "darwin"
 

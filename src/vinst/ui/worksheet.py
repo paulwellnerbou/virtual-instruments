@@ -22,7 +22,7 @@ from fastapi import HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from nicegui import app, background_tasks, run, ui
 
-from vinst import aims, cleanup_eq, loops, relocate, review, slicing, split, store, takes_meta
+from vinst import aims, cleanup_eq, discard, loops, relocate, review, slicing, split, store, takes_meta
 from vinst import notes as note_names
 from vinst.bundle import CLEANUP_MESSAGE, FINDER_MESSAGE, STALE_MESSAGE, changed_message, eq_message
 from vinst.plan import (
@@ -1145,6 +1145,10 @@ def step_worksheet(ed: "Editor") -> None:
                     .props("flat dense no-caps size=sm") \
                     .tooltip("E.g. when it was played on the wrong note: all its hits go along")
             edit_buttons(take)
+            if take.kind != "noise_floor":
+                ui.button("Delete…", on_click=lambda: delete_take(take)) \
+                    .props("flat dense no-caps size=sm color=negative") \
+                    .tooltip("Moves the recording to the Trash, with all its hits")
 
     def edit_buttons(take: TakeResult) -> None:
         """Open the recording, e.g. in an audio editor; slicing again then picks up what was changed."""
@@ -1319,6 +1323,106 @@ def step_worksheet(ed: "Editor") -> None:
             with ui.row().classes("w-full justify-end"):
                 ui.button("Cancel", on_click=lane_dialog.close).props("flat")
                 ui.button("Move", on_click=go)
+        lane_dialog.open()
+
+    async def delete_recordings(keys: set[str] | None) -> None:
+        """Deletes the recordings `keys`, or with None all of them; see vinst.discard."""
+        lane_dialog.close()
+        dialog.close()
+        while state["busy"]:  # a slice running now would write the samples back
+            await asyncio.sleep(0.1)
+        if not still_there():
+            return
+        state["busy"] = True
+        button.disable()
+        show_progress(True)
+
+        def report(i: int, n: int, name: str) -> None:
+            state["progress"], state["label"] = (i / n if n else 1), f"{i}/{n} · deleting {name}"
+
+        found = None
+        try:
+            manifest, found = await run.io_bound(discard.delete, inst.model_copy(deep=True), state["manifest"],
+                                                 keys, report)
+        except Exception as e:  # unexpected I/O errors: show them instead of failing silently
+            ui.notify(f"Deleting failed: {e}", type="negative", multi_line=True)
+            manifest = None
+        finally:
+            state["busy"] = False
+            button.enable()
+            show_progress(False)
+            state["label"] = ""
+        if keys is None:
+            root = store.instrument_dir(slug) / LONG_DIR
+            for folder in root.iterdir() if root.is_dir() else []:
+                clear_long(folder)
+        if manifest is not None:
+            review.save(manifest, path)
+            state["manifest"] = manifest
+            if cleanup_eq.forget_missing(inst, {t.key for t in manifest.takes if t.status != "missing"}):
+                ed.changed()
+        state["stale"] = None
+        results.refresh()
+        ed.refresh()
+        if found is None:
+            return
+        if len(found.files) > len(found.failed):
+            ui.notify(discard.went(found), type="positive")
+        if found.failed:
+            names = ", ".join(p.name for p in found.failed[:5]) + (" …" if len(found.failed) > 5 else "")
+            ui.notify(f"{len(found.failed)} file{'' if len(found.failed) == 1 else 's'} couldn't be deleted and "
+                      f"stay{'s' if len(found.failed) == 1 else ''}, with their samples: {names}",
+                      type="warning", multi_line=True)
+
+    def delete_take(take: TakeResult) -> None:
+        found = discard.find(inst, state["manifest"], {take.key})
+        if not found.files:
+            ui.notify("Its files aren't there any more.", type="warning")
+            return
+        dialog.close()
+        lane_card.clear()
+        with lane_card:
+            ui.label("Delete this recording?").classes("text-lg font-medium")
+            hits = f"{len(take.hits)} hit{'' if len(take.hits) == 1 else 's'}"
+            n = len(found.files)
+            ui.label(f"{plain_title(take)}, {hits}. Its file{'' if n == 1 else 's'} ({discard.size_text(found.size)}) "
+                     f"{discard.goes(n, found.permanent)}; the sliced samples and the decisions about its hits "
+                     f"(rejections, moves, cuts set by hand) are deleted.").classes("text-sm")
+            ui.label(", ".join(p.name for p in found.files)).classes("text-xs font-mono opacity-60")
+            with ui.row().classes("w-full justify-end"):
+                ui.button("Cancel", on_click=lane_dialog.close).props("flat")
+                ui.button("Delete", on_click=lambda: delete_recordings({take.key})).props("color=negative")
+        lane_dialog.open()
+
+    async def delete_all() -> None:
+        others = await run.io_bound(discard.sharing, inst)
+        if others:
+            ui.notify(f"{' and '.join(f'“{o}”' for o in others)} record{'s' if len(others) == 1 else ''} into the "
+                      f"same folder, so their takes can't be told apart from this instrument's. Give it a folder of "
+                      f"its own to delete all its recordings; single recordings can be deleted from a hit.",
+                      type="warning", multi_line=True)
+            return
+        found = await run.io_bound(discard.find, inst, state["manifest"], None)
+        if not found.files and not found.samples:
+            ui.notify("There are no recordings to delete.", type="info")
+            return
+        folder = Path(rec.takes_dir).expanduser()
+        lane_card.clear()
+        with lane_card:
+            ui.label("Delete all recordings?").classes("text-lg font-medium")
+            n = len(found.files)
+            trash_folder = "" if found.permanent else \
+                f" in one folder, “{inst.meta.name} recordings”, to put back if needed"
+            ui.label(f"{n} file{'' if n == 1 else 's'} ({discard.size_text(found.size)}) from {folder.name} "
+                     f"{discard.goes(n, found.permanent)}{trash_folder}. Their sliced samples "
+                     f"({discard.size_text(found.samples_size)}) and every decision about hits are deleted.") \
+                .classes("text-sm")
+            ui.label("Takes of notes, velocities, signals and extras the instrument no longer has go too. Its "
+                     "settings stay as they are, to record it again from the start, and so do other files in "
+                     "the folder.").classes("text-sm opacity-70")
+            with ui.row().classes("w-full justify-end"):
+                ui.button("Cancel", on_click=lane_dialog.close).props("flat")
+                ui.button("Delete all", on_click=lambda: delete_recordings(None)).props("color=negative")
         lane_dialog.open()
 
     def eq_tip(take: TakeResult) -> str:
@@ -2368,6 +2472,10 @@ def step_worksheet(ed: "Editor") -> None:
         counts()
         ui.space()
         ui.switch("Show only notes with problems", value=False, on_change=lambda e: problems_only(e.value))
+        if not importing:
+            ui.button("Delete all…", icon="delete", on_click=delete_all) \
+                .props("flat dense no-caps color=negative") \
+                .tooltip("Moves all of this instrument's recordings to the Trash, to start over")
     with ui.column().classes("w-full gap-2"):
         noise()
 

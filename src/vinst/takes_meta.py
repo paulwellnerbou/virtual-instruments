@@ -121,3 +121,10 @@ def hits_at(slug: str, path: Path) -> list[float] | None:
     """The planned hit times, if this exact file was recorded in the app."""
     entry = _entry(slug, path)
     return entry.get("hits_at") if entry else None
+
+
+def forget(slug: str, names: list[str]) -> None:
+    """The files were deleted: a recording made later under the same name starts without their grid and cuts."""
+    data = _load(slug)
+    if any(n in data for n in names):
+        _save(slug, {k: v for k, v in data.items() if k not in names})

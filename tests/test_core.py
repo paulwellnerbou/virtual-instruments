@@ -183,7 +183,7 @@ def test_a_deleted_instrument_goes_to_the_trash_and_its_recordings_stay(tmp_path
 
     from vinst import defaults, store
     from vinst.spec import InstrumentType
-    from vinst.ui.finder import trash
+    from vinst.trash import trash
 
     monkeypatch.setenv("VINST_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("HOME", str(tmp_path / "user"))  # its Trash, not the real one
