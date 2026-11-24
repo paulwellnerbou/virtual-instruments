@@ -17,16 +17,15 @@ import soundfile as sf
 from vinst.importer import CONFIRM_SEMITONES, free_pitch
 from vinst.plan import Pass, Take, more_base, more_file, plan_takes, planned_notes, recording_passes, take_key
 from vinst.slicing import (
-    MIN_NOISE_FLOOR_DB,
     PREROLL_S,
     SUBTYPES,
-    db,
     detect_pitch,
     detect_sounds,
-    frame_rms_db,
     has_audio,
+    heard,
     load_signals,
     mix,
+    mix_floor,
     more_numbers,
     noise_floor,
     rise_db,
@@ -108,13 +107,13 @@ def note_of(window: np.ndarray, sr: int, planned: set[int]) -> int | None:
     return near
 
 
-def find(inst: Instrument, p: Pass, signals: list[np.ndarray], sr: int, noise_db: float | None = None) -> Split:
-    """Where each note's hits are in the long recording (signals of pass `p`, in its order)."""
-    ref = mix(signals)
+def find(inst: Instrument, p: Pass, signals: list[np.ndarray], sr: int,
+         floors: list[float | None] | None = None) -> Split:
+    """Where each note's hits are in the long recording (signals of pass `p`, in its order).
+    `floors`: each signal's noise floor, see mix_floor."""
     primary = signals[0]
-    floor = noise_db if noise_db is not None else float(np.percentile(frame_rms_db(primary), 10))
-    rel_floor = max(floor, MIN_NOISE_FLOOR_DB) - float(db(np.max(np.abs(primary))))
-    sounds = detect_sounds(ref, sr, rel_floor, rise_db(inst))
+    heard_signals, heard_floors = heard(signals, floors or [None] * len(signals))
+    sounds = detect_sounds(mix(heard_signals), sr, mix_floor(heard_signals, heard_floors), rise_db(inst))
     planned = planned_notes(inst, p.id)
     pre = int(PREROLL_S * sr)
     begins = [max(0, min(b, a) - pre) for a, b in sounds]
@@ -358,7 +357,7 @@ def analyse(inst: Instrument, paths: list[Path], chosen: Chosen | None = None) -
         return loaded
     p, signals, sr = loaded
     takes_dir = Path(inst.recording.takes_dir).expanduser()
-    return p, find(inst, p, signals, sr, noise_floor(p.signals[0].id, takes_dir))
+    return p, find(inst, p, signals, sr, [noise_floor(s.id, takes_dir) for s in p.signals])
 
 
 def add(inst: Instrument, paths: list[Path], lane: str, found: Split | None = None,
@@ -371,5 +370,5 @@ def add(inst: Instrument, paths: list[Path], lane: str, found: Split | None = No
     p, signals, sr = loaded
     takes_dir = Path(inst.recording.takes_dir).expanduser()
     if found is None:
-        found = find(inst, p, signals, sr, noise_floor(p.signals[0].id, takes_dir))
+        found = find(inst, p, signals, sr, [noise_floor(s.id, takes_dir) for s in p.signals])
     return write(inst, signals, sr, place(inst, p, found, lane, takes_dir), takes_dir)

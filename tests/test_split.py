@@ -237,3 +237,10 @@ def test_files_named_after_their_signals_need_no_question(uke, tmp_path):
     assert split.told(uke, names, main.id) == (main, [split.Source(1), split.Source(0)])
     assert split.told(uke, [tmp_path / "anything.wav"], own.id) == (own, [split.Source(0)])
     assert split.told(uke, [tmp_path / "anything.wav"], main.id) is None
+
+
+def test_a_note_far_softer_than_the_others_is_still_split_off(uke):
+    p = recording_passes(uke)[0]
+    low, high = sorted(split.planned_notes(uke, p.id))[:2]
+    audio = np.concatenate([scale_recording([low], 2), scale_recording([high], 2, amp=0.4 * 10 ** (-30 / 20))])
+    assert [(r.midi, r.hits) for r in split.find(uke, p, [audio], SR).runs] == [(low, 2), (high, 2)]
