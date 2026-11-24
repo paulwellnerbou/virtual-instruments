@@ -2,8 +2,8 @@
 
 SF2 has no round robins: each key and velocity plays one sample, the one whose root is that key's and
 which is best in tune. Release noises have no place in it. Everything else follows the DecentSampler
-instrument: the samples as the build wrote them (level, evening out, low cut), tuning, loops, the
-release time and how much softer a soft key press plays.
+instrument: the samples as the build wrote them (level, evening out, low cut as loudness is evened
+out for it), tuning, loops, the release time and how much softer a soft key press plays.
 """
 
 import math
@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from vinst import eq, level, velocity
+from vinst import eq, level, lowcut, velocity
 from vinst.preset import Entry, Mapping, subtitle
 from vinst.spec import Instrument
 
@@ -164,7 +164,8 @@ def pick(entries: list[Entry]) -> list[Entry]:
 def write(inst: Instrument, mapping: Mapping, samples_dir: Path, dest: Path) -> Soundfont:
     """Writes the soundfont of `mapping`, whose samples in `samples_dir` are as the instrument plays
     them (so their volume is in them, as the build writes them), but for `mapping.gain_db`. The
-    equalizer, an effect in DecentSampler, goes into the soundfont's samples, as its knobs start."""
+    equalizer, an effect in DecentSampler, goes into the soundfont's samples, as its knobs start; so
+    does the low cut's share of what it took out (see lowcut.EVEN_SHARE)."""
     note_zones = pick(mapping.notes)
     zones = note_zones + pick(mapping.keys)
     curve = mapping.loudness_range_db
@@ -180,9 +181,13 @@ def write(inst: Instrument, mapping: Mapping, samples_dir: Path, dest: Path) -> 
     p = inst.preset
     bands = [b for b in p.eq if b.on] if "eq" in p.controls else []
     factor = 10 ** (mapping.gain_db / 20)
+    low_parts = {e.file: e.removed for e in mapping.notes if e.removed}
 
     def mono(name: str) -> tuple[np.ndarray, int]:
         audio, sr = sf.read(str(samples_dir / name), always_2d=True, dtype="float64")
+        if name in low_parts:
+            low, _ = sf.read(str(samples_dir / low_parts[name]), always_2d=True, dtype="float64")
+            audio = audio + (1 - lowcut.EVEN_SHARE) * low
         return eq.apply(audio.mean(axis=1), sr, bands) * 10 ** (lift.get(name, 0.0) / 20), sr
 
     # Lifted, a soft sample can reach past full scale: then the whole soundfont is a little quieter.
