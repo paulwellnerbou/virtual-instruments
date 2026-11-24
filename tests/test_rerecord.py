@@ -1,7 +1,9 @@
-"""Lane takes in the worksheet: more variations, old combined takes, moving hits, change detection."""
+"""Lane takes in the worksheet: more variations, old combined takes, moving hits, change detection, deleting."""
 
 import io
 import os
+import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -9,7 +11,7 @@ import soundfile as sf
 from lxml import etree
 
 from conftest import lane_ranges
-from vinst import bundle, defaults, review, slicing, store, takes_meta
+from vinst import bundle, defaults, discard, review, slicing, store, takes_meta
 from vinst.plan import combined_base, more_file, plan_takes
 from vinst.slicing import changed_takes, cut_points, on_grid, process, process_one
 from vinst.spec import InstrumentType, NoteLanes
@@ -655,3 +657,68 @@ def test_a_dropped_file_whose_signal_isnt_named_waits_to_be_asked(uke):
     assert named["ok"] and named["signal"] == "mic"  # its name says: no question
     both = asyncio.run(drop_file(uke.meta.slug, take.key, Body(buf.getvalue()), "export piezo+mic.wav", "125"))
     assert both["ask"]  # a channel each, but which is which?
+
+
+@pytest.fixture
+def trash_bin(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))  # its Trash, not the real one
+    (tmp_path / "user" / ".Trash").mkdir(parents=True)
+    return tmp_path / "user" / ".Trash"
+
+
+def test_deleting_a_recording_takes_its_samples_and_decisions_and_keeps_the_others(uke, trash_bin):
+    take, other = lane(uke, "f"), lane(uke, "p")
+    first = write(uke, take.files[0], take_audio(take, (0.7, 0.72)), grid=[0.5, 3.5])
+    more = write(uke, more_file(take, 1, take.signals[0]), take_audio(take, (0.69, 0.71), seed=9))
+    kept = write(uke, other.files[0], take_audio(other, (0.2, 0.25)))
+    manifest = process(uke)
+    more_key = f"{take.base_name}-more1"
+    samples = [Path(manifest.samples_dir) / f for r in manifest.takes if r.key in (take.key, more_key)
+               for h in r.hits for f in h.files.values()]
+    kept_samples = [Path(manifest.samples_dir) / f for h in result(manifest, other.key).hits for f in h.files.values()]
+    result(manifest, take.key).hits[0].rejected = True
+
+    found = discard.find(uke, manifest, {take.key, more_key})
+    assert sorted(found.files) == sorted([first, more]) and found.size > 0 and found.samples_size > 0
+    after, _ = discard.delete(uke, manifest, {take.key, more_key})
+    assert not first.exists() and not more.exists() and kept.exists()
+    if sys.platform == "darwin":
+        assert (trash_bin / first.name).exists()
+    assert not any(p.exists() for p in samples) and all(p.exists() for p in kept_samples)
+    assert result(after, take.key).status == "missing" and not result(after, take.key).hits
+    assert all(t.key != more_key for t in after.takes)  # not a planned recording: gone, not unrecorded
+    assert [h.files for h in result(after, other.key).hits] == [h.files for h in result(manifest, other.key).hits]
+    assert takes_meta.hits_at(uke.meta.slug, first) is None
+    assert changed_takes(uke, after) == []  # nothing to slice again
+    # Recorded again under the same name: a new recording, without the old one's rejections.
+    write(uke, take.files[0], take_audio(take, (0.7, 0.72), seed=5))
+    assert not any(h.rejected for h in result(process(uke, previous=after), take.key).hits)
+
+
+def test_deleting_all_recordings_leaves_other_files_in_the_folder(uke, trash_bin):
+    takes_dir = Path(uke.recording.takes_dir)
+    for t in [lane(uke, "p"), lane(uke, "f"), lane(uke, "p", note=1)]:
+        write(uke, t.files[0], take_audio(t, (0.3, 0.35)))
+    gone_signal = write(uke, f"{lane(uke, 'p').note_base}_p_mic.wav", take_audio(lane(uke, "p"), (0.3,)))
+    (takes_dir / "notes.txt").write_text("mine")
+    (takes_dir / "my-scale.wav").write_bytes(b"not the instrument's")
+    manifest = process(uke)
+    sliced = list(Path(manifest.samples_dir).glob("*.wav"))
+    assert sliced
+
+    after, found = discard.delete(uke, manifest, None)
+    assert gone_signal in found.files and len(found.files) == 4
+    assert sorted(p.name for p in takes_dir.iterdir() if p.is_file()) == ["my-scale.wav", "notes.txt"]
+    assert not any(p.exists() for p in sliced)
+    assert all(r.status == "missing" for r in after.takes) and after.counts()["hits"] == 0
+    if sys.platform == "darwin":
+        (folder,) = trash_bin.iterdir()
+        assert folder.name == "Uke recordings" and len(list(folder.iterdir())) == 4
+    assert discard.find(uke, after, None).files == []
+
+
+def test_without_a_manifest_the_recordings_still_go(uke, trash_bin):
+    t = lane(uke, "p")
+    path = write(uke, t.files[0], take_audio(t, (0.3,)))
+    after, found = discard.delete(uke, None, {t.key})
+    assert after is None and found.files == [path] and not path.exists()

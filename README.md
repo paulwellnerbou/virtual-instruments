@@ -91,7 +91,7 @@ Seven steps, saved as you go:
 6. **Sound & look:** tuning, loudness, equalizer, knobs, effects and artwork.
 7. **Build:** check, install and package.
 
-Your recordings go to a folder of your choice (`~/Music/DecentSampler Recordings/<instrument>` to start) and are never changed. Installing puts the instrument into `~/DecentSampler`, replacing only ones the builder made.
+Your recordings go to a folder of your choice (`~/Music/DecentSampler Recordings/<instrument>` to start) and are never changed; deleting them, one or all, moves them to the Trash. Installing puts the instrument into `~/DecentSampler`, replacing only ones the builder made.
 
 ### Tips
 

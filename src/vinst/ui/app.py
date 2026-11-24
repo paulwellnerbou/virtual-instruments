@@ -31,10 +31,11 @@ from vinst.spec import (
     Sound,
     slugify,
 )
+from vinst.trash import trash
 from vinst.ui import anim, keyboard, recording, theme
 from vinst.ui.controls import NumberField, Segmented
 from vinst.ui.build_steps import extra_use, step_build, step_sound, velocity_layers
-from vinst.ui.finder import can_choose_folder, choose_folder, trash
+from vinst.ui.finder import can_choose_folder, choose_folder
 from vinst.ui.worksheet import settings_cards, step_worksheet
 
 APP_TITLE = "DecentSampler Instrument Builder"
@@ -211,7 +212,7 @@ def home() -> None:
 
 def delete_dialog(slug: str, name: str, inst: Instrument | None) -> None:
     """What goes and what stays, before anything is deleted."""
-    from vinst import bundle
+    from vinst import bundle, discard
 
     folder = store.instrument_dir(slug)
     builds = bundle.build_root() / slug
@@ -219,26 +220,59 @@ def delete_dialog(slug: str, name: str, inst: Instrument | None) -> None:
         p, user = Path(path).expanduser(), Path.home()
         return f"~/{p.relative_to(user)}" if p.is_relative_to(user) else str(p)
 
-    kept = []
-    if inst is not None and inst.recording.takes_dir:
-        kept.append(f"your recordings in {short(inst.recording.takes_dir)}")
-        samples = review.samples_dir(inst)
-        if samples is not None:
-            kept.append(f"the sliced samples in {short(samples)}")
-    if inst is not None and (bundle.library_dir() / f"{bundle.bundle_name(inst)}.dsbundle").exists():
-        kept.append("the instrument installed in DecentSampler's library")
+    # Its recordings can go too, unless another instrument records into the same folder.
+    found, manifest = None, None
+    if inst is not None and inst.recording.source != "samples" and inst.recording.takes_dir:
+        mine = Path(inst.recording.takes_dir).expanduser().resolve()
+        shared = any(o.meta.slug != slug and o.recording.takes_dir
+                     and Path(o.recording.takes_dir).expanduser().resolve() == mine for o in store.list_instruments())
+        if not shared:
+            try:
+                manifest = review.load(store.manifest_path(slug))
+            except Exception:  # unreadable: its samples stay, the recordings can still go
+                manifest = None
+            found = discard.find(inst, manifest, None)
+            if not found.files and not found.samples:
+                found = None
+
+    def kept(with_recordings: bool) -> list[str]:
+        out = []
+        if inst is not None and inst.recording.takes_dir and not with_recordings:
+            out.append(f"your recordings in {short(inst.recording.takes_dir)}")
+            samples = review.samples_dir(inst)
+            if samples is not None:
+                out.append(f"the sliced samples in {short(samples)}")
+        if inst is not None and (bundle.library_dir() / f"{bundle.bundle_name(inst)}.dsbundle").exists():
+            out.append("the instrument installed in DecentSampler's library")
+        return out
+
     where = "go to the Trash" if sys.platform == "darwin" else "are deleted"
     with ui.dialog() as dialog, ui.card().classes("w-[32rem] max-w-full"):
         ui.label(f"Delete “{name}”?").classes("text-lg font-medium")
         ui.label(f"Its settings and review decisions (rejections, velocities, cuts set by hand) {where}, "
                  f"with its builds.").classes("text-sm")
-        if kept:
-            ui.label("These stay as they are: " + "; ".join(kept) + ".").classes("text-sm opacity-70")
+        also = None
+        if found is not None:
+            n = len(found.files)
+            samples = f" and sliced samples ({discard.size_text(found.samples_size)})" if found.samples else ""
+            also = ui.checkbox(f"Also its recordings ({n} file{'' if n == 1 else 's'}, "
+                               f"{discard.size_text(found.size)}){samples}",
+                               on_change=lambda e: stay.refresh(e.value)).classes("text-sm")
+
+        @ui.refreshable
+        def stay(with_recordings: bool = False) -> None:
+            if kept(with_recordings):
+                ui.label("These stay as they are: " + "; ".join(kept(with_recordings)) + ".") \
+                    .classes("text-sm opacity-70")
+
+        stay()
         with ui.row().classes("w-full justify-end"):
             ui.button("Cancel", on_click=dialog.close).props("flat")
 
-            def go() -> None:
+            async def go() -> None:
                 try:
+                    if also is not None and also.value and inst is not None:
+                        await nicegui.run.io_bound(discard.delete, inst, manifest, None)
                     went = trash(folder)
                     if builds.exists():
                         trash(builds)
