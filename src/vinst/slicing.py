@@ -33,7 +33,8 @@ from vinst.spec import SUSTAINED_TYPES, Instrument
 # 2: a hit's tail ends where the next sound begins, not at the next attack.
 # 3: starts found to the sample, PREROLL_S before the attack, not frames before it; also
 #    those set by hand.
-HIT_FINDER = 3
+# 4: the mix judged against every signal's noise floor; onsets far below a take's loudest are noise.
+HIT_FINDER = 4
 HOP = 256
 PREROLL_S = 0.002
 FADE_OUT_S = 0.05
@@ -41,6 +42,13 @@ MIN_RISE_DB = 6.0  # an onset must be this much louder than just before it
 MIN_ABOVE_NOISE_DB = 15.0
 TAIL_ABOVE_NOISE_DB = 6.0
 MIN_GAP_S = 0.15
+# An onset this far below the take's loudest note on any signal is handling noise, not a hit: a
+# distorted signal makes a bump nearly as loud as a pluck, a clean one doesn't. Played hits of one take
+# lie within about 18 dB; bumps 28 dB and more below.
+BELOW_LOUDEST_DB = 24.0
+# A signal peaking less than this above its noise floor holds no hit (unplugged, muted): its floor
+# would hide every hit in the others.
+CARRIES_SOUND_DB = 20.0
 # How long after an onset its loudness is judged. Onsets are placed where the rise begins, which can
 # be a finger touching the string well before the pluck peaks.
 ATTACK_S = 0.15
@@ -57,7 +65,7 @@ MIN_CUT_S = 0.05  # shorter cuts set by hand are refused, and a snap never makes
 SAME_CUT_S = 0.05  # a hit cut this close to where it was is the same hit
 LOUDNESS_WINDOW_S = 0.3
 ENVELOPE_POINTS = 400
-MIN_NOISE_FLOOR_DB = -90.0
+MIN_NOISE_FLOOR_DB = -90.0  # denoised takes are near digital silence: tails would be kept down to -200 dB
 SUBTYPES = {16: "PCM_16", 24: "PCM_24", 32: "PCM_32"}
 
 Progress = Callable[[int, int, str], None]
@@ -101,6 +109,45 @@ def load_signals(paths: list[Path]) -> tuple[list[np.ndarray], int]:
 
 def mix(signals: list[np.ndarray]) -> np.ndarray:
     return sum(s / max(np.max(np.abs(s)), 1e-9) for s in signals) / len(signals)
+
+
+def floors_below_peak(signals: list[np.ndarray], floors: list[float | None]) -> list[float]:
+    """Each signal's noise floor (dB; None: its own quiet parts) relative to its peak."""
+    return [max(float(np.percentile(frame_rms_db(x), 10)) if floor is None else floor, MIN_NOISE_FLOOR_DB)
+            - float(db(np.max(np.abs(x)))) for x, floor in zip(signals, floors)]
+
+
+def heard(signals: list[np.ndarray], floors: list[float | None]) -> tuple[list[np.ndarray], list[float | None]]:
+    """The signals hits are looked for in, with their floors: those peaking CARRIES_SOUND_DB above their
+    floor; all if none does. Scaled to its peak in the mix, an unplugged signal's hiss would bury them."""
+    rel = floors_below_peak(signals, floors)
+    keep = [k for k, r in enumerate(rel) if r <= -CARRIES_SOUND_DB] or list(range(len(signals)))
+    return [signals[k] for k in keep], [floors[k] for k in keep]
+
+
+def mix_floor(signals: list[np.ndarray], floors: list[float | None]) -> float:
+    """The noise level of mix(signals), relative to its peak, from each signal's noise floor (see
+    floors_below_peak). The mix scales each signal to its peak, so a distorted signal, whose floor is
+    far closer to its peak, brings in most of the noise."""
+    power = sum(10 ** (r / 10) for r in floors_below_peak(signals, floors))
+    return float(db(np.sqrt(power) / len(signals))) - float(db(np.max(np.abs(mix(signals)))))
+
+
+def loud_enough(sounds: list[tuple[int, int]], signals: list[np.ndarray], sr: int,
+                midi: int | None = None) -> list[bool]:
+    """Per sound (see detect_sounds): whether it is a hit, not noise, by BELOW_LOUDEST_DB. With the
+    note played (`midi`), measured against the loudest sound with a pitch near it in the first signal: a
+    knock far louder than the plucks then doesn't make them noise."""
+    if not sounds:
+        return []
+    window = int(ATTACK_S * sr)
+    peaks = np.array([[float(db(np.max(np.abs(x[a: a + window])))) for x in signals] for a, _ in sounds])
+    loudest = peaks
+    if midi is not None:
+        ends = [b for _, b in sounds[1:]] + [len(signals[0])]
+        tonal = [detect_pitch(signals[0][a:end], sr, midi) is not None for (a, _), end in zip(sounds, ends)]
+        loudest = peaks[tonal] if any(tonal) else peaks
+    return list((loudest.max(axis=0) - peaks).max(axis=1) <= BELOW_LOUDEST_DB)
 
 
 def detect_onsets(ref: np.ndarray, sr: int, noise_rel_db: float) -> list[int]:
@@ -365,19 +412,25 @@ def on_grid(onsets: list[int], ref: np.ndarray, sr: int, hits_at: list[float]) -
     return out
 
 
-def find_cuts(inst: Instrument, path: Path, ref: np.ndarray, sr: int, rel_floor: float) -> list[tuple[int, int, bool]]:
-    """Hits in a recording: as cut by hand, if they were; for one recorded in the app, only those on
-    its click grid."""
+def find_cuts(inst: Instrument, path: Path, signals: list[np.ndarray], sr: int, floors: list[float | None],
+              midi: int | None = None) -> list[tuple[int, int, bool]]:
+    """Hits in a recording of `midi` (None: not one note), with each signal's noise floor (see
+    floors_below_peak): as cut by hand, if they were; for one recorded in the app, only those on its
+    click grid. Other sounds (see loud_enough) end the hit before them. A bowed or blown note's slow
+    rise can be far below a firmer one's attack, so all its sounds count."""
     by_hand = takes_meta.cuts(inst.meta.slug, path)
     if by_hand is not None:
+        ref = mix(signals)  # as hand_start snaps
         kept = [(max(0, a), min(len(ref), b)) for a, b in by_hand if min(len(ref), b) > max(0, a)]
         return [(snap_to_attack(ref, sr, a, b, rise_db(inst)), b, False) for a, b in kept]
+    signals, floors = heard(signals, floors)
+    ref, rel_floor = mix(signals), mix_floor(signals, floors)
     sounds = detect_sounds(ref, sr, rel_floor, rise_db(inst))
     onsets, begins = [a for a, _ in sounds], dict(sounds)
+    loud = [True] * len(sounds) if inst.meta.type in SUSTAINED_TYPES else loud_enough(sounds, signals, sr, midi)
+    hits = [a for (a, _), ok in zip(sounds, loud) if ok]
     grid = takes_meta.hits_at(inst.meta.slug, path)
-    if grid is None:
-        return cut_points(ref, sr, onsets, rel_floor, begins=begins)
-    starts = on_grid(onsets, ref, sr, grid)
+    starts = hits if grid is None else on_grid(hits, ref, sr, grid)
     noises = [o for o in onsets if o not in starts]
     return cut_points(ref, sr, starts, rel_floor, noises, int(inst.recording.ring_seconds * sr), begins)
 
@@ -487,14 +540,9 @@ def process_take(inst: Instrument, take: Take, takes_dir: Path, out_dir: Path,
     if len(signals) > 1:
         result.envelopes = {sig: envelope(x) for sig, x in zip(take.signals, signals)}
 
-    primary_level = float(db(np.max(np.abs(signals[0]))))
-    floor = noise_db if noise_db is not None else float(np.percentile(frame_rms_db(signals[0]), 10))
-    # Already denoised takes have (near) digital silence; without a lower bound tails would be
-    # kept down to -200 dB.
-    floor = max(floor, MIN_NOISE_FLOOR_DB)
-    # detect_onsets works on the normalised mix; express the floor relative to the primary's peak.
-    rel_floor = floor - primary_level
-    cuts = fixed if fixed is not None else find_cuts(inst, paths[0], ref, sr, rel_floor)
+    floors = [noise_db] + [noise_floor(sig, takes_dir) for sig in take.signals[1:]]
+    midi = take.note.midi if take.kind == "note" and take.note is not None and take.note.sound is None else None
+    cuts = fixed if fixed is not None else find_cuts(inst, paths[0], signals, sr, floors, midi)
     result.cut_by_hand = takes_meta.cuts(inst.meta.slug, paths[0]) is not None  # with `fixed`, see keep_cuts
     markers = next((m for m in (loops.read_wav_loops(p) for p in paths) if m), []) \
         if inst.processing.loops and take.kind == "note" else []

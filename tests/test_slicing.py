@@ -294,3 +294,65 @@ def test_a_single_sample_has_no_pitch_to_cut_below(tmp_path, monkeypatch):
     assert lowcut.applies(defaults.new_instrument("Uke", InstrumentType.PLUCKED))
     assert not lowcut.applies(defaults.new_instrument("Drone", InstrumentType.SINGLE_SAMPLE))
     assert not lowcut.applies(defaults.new_instrument("Kit", InstrumentType.UNPITCHED))
+
+
+def pickup_and_drive(bump_db: float, pluck_db: float = 0.0) -> tuple[list[np.ndarray], int]:
+    """A pluck of A4 at 0.5 s and a handling bump at 3 s, `bump_db` below full scale, in a clean pickup
+    and a distorted copy of it, which hisses far closer to its peak and makes the bump nearly as loud."""
+    sr, rng = 48000, np.random.default_rng(3)
+    t = np.arange(6 * sr) / sr
+    pickup = np.zeros_like(t)
+    on = t >= 0.5
+    pickup[on] = 0.5 * 10 ** (pluck_db / 20) * np.exp(-3 * (t[on] - 0.5)) * np.sin(2 * np.pi * 440 * (t[on] - 0.5))
+    bump = slice(3 * sr, 3 * sr + int(0.02 * sr))
+    burst = rng.normal(0, 1, bump.stop - bump.start) * np.linspace(1, 0, bump.stop - bump.start)
+    pickup[bump] += 0.5 * 10 ** (bump_db / 20) * burst
+    drive = np.tanh(100 * pickup) + rng.normal(0, 10 ** (-55 / 20), t.size)
+    pickup += rng.normal(0, 0.5 * 10 ** (-80 / 20), t.size)
+    return [pickup, drive], sr
+
+
+def test_a_bump_far_below_the_hits_ends_the_hit_but_isnt_one(tmp_path, monkeypatch):
+    from vinst.slicing import find_cuts, mix_floor
+
+    monkeypatch.setenv("VINST_HOME", str(tmp_path))
+    inst = defaults.new_instrument("Mini", InstrumentType.PLUCKED)
+    signals, sr = pickup_and_drive(-45)
+    assert mix_floor(signals, [None, None]) == pytest.approx(-55 - 6, abs=3)  # the drive's hiss, not the pickup's
+    (start, end, _), = find_cuts(inst, tmp_path / "take.wav", signals, sr, [None, None])
+    assert start == pytest.approx(0.5 * sr, abs=0.005 * sr)
+    assert end <= 3 * sr  # the bump isn't in the sample
+    signals, sr = pickup_and_drive(-12)  # a soft hit, not a bump
+    assert len(find_cuts(inst, tmp_path / "take.wav", signals, sr, [None, None])) == 2
+
+
+def test_a_silent_signal_hides_no_hit(tmp_path, monkeypatch):
+    from vinst.slicing import find_cuts
+
+    monkeypatch.setenv("VINST_HOME", str(tmp_path))
+    inst = defaults.new_instrument("Mini", InstrumentType.PLUCKED)
+    (pickup, _), sr = pickup_and_drive(-45)
+    for dead in (np.zeros_like(pickup), np.random.default_rng(4).normal(0, 1e-4, pickup.size)):  # unplugged, hiss only
+        signals = [pickup, dead]
+        assert len(find_cuts(inst, tmp_path / "take.wav", signals, sr, [None, None])) == 1
+
+
+def test_a_knock_far_louder_than_the_note_leaves_the_note_a_hit(tmp_path, monkeypatch):
+    from vinst.slicing import find_cuts
+
+    monkeypatch.setenv("VINST_HOME", str(tmp_path))
+    inst = defaults.new_instrument("Mini", InstrumentType.PLUCKED)
+    signals, sr = pickup_and_drive(0, pluck_db=-30)
+    floors = [None, None]
+    assert len(find_cuts(inst, tmp_path / "take.wav", signals, sr, floors)) == 1  # not knowing the note: the knock
+    starts = [a for a, _, _ in find_cuts(inst, tmp_path / "take.wav", signals, sr, floors, midi=69)]
+    assert len(starts) == 2 and starts[0] == pytest.approx(0.5 * sr, abs=0.005 * sr)
+
+
+def test_a_sustained_instruments_soft_notes_are_hits(tmp_path, monkeypatch):
+    from vinst.slicing import find_cuts
+
+    monkeypatch.setenv("VINST_HOME", str(tmp_path))
+    signals, sr = pickup_and_drive(-45)
+    inst = defaults.new_instrument("Mini", InstrumentType.SUSTAINED)
+    assert len(find_cuts(inst, tmp_path / "take.wav", signals, sr, [None, None])) == 2
