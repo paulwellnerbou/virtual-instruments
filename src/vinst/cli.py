@@ -47,6 +47,9 @@ def install_app(
 ) -> None:
     """Let macOS start the builder from this checkout when its page is opened, and add a launcher app
     until the page is installed as a Chrome app."""
+    if sys.platform != "darwin":
+        typer.echo("install-app is for macOS only. Elsewhere, run `vinst ui`.", err=True)
+        raise typer.Exit(1)
     uv = shutil.which("uv")
     if uv is None:
         typer.echo("uv not found on PATH.", err=True)

@@ -72,13 +72,13 @@ def start_server(port: int, idle_exit: float) -> None:
 
 def open_builder(port: int = APP_PORT, idle_exit: float = 120) -> None:
     if not builder_running(port):
-        if agent.installed():
-            pass  # macOS starts it on this first request
-        elif port_in_use(port):
+        # A free port means no launchd listening either, even if the agent's plist is there.
+        if not port_in_use(port):
+            start_server(port, idle_exit)
+        elif not agent.installed():
             raise LaunchError(f"Port {port} is used by another program, so the builder can't start. "
                               "Quit that program and try again.")
-        else:
-            start_server(port, idle_exit)
+        # Otherwise launchd holds the port and starts the builder on this first request.
         deadline = time.monotonic() + START_TIMEOUT_S
         while not builder_running(port):
             if time.monotonic() > deadline:
