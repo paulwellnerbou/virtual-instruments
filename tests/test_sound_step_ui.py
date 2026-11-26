@@ -27,3 +27,23 @@ def test_the_blend_knob_start_is_set_under_signal_mix(tmp_path, monkeypatch):
             assert inst.preset.mix == 30
 
     asyncio.run(exercise())
+
+
+def test_the_low_cut_knob_start_says_how_much_it_cuts(tmp_path, monkeypatch):
+    monkeypatch.setenv("VINST_HOME", str(tmp_path))
+    inst = defaults.new_instrument("Test Uke", InstrumentType.PLUCKED)
+    inst.processing.low_cut = True
+    inst = store.create(inst)
+    editor = Editor(inst)
+
+    async def exercise():
+        async with user_simulation(lambda: step_sound(editor)) as user:
+            await user.open("/")
+            await user.should_see("as recorded")
+            field = next(f for f in user.find(NumberField).elements if f.props.get("label") == "Knob starts at")
+            assert field.value == 0
+            field.value = 50
+            assert inst.processing.low_cut_start == 50
+            await user.should_see("5 dB of the 18 dB cut")
+
+    asyncio.run(exercise())
