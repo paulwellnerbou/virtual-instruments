@@ -1235,12 +1235,13 @@ def step_worksheet(ed: "Editor") -> None:
 
     def cut_editor(take: TakeResult, hit: Hit | None) -> None:
         """The recording's waveform with this hit's cut: drag its start or end to set it by hand.
-        Without a hit, a new one: at the first beat it was asked for, as long as notes ring."""
+        Without a hit, a new one: after the last one, or at the start if there's no room, as long as
+        notes ring."""
         length, sr = take.length or 1, take.sample_rate or 1
         if hit is None:
-            beat = (takes_meta.hits_at(slug, first_file(take)) or [0.0])[0]
-            first, last = int(beat * sr), int(beat * sr + inst.recording.ring_seconds * sr)
-            first, last = min(first, length - sr // 10), min(last, length)
+            first = max((h.end for h in take.hits), default=0)
+            first = 0 if first > length - sr // 10 else first
+            last = min(first + int(inst.recording.ring_seconds * sr), length)
         else:
             first, last = hit.start, hit.end
         others = sorted((h for h in take.hits if hit is None or h.id != hit.id), key=lambda h: h.start)

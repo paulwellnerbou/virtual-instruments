@@ -39,7 +39,7 @@ Each instrument lives in `instruments/<slug>/`:
 
 - `instrument.toml`: the wizard's answers, readable and hand-editable
 - `hits.json`: slicing and analysis results, plus your decisions (rejections, moved hits)
-- `recorded-in-app.json`: the click grid and hand-set cuts of takes recorded in the app
+- `recorded-in-app.json`: which takes the app recorded, and hand-set cuts
 
 Audio is kept outside the repo: takes in the folder set in the worksheet, sliced samples in `<takes folder>/sliced` unless set otherwise, builds in `build/`.
 
@@ -47,7 +47,7 @@ Audio is kept outside the repo: takes in the folder set in the worksheet, sliced
 
 - Signals with the same `pass_id` in `instrument.toml` are recorded together (older specs' `recorded = "together"` is the pass `main`, `"separate"` a pass named after the signal, so take keys stay). Each pass is its own run through all takes; a take's key carries its pass (`<take>~<pass>`) except for `main`.
 - Onsets are detected on a normalised mix of all signals recorded together, so every signal of a hit is cut at the same samples. Each signal's waveform is kept beside the mix's for the worksheet.
-- Takes recorded in the app keep their click grid (`recorded-in-app.json`): each hit is the strongest onset in its bar, so handling noise (a piezo hears every touch) never becomes a hit. A noise during the ring ends the hit before it.
+- Hits are played at any pace, so any onset can be a hit. Handling noise (a piezo hears every touch) is told apart by level and pitch: on a note's take, a sound without the note's pitch, or more than 24 dB below its loudest one with it, is noise (on sustained instruments every sound counts). A noise during the ring ends the hit before it.
 - Each hit starts 2 ms before its attack: the first sample within 20 dB of the attack's peak, so a touch of the string before the pluck is left out (on sustained instruments within 40 dB, so a slow attack keeps its rise). A start set by hand snaps forward the same way, up to 150 ms, but never closer than 50 ms to its end. Its tail is trimmed 6 dB above the noise floor (from the noise-floor recording, or estimated from the take), it's DC-removed and gets a 50 ms fade-out. Optional denoising uses the noise-floor recording as the profile and only changes the sliced samples.
 - Pitch: YIN, restricted to ±5 semitones around the expected note, refined by a spectral peak with parabolic interpolation (YIN reads about 4 cents sharp on decaying notes); well under 1 cent on test tones.
 - Loudness is the RMS of the first 0.3 s (the attack) for plucked and struck sounds, the held part for sustained ones.

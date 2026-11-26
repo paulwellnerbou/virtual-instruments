@@ -1,10 +1,9 @@
-"""What the app knows about a take beyond its audio: where its hits were planned, and cuts set by hand.
+"""What the app knows about a take beyond its audio: whether the app recorded it, and cuts set by hand.
 
-Slicing uses the click grid of takes recorded in the app to tell hits from handling noise: a piezo
-hears every touch of the instrument. Cuts set by hand replace the found ones. Both are kept per
-instrument, keyed by file name, and only used while the file's size and modification time match,
-so a take replaced from a DAW is sliced without them. A take opened for editing from the app keeps
-them as long as its length stays the same: a click taken out moves no hit.
+Cuts set by hand replace the found ones. They are kept per instrument, keyed by file name, and
+only used while the file's size and modification time match, so a take replaced from a DAW is
+sliced without them. A take opened for editing from the app keeps them as long as its length stays
+the same: a click taken out moves no hit.
 """
 
 import json
@@ -72,7 +71,7 @@ def recorded_now(slug: str, path: Path) -> bool:
 
 
 def editing(slug: str, path: Path) -> None:
-    """The file is about to be edited elsewhere: its grid and hand cuts stay while its length does."""
+    """The file is about to be edited elsewhere: its hand cuts stay while its length does."""
     data = _load(slug)
     entry = _entry(slug, path)
     if entry is None:
@@ -82,11 +81,10 @@ def editing(slug: str, path: Path) -> None:
     _save(slug, data)
 
 
-def save(slug: str, path: Path, hits_at: list[float]) -> None:
-    """hits_at: seconds from the start of the file where each hit was asked for (beat 1). A new
-    recording, so cuts set by hand for the file it replaces are dropped."""
+def save(slug: str, path: Path) -> None:
+    """The app recorded the file anew, so cuts set by hand for the file it replaces are dropped."""
     data = _load(slug)
-    data[path.name] = {"stamp": _stamp(path), "hits_at": [round(t, 4) for t in hits_at]}
+    data[path.name] = {"stamp": _stamp(path)}
     _save(slug, data)
 
 
@@ -109,7 +107,7 @@ def cuts(slug: str, path: Path) -> list[tuple[int, int]] | None:
 
 
 def rename(slug: str, old_name: str, new_name: str) -> None:
-    """After a recording's file was renamed: its click grid goes with it."""
+    """After a recording's file was renamed: what is known about it goes with it."""
     data = _load(slug)
     if old_name not in data:
         return
@@ -117,14 +115,8 @@ def rename(slug: str, old_name: str, new_name: str) -> None:
     _save(slug, data)
 
 
-def hits_at(slug: str, path: Path) -> list[float] | None:
-    """The planned hit times, if this exact file was recorded in the app."""
-    entry = _entry(slug, path)
-    return entry.get("hits_at") if entry else None
-
-
 def forget(slug: str, names: list[str]) -> None:
-    """The files were deleted: a recording made later under the same name starts without their grid and cuts."""
+    """The files were deleted: a recording made later under the same name starts without their cuts."""
     data = _load(slug)
     if any(n in data for n in names):
         _save(slug, {k: v for k, v in data.items() if k not in names})

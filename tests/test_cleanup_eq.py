@@ -166,8 +166,8 @@ def test_a_take_with_an_eq_is_sliced_again_when_it_changes(uke):
     p, f = lane(uke, "p"), lane(uke, "f")
     t = np.arange(int(6.5 * SR)) / SR
     hummed = take_audio(p, (0.3, 0.32)) + 0.01 * np.sin(2 * np.pi * 50 * t)
-    write(uke, p.files[0], hummed, grid=[0.5, 3.5])
-    write(uke, f.files[0], take_audio(f, (0.6, 0.62)), grid=[0.5, 3.5])
+    write(uke, p.files[0], hummed, in_app=True)
+    write(uke, f.files[0], take_audio(f, (0.6, 0.62)), in_app=True)
     m = process(uke)
     before = result(m, p.key)
     assert before.cleanup_eq == "" and eq_changed_takes(uke, m) == []
@@ -200,7 +200,7 @@ def test_a_take_with_an_eq_is_sliced_again_when_it_changes(uke):
 
 def test_a_moved_recording_takes_its_eq_along(uke):
     p = lane(uke, "p")
-    write(uke, p.files[0], take_audio(p, (0.3, 0.32)), grid=[0.5, 3.5])
+    write(uke, p.files[0], take_audio(p, (0.3, 0.32)), in_app=True)
     uke.processing.cleanup_eqs = [CleanupEq(name="Hum", takes=[p.key], filters=[EqFilter(kind="hum")])]
     other = lane(uke, "p", note=1)
     key = relocate.move_recording(uke, Path(uke.recording.takes_dir),
@@ -212,7 +212,7 @@ def hummed_take(inst, name="p"):
     take = lane(inst, name)
     t = np.arange(int(6.5 * SR)) / SR
     path = write(inst, take.files[0], take_audio(take, (0.3, 0.32)) + 0.01 * np.sin(2 * np.pi * 50 * t),
-                 grid=[0.5, 3.5])
+                 in_app=True)
     return take, path
 
 

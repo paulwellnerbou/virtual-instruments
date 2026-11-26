@@ -990,8 +990,6 @@ def step_dynamics(ed: Editor) -> None:
     with ui.row():
         ed.number("Variations per velocity", dyn, "round_robins", min=1, max=32, precision=0).classes("w-52") \
             .tooltip("How many times each note is played per velocity; DecentSampler alternates between them")
-        ed.number("Ring / hold time per hit", rec, "ring_seconds", cast=float, min=0.5, max=60, step=0.5,
-                  suffix="s").classes("w-56")
         ed.number("Noise floor", rec, "noise_floor_seconds", min=0, max=300, precision=0, suffix="s").classes("w-36")
 
     ui.separator()

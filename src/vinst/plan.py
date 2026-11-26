@@ -164,7 +164,7 @@ def lane_bounds(inst: Instrument, note_base: str) -> list[tuple[str, int, int]]:
 def plan_takes(inst: Instrument) -> list[Take]:
     rec, dyn = inst.recording, inst.dynamics
     hit_s = rec.ring_seconds + HIT_GAP_S
-    verb = "hold" if inst.meta.type == "sustained" else "let ring"
+    verb = "hold each as long as a note may last" if inst.meta.type == "sustained" else "let each ring out"
     passes = recording_passes(inst)
     takes: list[Take] = []
 
@@ -189,7 +189,7 @@ def plan_takes(inst: Instrument) -> list[Take]:
             base = note_base_name(n)
             for lane in note_lanes(inst, base):
                 add("note", f"{base}_{lane}", f"{note_title(n)} · {lane}",
-                    [f"{dyn.round_robins}× {lane}", f"{verb} ~{rec.ring_seconds:g} s each"],
+                    [f"{dyn.round_robins}× {lane}", verb],
                     dyn.round_robins, dyn.round_robins * hit_s, n, lane, base)
         for x in inst.extras:
             add("extra", f"x_{file_token(x.id)}", x.name, [f"{x.hits}×", x.instructions] if x.instructions

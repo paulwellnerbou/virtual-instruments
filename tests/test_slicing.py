@@ -337,7 +337,7 @@ def test_a_silent_signal_hides_no_hit(tmp_path, monkeypatch):
         assert len(find_cuts(inst, tmp_path / "take.wav", signals, sr, [None, None])) == 1
 
 
-def test_a_knock_far_louder_than_the_note_leaves_the_note_a_hit(tmp_path, monkeypatch):
+def test_a_knock_far_louder_than_the_note_leaves_the_note_the_hit(tmp_path, monkeypatch):
     from vinst.slicing import find_cuts
 
     monkeypatch.setenv("VINST_HOME", str(tmp_path))
@@ -346,7 +346,7 @@ def test_a_knock_far_louder_than_the_note_leaves_the_note_a_hit(tmp_path, monkey
     floors = [None, None]
     assert len(find_cuts(inst, tmp_path / "take.wav", signals, sr, floors)) == 1  # not knowing the note: the knock
     starts = [a for a, _, _ in find_cuts(inst, tmp_path / "take.wav", signals, sr, floors, midi=69)]
-    assert len(starts) == 2 and starts[0] == pytest.approx(0.5 * sr, abs=0.005 * sr)
+    assert len(starts) == 1 and starts[0] == pytest.approx(0.5 * sr, abs=0.005 * sr)  # the knock has no pitch
 
 
 def test_a_sustained_instruments_soft_notes_are_hits(tmp_path, monkeypatch):

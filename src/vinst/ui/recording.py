@@ -1,9 +1,9 @@
 """Recording in the app: input settings, and a dialog that records a take or a whole pass.
 
 The dialog shows the input levels from the moment it opens, so the gain can be set before
-starting. While recording, a visual metronome says what to play: a count-in, then each hit on
-beat 1 of its bar, how to play it, how long to let it ring and what comes next. The browser
-animates it on its own clock; the server only decides when recording starts and stops.
+starting. While recording, it says what to play (see guide): hits at the player's own pace until
+they stop, or for the noise floor a count-in and the silence left. The browser animates it on its
+own clock; the server only decides when recording starts and stops.
 """
 
 import asyncio
@@ -43,6 +43,8 @@ CSS = """
 .vi-rec-pulse { position: absolute; inset: 0; border-radius: 50%; border: 6px solid #9e9e9e;
                 transition: background-color .08s, border-color .08s; }
 .vi-rec[data-kind=count] .vi-rec-pulse { border-color: #f9a825; }
+.vi-rec[data-free=true] .vi-rec-beats, .vi-rec[data-free=true] .vi-rec-bar,
+.vi-rec[data-free=true] .vi-rec-total { visibility: hidden; }
 .vi-rec[data-play=true] .vi-rec-pulse { background: #e53935; border-color: #e53935; }
 .vi-rec[data-kind=silence] .vi-rec-pulse { border-color: #546e7a; border-style: dashed; }
 .vi-rec-big { position: relative; font-size: 2.6rem; font-weight: 600; }
@@ -53,7 +55,6 @@ CSS = """
 .vi-rec-beats span { width: 14px; height: 14px; border-radius: 50%; background: #e0e0e0;
                      transition: background-color .08s, transform .08s; }
 .vi-rec-beats span.on { background: #1976d2; transform: scale(1.3); }
-.vi-rec-beats span.one { outline: 2px solid #1976d2; outline-offset: 1px; }
 .vi-rec-bar, .vi-rec-total { width: 100%; height: 8px; background: #eeeeee; border-radius: 4px; overflow: hidden; }
 .vi-rec-bar > div { height: 100%; background: #1976d2; }
 .vi-rec-total { height: 4px; } .vi-rec-total > div { height: 100%; background: #9e9e9e; }
@@ -70,40 +71,39 @@ CSS = """
 
 JS = r"""
 window.viRec = (() => {
-  let raf = null, audio = null, last = null;
+  let raf = null;
   const part = (root, name) => root.querySelector('.vi-rec-' + name);
   const clock = s => { s = Math.max(0, Math.ceil(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
-  function blip(accent) {
-    if (!audio) return;
-    const o = audio.createOscillator(), g = audio.createGain(), t = audio.currentTime;
-    o.frequency.value = accent ? 1760 : 1100;
-    g.gain.setValueAtTime(accent ? 0.35 : 0.2, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
-    o.connect(g).connect(audio.destination); o.start(t); o.stop(t + 0.07);
+  function free(root, g, t, live) {
+    const s = g.steps[0], stage = root.querySelector('.vi-rec');
+    stage.dataset.kind = s.kind; stage.dataset.play = live;
+    part(root, 'title').textContent = s.title;
+    part(root, 'detail').textContent = s.detail;
+    part(root, 'big').textContent = live ? 'Play' : '';
+    part(root, 'pulse').style.transform = 'scale(1)';
+    part(root, 'time').textContent = live ? clock(t) : '';
+    return true;
   }
-  function show(root, g, t) {
+  function show(root, g, t, live) {
+    root.querySelector('.vi-rec').dataset.free = g.free;
+    if (g.free) return free(root, g, t, live);
     const i = g.steps.findIndex(s => t < s.at + s.length);
     const s = g.steps[i >= 0 ? i : g.steps.length - 1];
     const local = Math.min(t - s.at, s.length);
     const beat = s.beats ? Math.min(Math.floor(local / g.beat), s.beats - 1) : -1;
     const phase = s.beats ? (local / g.beat) % 1 : 0;
-    const key = i + ':' + beat;
-    if (i >= 0 && s.beats && key !== last) { last = key; blip(s.kind === 'hit' && beat === 0); }
-    const play = s.kind === 'hit' && beat === 0;
-    const stage = root.querySelector('.vi-rec'); stage.dataset.kind = s.kind; stage.dataset.play = play;
+    const stage = root.querySelector('.vi-rec'); stage.dataset.kind = s.kind; stage.dataset.play = false;
     part(root, 'title').textContent = i >= 0 ? s.title : 'Done';
-    // Always what the current step asks for; "let it ring" only adds to it.
-    part(root, 'detail').textContent = i < 0 ? '' : s.kind === 'hit' && beat > 0
-      ? [s.detail, 'let it ring'].filter(Boolean).join(' · ') : s.detail;
+    part(root, 'detail').textContent = i < 0 ? '' : s.detail;
     const left = s.length - local;
     part(root, 'big').textContent = i < 0 ? '✓' : s.kind === 'count' ? String(s.beats - beat)
-      : play ? 'Play' : s.kind === 'silence' ? clock(left) : s.kind === 'hit' ? String(Math.ceil(left)) : '·';
+      : s.kind === 'silence' ? clock(left) : '·';
     const pulse = part(root, 'pulse');
     pulse.style.transform = 'scale(' + (s.beats && i >= 0 ? 1 + 0.12 * Math.pow(1 - phase, 3) : 1) + ')';
     const dots = part(root, 'beats');
     if (dots.childElementCount !== s.beats) {
       dots.innerHTML = '';
-      for (let b = 0; b < s.beats; b++) { const d = document.createElement('span'); if (b === 0) d.className = 'one'; dots.append(d); }
+      for (let b = 0; b < s.beats; b++) dots.append(document.createElement('span'));
     }
     [...dots.children].forEach((d, b) => d.classList.toggle('on', b === beat && i >= 0));
     part(root, 'bar').firstElementChild.style.width = (100 * local / s.length) + '%';
@@ -113,19 +113,19 @@ window.viRec = (() => {
   }
   function stop() {
     if (raf) cancelAnimationFrame(raf);
-    raf = null; last = null;
-    if (audio) { audio.close(); audio = null; }
+    raf = null;
   }
-  function start(id, g, click) {
+  function start(id, g) {
     stop();
     const root = document.getElementById(id);
     if (!root) return;
-    if (click) { audio = new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); }
     const t0 = performance.now();
-    const frame = () => { if (show(root, g, (performance.now() - t0) / 1000)) raf = requestAnimationFrame(frame); };
+    const frame = () => {
+      if (show(root, g, (performance.now() - t0) / 1000, true)) raf = requestAnimationFrame(frame);
+    };
     raf = requestAnimationFrame(frame);
   }
-  function preview(id, g, t = 0) { const root = document.getElementById(id); if (root) show(root, g, t); }
+  function preview(id, g) { const root = document.getElementById(id); if (root) show(root, g, 0, false); }
   function meters(id, levels) {
     const root = document.getElementById(id);
     if (!root) return;
@@ -213,7 +213,7 @@ def record_scale(ed: "Editor", pass_id: str, folder: Path, then: Callable[[], No
     paths = {s.id: folder / f"scale_{s.id}.wav" for s in p.signals}
     title = "The whole scale" + (f" · {p.name}" if len(recording_passes(ed.inst)) > 1 else "")
     open_dialog(ed, title, list(p.signals), paths, lambda n: guides.scale_guide(ed.inst, pass_id, n or SCALE_HITS),
-                SCALE_HITS, then, "Split by pitch", next_icon="call_split", click_grid=False, on_closed=on_closed)
+                SCALE_HITS, then, "Split by pitch", next_icon="call_split", is_take=False, on_closed=on_closed)
 
 
 def peak_dbfs(path: Path) -> float:
@@ -270,12 +270,12 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
                 guide_for: Callable[[int | None], guides.Guide], count: int | None,
                 on_next: Callable[[], None] | None, next_label: str,
                 on_saved: Callable[[], None] | None = None, judge_level: bool = False,
-                aim: str | None = None, next_icon: str = "skip_next", click_grid: bool = True,
+                aim: str | None = None, next_icon: str = "skip_next", is_take: bool = True,
                 on_closed: Callable[[], None] | None = None) -> None:
     """`count`: how many hits to ask for, which the player can change before recording; None for
     takes recorded as planned. `judge_level`: a take of the loudest velocity, whose level says how
-    to set the input gain. `aim`: how loud to play a soft velocity. `click_grid`: keep where the
-    hits were asked for, for slicing (see takes_meta)."""
+    to set the input gain. `aim`: how loud to play a soft velocity. `is_take`: the files are takes,
+    marked as recorded in the app (see takes_meta), not a scale to split."""
     inst = ed.inst
     paused = pause_monitors()
     opened = take_stream(inst, signals)
@@ -285,7 +285,7 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
         return
     rec, device, channels = opened
     opened = time.monotonic()
-    state: dict = {"timer": None, "guide": guide_for(count)}
+    state: dict = {"timer": None, "guide": guide_for(count), "started": 0.0}
     client = ui.context.client
 
     # At page level: the take table redraws after each saved take and would take the dialog with it.
@@ -322,7 +322,6 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
         if aim:
             ui.label(aim).classes("text-sm opacity-70")
         outcome = ui.column().classes("w-full gap-0 text-sm")
-        click = ui.checkbox("Click sound (use headphones, so the click isn't recorded)", value=False)
         with ui.row().classes("w-full items-center justify-end"):
             hits_input = None
             if count is not None:
@@ -331,7 +330,7 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
                     .props("dense outlined").classes("w-24")
                 ui.space()
             cancel_btn = ui.button("Cancel", on_click=lambda: finish(False)).props("flat")
-            keep_btn = ui.button("Stop and keep", on_click=lambda: finish(True)).props("outline")
+            keep_btn = ui.button("Stop and keep", on_click=lambda: finish(True))
             next_btn = ui.button(next_label or "Next", icon=next_icon, on_click=lambda: go_next()) \
                 .props("outline")
             start_btn = ui.button("Record", icon="fiber_manual_record", on_click=lambda: start()).props("color=red")
@@ -349,7 +348,6 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
         next_btn.set_visibility(done and on_next is not None)
         cancel_btn.set_visibility(recording)
         keep_btn.set_visibility(recording)
-        click.set_enabled(not recording)
         if hits_input is not None:
             hits_input.set_enabled(not recording)
 
@@ -362,8 +360,10 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
             with outcome:
                 ui.label(str(e)).classes("text-negative")
             return
-        ui.run_javascript(f"viRec.start({json.dumps(root_id)}, {json.dumps(guide.to_dict())}, {json.dumps(click.value)})")
-        state["timer"] = ui.timer(guide.total, lambda: finish(True, complete=True), once=True)
+        state["started"] = time.monotonic()
+        ui.run_javascript(f"viRec.start({json.dumps(root_id)}, {json.dumps(guide.to_dict())})")
+        if not guide.free:
+            state["timer"] = ui.timer(guide.total, lambda: finish(True, complete=True), once=True)
         buttons(True)
 
     def finish(keep: bool, complete: bool = False) -> None:
@@ -373,10 +373,11 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
             state["timer"].cancel()
             state["timer"] = None
         guide = state["guide"]
-        # A take that ran its full time must have about that much audio; less means the interface stopped.
-        result = rec.stop(keep, min_seconds=guide.total - guide.skip - 1 if complete else 0)
-        for f in result.files if click_grid else []:
-            takes_meta.save(inst.meta.slug, f, guide.hits_at())
+        # About as much audio as the take ran for; less means the interface stopped.
+        ran = guide.total if complete else time.monotonic() - state["started"]
+        result = rec.stop(keep, min_seconds=ran - guide.skip - 1)
+        for f in result.files if is_take else []:
+            takes_meta.save(inst.meta.slug, f)
         ui.run_javascript(f"viRec.stop(); viRec.preview({json.dumps(root_id)}, {json.dumps(guide.to_dict())})")
         with outcome:
             if result.error:
