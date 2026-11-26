@@ -201,7 +201,9 @@ class Recording(BaseModel):
     bit_depth: int = 24
     # Recording in the app: signal id -> input number (1-based) on the audio interface.
     input_channels: dict[str, int] = {}
-    ring_seconds: float = Field(default=6.0, gt=0, description="how long each hit rings or is held")
+    # How long a hit typically rings or is held, from the instrument type: for estimates, and how long a
+    # hit must have rung for a touch after it not to count as cutting it off. Hits are played at any pace.
+    ring_seconds: float = Field(default=6.0, gt=0, description="how long each hit typically rings or is held")
     # Silence with everything connected: the slicer's reference level and, if denoising is on,
     # the noise profile.
     noise_floor_seconds: int = Field(

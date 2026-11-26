@@ -34,7 +34,8 @@ from vinst.spec import SUSTAINED_TYPES, Instrument
 # 3: starts found to the sample, PREROLL_S before the attack, not frames before it; also
 #    those set by hand.
 # 4: the mix judged against every signal's noise floor; onsets far below a take's loudest are noise.
-HIT_FINDER = 4
+# 5: hits played at any pace: no click grid; with the note known, a sound without its pitch is noise.
+HIT_FINDER = 5
 HOP = 256
 PREROLL_S = 0.002
 FADE_OUT_S = 0.05
@@ -133,21 +134,24 @@ def mix_floor(signals: list[np.ndarray], floors: list[float | None]) -> float:
     return float(db(np.sqrt(power) / len(signals))) - float(db(np.max(np.abs(mix(signals)))))
 
 
-def loud_enough(sounds: list[tuple[int, int]], signals: list[np.ndarray], sr: int,
-                midi: int | None = None) -> list[bool]:
+def are_hits(sounds: list[tuple[int, int]], signals: list[np.ndarray], sr: int,
+             midi: int | None = None) -> list[bool]:
     """Per sound (see detect_sounds): whether it is a hit, not noise, by BELOW_LOUDEST_DB. With the
     note played (`midi`), measured against the loudest sound with a pitch near it in the first signal: a
-    knock far louder than the plucks then doesn't make them noise."""
+    knock far louder than the plucks then doesn't make them noise. A sound without that pitch is noise
+    too, unless none has it: then the hits are kept, to be flagged."""
     if not sounds:
         return []
     window = int(ATTACK_S * sr)
     peaks = np.array([[float(db(np.max(np.abs(x[a: a + window])))) for x in signals] for a, _ in sounds])
-    loudest = peaks
+    tonal = np.ones(len(sounds), dtype=bool)
     if midi is not None:
         ends = [b for _, b in sounds[1:]] + [len(signals[0])]
-        tonal = [detect_pitch(signals[0][a:end], sr, midi) is not None for (a, _), end in zip(sounds, ends)]
-        loudest = peaks[tonal] if any(tonal) else peaks
-    return list((loudest.max(axis=0) - peaks).max(axis=1) <= BELOW_LOUDEST_DB)
+        pitched = np.array([detect_pitch(signals[0][a:end], sr, midi) is not None
+                            for (a, _), end in zip(sounds, ends)])
+        tonal = pitched if pitched.any() else tonal
+    loud = (peaks[tonal].max(axis=0) - peaks).max(axis=1) <= BELOW_LOUDEST_DB
+    return list(loud & tonal)
 
 
 def detect_onsets(ref: np.ndarray, sr: int, noise_rel_db: float) -> list[int]:
@@ -389,35 +393,12 @@ def fingerprint(paths: list[Path]) -> str:
     return ";".join(f"{p.name}:{p.stat().st_size}:{p.stat().st_mtime_ns}" for p in paths)
 
 
-GRID_EARLY_S = 0.4  # a hit may come this much before its beat
-MORE_NAME = re.compile(r"-more(\d+)_(.+)\.wav$")
-
-
-def on_grid(onsets: list[int], ref: np.ndarray, sr: int, hits_at: list[float]) -> list[int]:
-    """Per planned hit that was played, the strongest onset in its bar.
-
-    A bar runs from just before its beat to just before the next one, so a late hit still
-    counts. All other onsets are handling noise: they end the hit before them (see cut_points),
-    but never start one.
-    """
-    out = []
-    for k, t in enumerate(hits_at):
-        if k + 1 < len(hits_at):
-            until = hits_at[k + 1]
-        else:  # the last bar is as long as the others; a hit recorded on its own has no limit
-            until = t + (t - hits_at[k - 1]) if k else float("inf")
-        near = [o for o in onsets if (t - GRID_EARLY_S) * sr <= o < (until - GRID_EARLY_S) * sr]
-        if near:
-            out.append(max(near, key=lambda o: float(np.max(np.abs(ref[o: o + int(ATTACK_S * sr)])))))
-    return out
-
-
 def find_cuts(inst: Instrument, path: Path, signals: list[np.ndarray], sr: int, floors: list[float | None],
               midi: int | None = None) -> list[tuple[int, int, bool]]:
     """Hits in a recording of `midi` (None: not one note), with each signal's noise floor (see
-    floors_below_peak): as cut by hand, if they were; for one recorded in the app, only those on its
-    click grid. Other sounds (see loud_enough) end the hit before them. A bowed or blown note's slow
-    rise can be far below a firmer one's attack, so all its sounds count."""
+    floors_below_peak): as cut by hand, if they were. Other sounds (see are_hits) end the hit
+    before them. A bowed or blown note's slow rise can be far below a firmer one's attack, so all its
+    sounds count."""
     by_hand = takes_meta.cuts(inst.meta.slug, path)
     if by_hand is not None:
         ref = mix(signals)  # as hand_start snaps
@@ -427,12 +408,13 @@ def find_cuts(inst: Instrument, path: Path, signals: list[np.ndarray], sr: int, 
     ref, rel_floor = mix(signals), mix_floor(signals, floors)
     sounds = detect_sounds(ref, sr, rel_floor, rise_db(inst))
     onsets, begins = [a for a, _ in sounds], dict(sounds)
-    loud = [True] * len(sounds) if inst.meta.type in SUSTAINED_TYPES else loud_enough(sounds, signals, sr, midi)
-    hits = [a for (a, _), ok in zip(sounds, loud) if ok]
-    grid = takes_meta.hits_at(inst.meta.slug, path)
-    starts = hits if grid is None else on_grid(hits, ref, sr, grid)
+    loud = [True] * len(sounds) if inst.meta.type in SUSTAINED_TYPES else are_hits(sounds, signals, sr, midi)
+    starts = [a for (a, _), ok in zip(sounds, loud) if ok]
     noises = [o for o in onsets if o not in starts]
     return cut_points(ref, sr, starts, rel_floor, noises, int(inst.recording.ring_seconds * sr), begins)
+
+
+MORE_NAME = re.compile(r"-more(\d+)_(.+)\.wav$")
 
 
 def more_numbers(take: Take, takes_dir: Path) -> list[int]:

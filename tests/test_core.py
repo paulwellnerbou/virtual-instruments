@@ -206,11 +206,11 @@ def test_nothing_is_written_for_a_deleted_instrument(tmp_path, monkeypatch):
     take = tmp_path / "take.wav"
     take.write_bytes(b"audio")
     shutil.rmtree(store.instrument_dir(inst.meta.slug))
-    takes_meta.save(inst.meta.slug, take, [0.5])
+    takes_meta.save(inst.meta.slug, take)
     assert not store.instrument_dir(inst.meta.slug).exists()
 
 
-def test_a_recording_edited_from_the_app_keeps_its_grid_while_its_length_does(tmp_path, monkeypatch):
+def test_a_recording_edited_from_the_app_keeps_its_cuts_while_its_length_does(tmp_path, monkeypatch):
     import time
 
     import numpy as np
@@ -224,20 +224,19 @@ def test_a_recording_edited_from_the_app_keeps_its_grid_while_its_length_does(tm
     store.save(inst)
     take = tmp_path / "take.wav"
     sf.write(str(take), np.zeros(48000), 48000)
-    takes_meta.save(inst.meta.slug, take, [0.5])
+    takes_meta.save(inst.meta.slug, take)
     takes_meta.save_cuts(inst.meta.slug, take, [(100, 2000)])
 
     takes_meta.editing(inst.meta.slug, take)
     time.sleep(0.01)
     sf.write(str(take), np.full(48000, 0.1), 48000)  # a click taken out: same length
-    assert takes_meta.hits_at(inst.meta.slug, take) == [0.5]
     assert takes_meta.cuts(inst.meta.slug, take) == [(100, 2000)]
 
     sf.write(str(take), np.zeros(24000), 48000)  # cut shorter: the hits may have moved
-    assert takes_meta.hits_at(inst.meta.slug, take) is None
+    assert takes_meta.cuts(inst.meta.slug, take) is None
 
 
-def test_a_recording_replaced_without_the_app_loses_its_grid(tmp_path, monkeypatch):
+def test_a_recording_replaced_without_the_app_isnt_the_apps_any_more(tmp_path, monkeypatch):
     import time
 
     import numpy as np
@@ -251,10 +250,11 @@ def test_a_recording_replaced_without_the_app_loses_its_grid(tmp_path, monkeypat
     store.save(inst)
     take = tmp_path / "take.wav"
     sf.write(str(take), np.zeros(48000), 48000)
-    takes_meta.save(inst.meta.slug, take, [0.5])
+    takes_meta.save(inst.meta.slug, take)
+    assert takes_meta.recorded_now(inst.meta.slug, take)
     time.sleep(0.01)
     sf.write(str(take), np.full(48000, 0.1), 48000)
-    assert takes_meta.hits_at(inst.meta.slug, take) is None
+    assert not takes_meta.recorded_now(inst.meta.slug, take)
 
 
 def test_a_hits_tooltip_says_what_it_is():

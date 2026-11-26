@@ -39,7 +39,7 @@ Each instrument lives in `instruments/<slug>/`:
 
 - `instrument.toml`: the wizard's answers, readable and hand-editable
 - `hits.json`: slicing and analysis results, plus your decisions (rejections, moved hits)
-- `recorded-in-app.json`: the click grid and hand-set cuts of takes recorded in the app
+- `recorded-in-app.json`: which takes the app recorded, and hand-set cuts
 
 Audio is kept outside the repo: takes in the folder set in the worksheet, sliced samples in `<takes folder>/sliced` unless set otherwise, builds in `build/`.
 
@@ -47,12 +47,12 @@ Audio is kept outside the repo: takes in the folder set in the worksheet, sliced
 
 - Signals with the same `pass_id` in `instrument.toml` are recorded together (older specs' `recorded = "together"` is the pass `main`, `"separate"` a pass named after the signal, so take keys stay). Each pass is its own run through all takes; a take's key carries its pass (`<take>~<pass>`) except for `main`.
 - Onsets are detected on a normalised mix of all signals recorded together, so every signal of a hit is cut at the same samples. Each signal's waveform is kept beside the mix's for the worksheet.
-- Takes recorded in the app keep their click grid (`recorded-in-app.json`): each hit is the strongest onset in its bar, so handling noise (a piezo hears every touch) never becomes a hit. A noise during the ring ends the hit before it.
+- Hits are played at any pace, so any onset can be a hit. Handling noise (a piezo hears every touch) is told apart by level and pitch: on a note's take, a sound without the note's pitch, or more than 24 dB below its loudest one with it, is noise (on sustained instruments every sound counts). A noise during the ring ends the hit before it.
 - Each hit starts 2 ms before its attack: the first sample within 20 dB of the attack's peak, so a touch of the string before the pluck is left out (on sustained instruments within 40 dB, so a slow attack keeps its rise). A start set by hand snaps forward the same way, up to 150 ms, but never closer than 50 ms to its end. Its tail is trimmed 6 dB above the noise floor (from the noise-floor recording, or estimated from the take), it's DC-removed and gets a 50 ms fade-out. Optional denoising uses the noise-floor recording as the profile and only changes the sliced samples.
 - Pitch: YIN, restricted to ±5 semitones around the expected note, refined by a spectral peak with parabolic interpolation (YIN reads about 4 cents sharp on decaying notes); well under 1 cent on test tones.
 - Loudness is the RMS of the first 0.3 s (the attack) for plucked and struck sounds, the held part for sustained ones.
 - A long recording of many notes (`vinst.split`) is cut into takes before slicing: onsets as above, each hit's pitch by YIN without a hint, hits in a row on one note form a take. Off the instrument's notes, an instrument note an octave away wins if the spectrum agrees (the lower of the two if its fundamental is there, else the higher). One hit inside a run of another note (two of them on one side) joins it. A take starts 0.2 s before its first sound (at most halfway back to the hit before), as onset detection misses a hit right at a file's start, and ends where the next note's sound begins.
-- A take is written to a `.part` file and only replaces the existing one when it finishes; the count-in isn't recorded, apart from half a second of pre-roll.
+- A take is written to a `.part` file and only replaces the existing one when it finishes; the noise floor's count-in isn't recorded, apart from half a second of pre-roll.
 - Decisions in `hits.json` are carried over when slicing again while the recording's size and modification time are unchanged. The slicing setup fingerprint covers passes, signals and loops, so velocity changes don't need re-slicing.
 - Loops: a WAV `smpl` chunk is used as is; otherwise the steady part of each note is searched for the loop whose end best matches its start.
 - Level, evening out and low cut are applied at build time to the bundle's copies of the samples. The build aims the loudest velocity's median loudness at −16 dBFS, and a 2 ms limiter keeps peaks under −1 dBFS. With the Low cut knob, what the cut took out is written beside each sample (`-low-part`), raised and limited with the same gain curve (held under the ceiling for the cut alone and for both together), so the two add up to the uncut sample. A group of its own, in step with the notes, plays it at the volume the knob gives: all of it at 0 % (where the knob starts), none at 100 %, so the knob blends linearly between the uncut and the cut sample. Evening out and the level measure the blend at 50 % (`lowcut.EVEN_SHARE`), and the soundfont's samples are that blend.

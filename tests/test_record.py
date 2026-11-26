@@ -146,35 +146,33 @@ def uke(monkeypatch, tmp_path):
     return inst
 
 
-def test_take_guide_puts_each_hit_on_beat_one(tmp_path, monkeypatch):
+def test_a_take_is_played_at_its_own_pace(tmp_path, monkeypatch):
     inst = uke(monkeypatch, tmp_path)
     take = next(t for t in plan_takes(inst) if t.kind == "note" and t.lane == "f")
     g = guide.take_guide(inst, take)
-    count, *hits = g.steps
-    assert (count.kind, count.beats, count.length) == ("count", 3, 3.0)  # 2 s ring + 1 s gap: 3-beat bars
-    assert [h.at for h in hits] == [3.0, 6.0] and g.total == 9.0
-    # The count-in is about the first hit; each hit says how to play it, not what comes next.
-    assert count.detail == "Hit 1 of 2 · f (loud)"
-    assert [(h.title, h.detail) for h in hits] == [("Hit 1 of 2", "f (loud)"), ("Hit 2 of 2", "f (loud)")]
-    noise = guide.take_guide(inst, plan_takes(inst)[0])
-    assert noise.steps[-1].kind == "silence" and noise.steps[-1].length == 30
+    assert g.free and g.skip == 0 and g.total == 0
+    (play,) = g.steps
+    assert (play.kind, play.title) == ("play", "Play it f (loud)")
+    assert play.detail.startswith("As often as you like, about 2 times.") and "ring out" in play.detail
+    assert guide.more_guide(inst, take, 1).steps[0].detail.startswith("As often as you like, about once.")
 
 
-def test_take_guide_records_as_many_hits_as_asked(tmp_path, monkeypatch):
+def test_an_extra_isnt_asked_to_ring_and_a_sustained_note_is_held(tmp_path, monkeypatch):
     inst = uke(monkeypatch, tmp_path)
-    take = next(t for t in plan_takes(inst) if t.kind == "note")
-    g = guide.take_guide(inst, take, 4)
-    assert [s.title for s in g.steps if s.kind == "hit"] == [f"Hit {i} of 4" for i in (1, 2, 3, 4)]
-    assert len(g.hits_at()) == 4
+    chuck = next(t for t in plan_takes(inst) if t.kind == "extra")
+    (play,) = guide.take_guide(inst, chuck).steps
+    assert "ring" not in play.detail and play.detail.endswith("and stop when you're done.")
+    inst.meta.type = InstrumentType.SUSTAINED
+    note = next(t for t in plan_takes(inst) if t.kind == "note")
+    assert "Hold each as long as a note may last" in guide.take_guide(inst, note).steps[0].detail
 
 
-def test_more_guide_records_extra_variations_of_one_lane(tmp_path, monkeypatch):
+def test_the_noise_floor_counts_in_and_stops_by_itself(tmp_path, monkeypatch):
     inst = uke(monkeypatch, tmp_path)
-    take = next(t for t in plan_takes(inst) if t.kind == "note" and t.lane == "p")
-    g = guide.more_guide(inst, take, 3)
-    assert [(s.title, s.detail) for s in g.steps if s.kind == "hit"] == \
-        [(f"New hit {i} of 3", "p (soft)") for i in (1, 2, 3)]
-    assert g.skip == pytest.approx(2.5) and g.hits_at() == pytest.approx([0.5, 3.5, 6.5])
+    g = guide.take_guide(inst, plan_takes(inst)[0])
+    count, silence = g.steps
+    assert not g.free and count.kind == "count" and g.skip == pytest.approx(3.5)
+    assert silence.kind == "silence" and silence.length == 30 and g.total == 34
 
 
 def test_signals_recorded_together_default_to_separate_inputs(tmp_path, monkeypatch):
@@ -276,15 +274,12 @@ def test_a_quiet_loud_take_says_how_much_to_turn_the_gain_up():
     assert "peaks at -18 dBFS" in advice and "up by about 12 dB" in advice and "same for all takes" in advice
 
 
-def test_scale_guide_leads_up_the_scale_a_few_hits_per_note(tmp_path, monkeypatch):
+def test_scale_guide_asks_for_the_scale_low_to_high(tmp_path, monkeypatch):
     inst = uke(monkeypatch, tmp_path)
     p = recording_passes(inst)[0]
     midis = sorted(planned_notes(inst, p.id))
     assert len(midis) > 2
     g = guide.scale_guide(inst, p.id, 2)
-    count, *hits = g.steps
-    assert count.kind == "count" and count.detail.startswith(notes.name(midis[0]))
-    assert [h.title for h in hits[:3]] == [f"{notes.name(midis[0])} · 1 of 2", f"{notes.name(midis[0])} · 2 of 2",
-                                           f"{notes.name(midis[1])} · 1 of 2"]
-    assert hits[1].detail == f"next: {notes.name(midis[1])}" and hits[-1].detail == ""
-    assert len(g.hits_at()) == 2 * len(midis)
+    (play,) = g.steps
+    assert g.free and play.title.startswith(f"{notes.name(midis[0])}, ") and play.title.endswith(", low to high")
+    assert play.detail.startswith("Each note about 2 times")

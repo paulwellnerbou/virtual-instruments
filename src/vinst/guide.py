@@ -1,30 +1,32 @@
-"""What to play when while recording in the app: a count-in, then one hit on beat 1 of each bar.
+"""What to play while recording in the app.
 
-A bar is as long as a hit rings, plus a short gap, at one beat per second.
+Hits are played at the player's own pace, as many as they like, each left to ring out, and the
+player stops when done: slicing finds them however they're spaced. The planned number is only a
+suggestion. Only the noise floor is timed: a count-in, then silence.
 """
 
-import math
 from dataclasses import asdict, dataclass, field
 
 from vinst import notes as note_names
-from vinst.plan import EXTRA_HIT_S, HIT_GAP_S, Take, plan_takes, planned_notes
-from vinst.spec import Instrument, file_token
+from vinst.plan import Take, plan_takes, planned_notes
+from vinst.spec import Instrument, InstrumentType, file_token
 
-BEAT_S = 1.0  # 60 BPM keeps the counting readable
+BEAT_S = 1.0  # of the noise floor's count-in
 COUNT_IN_BEATS = 4
-PRE_ROLL_S = 0.5  # of the count-in, recorded before the first beat
+PRE_ROLL_S = 0.5  # of the count-in, recorded before the silence
 DYNAMICS = {"ppp": "very soft", "pp": "very soft", "p": "soft", "mp": "medium soft", "mf": "medium",
             "f": "loud", "ff": "very loud", "fff": "very loud"}
+DONE = "stop when you're done."
 
 
 @dataclass
 class Step:
     at: float  # seconds from the start of the recording
-    length: float
-    kind: str  # "count" | "hit" | "rest" | "silence"
+    length: float  # 0: until the player stops
+    kind: str  # "count" | "silence" | "play"
     title: str  # what to do, large
     detail: str = ""  # e.g. the dynamic
-    beats: int = 0  # beats in this step, for the metronome; 0 for silence
+    beats: int = 0  # beats in this step, for the count-in; 0 otherwise
 
 
 @dataclass
@@ -34,7 +36,12 @@ class Guide:
 
     @property
     def total(self) -> float:
+        """How long the take runs; 0 for one the player stops."""
         return self.steps[-1].at + self.steps[-1].length if self.steps else 0.0
+
+    @property
+    def free(self) -> bool:
+        return bool(self.steps) and self.steps[-1].kind == "play"
 
     def add(self, length: float, kind: str, title: str, detail: str = "", beats: int = 0) -> None:
         self.steps.append(Step(self.total, length, kind, title, detail, beats))
@@ -45,12 +52,9 @@ class Guide:
         first = self.steps[0] if self.steps else None
         return max(0.0, first.length - PRE_ROLL_S) if first and first.kind == "count" else 0.0
 
-    def hits_at(self) -> list[float]:
-        """Where each hit is asked for, in seconds from the start of the recorded file."""
-        return [s.at - self.skip for s in self.steps if s.kind == "hit"]
-
     def to_dict(self) -> dict:
-        return {"beat": self.beat_s, "total": self.total, "steps": [asdict(s) for s in self.steps]}
+        return {"beat": self.beat_s, "total": self.total, "free": self.free,
+                "steps": [asdict(s) for s in self.steps]}
 
 
 def lane_name(lane: str) -> str:
@@ -65,47 +69,43 @@ def how_to_play(inst: Instrument, take: Take) -> str:
     return lane_name(take.lane or "")
 
 
-def ring_beats(seconds: float) -> int:
-    return math.ceil((seconds + HIT_GAP_S) / BEAT_S)
-
-
-def bar_beats(inst: Instrument, take: Take) -> int:
-    return ring_beats(inst.recording.ring_seconds if take.kind == "note" else EXTRA_HIT_S)
-
-
-def count_in(guide: Guide, beats: int, first: str) -> None:
-    """`first` is what the first hit asks for: the count-in is about that hit, nothing later."""
-    beats = min(beats, COUNT_IN_BEATS)
-    guide.add(beats * BEAT_S, "count", "Get ready", first, beats=beats)
-
-
 NOISE_FLOOR_HOW = "Everything connected, nothing touched"
 
 
-def hits(guide: Guide, inst: Instrument, take: Take, count: int, title: str) -> None:
-    beats = bar_beats(inst, take)
-    how = how_to_play(inst, take)
-    count_in(guide, beats, f"{title.format(1, count)} · {how}" if how else title.format(1, count))
-    for i in range(count):
-        guide.add(beats * BEAT_S, "hit", title.format(i + 1, count), how, beats)
+def times(count: int) -> str:
+    return "once" if count == 1 else f"{count} times"
 
 
-def take_guide(inst: Instrument, take: Take, count: int | None = None) -> Guide:
-    """One take on its own; `count` hits instead of the planned ones."""
+def between(inst: Instrument) -> str:
+    """What to do before playing the next note, and then: stop."""
+    held = inst.meta.type == InstrumentType.SUSTAINED
+    return f"{'Hold each as long as a note may last' if held else 'Let each ring out before the next'}, and {DONE}"
+
+
+def hits(inst: Instrument, take: Take, count: int) -> Guide:
     guide = Guide(BEAT_S)
-    if take.kind == "noise_floor":
-        count_in(guide, bar_beats(inst, take), "Then stay silent")
-        guide.add(inst.recording.noise_floor_seconds, "silence", "Stay silent", NOISE_FLOOR_HOW)
+    how = how_to_play(inst, take)
+    about = f"As often as you like, about {times(count)}"
+    if take.kind == "note":  # an extra's sound, a knock or a chuck, doesn't ring
+        guide.add(0, "play", f"Play it {how}", f"{about}. {between(inst)}")
     else:
-        hits(guide, inst, take, count or take.hits, "Hit {} of {}")
+        guide.add(0, "play", how or "Play it", f"{about}, and {DONE}")
+    return guide
+
+
+def take_guide(inst: Instrument, take: Take) -> Guide:
+    """One take on its own."""
+    if take.kind != "noise_floor":
+        return hits(inst, take, take.hits)
+    guide = Guide(BEAT_S)
+    guide.add(COUNT_IN_BEATS * BEAT_S, "count", "Get ready", "Then stay silent", beats=COUNT_IN_BEATS)
+    guide.add(inst.recording.noise_floor_seconds, "silence", "Stay silent", NOISE_FLOOR_HOW)
     return guide
 
 
 def more_guide(inst: Instrument, take: Take, count: int) -> Guide:
     """More variations of a lane take, to compare with its own and keep the best."""
-    guide = Guide(BEAT_S)
-    hits(guide, inst, take, count, "New hit {} of {}")
-    return guide
+    return hits(inst, take, count)
 
 
 def scale_guide(inst: Instrument, pass_id: str, per_note: int) -> Guide:
@@ -115,13 +115,11 @@ def scale_guide(inst: Instrument, pass_id: str, per_note: int) -> Guide:
     midis = sorted(planned_notes(inst, pass_id))
     if not midis:
         return guide
-    beats = ring_beats(inst.recording.ring_seconds)
-    count_in(guide, beats, f"{note_names.name(midis[0])} · one velocity throughout")
-    for k, m in enumerate(midis):
-        for i in range(per_note):
-            last = i == per_note - 1 and k + 1 < len(midis)
-            guide.add(beats * BEAT_S, "hit", f"{note_names.name(m)} · {i + 1} of {per_note}",
-                      f"next: {note_names.name(midis[k + 1])}" if last else "", beats)
+    every = midis == list(range(midis[0], midis[-1] + 1))
+    which = f"{note_names.name(midis[0])} to {note_names.name(midis[-1])}" if every \
+        else ", ".join(note_names.name(m) for m in midis)
+    guide.add(0, "play", f"{which}, low to high",
+              f"Each note about {times(per_note)}, at one velocity throughout. {between(inst)}")
     return guide
 
 

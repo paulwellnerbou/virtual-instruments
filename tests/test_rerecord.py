@@ -12,7 +12,7 @@ from lxml import etree
 from conftest import lane_ranges
 from vinst import bundle, defaults, discard, review, slicing, store, takes_meta
 from vinst.plan import combined_base, more_file, plan_takes
-from vinst.slicing import changed_takes, cut_points, on_grid, process, process_one
+from vinst.slicing import changed_takes, cut_points, process, process_one
 from vinst.spec import InstrumentType, NoteLanes
 from vinst.synth import knock, pluck
 
@@ -55,11 +55,11 @@ def take_audio(take, amps, noises=(), bar=3.0, offset=0.5, seed=None):
     return audio
 
 
-def write(inst, name, audio, grid=None):
+def write(inst, name, audio, in_app=False):
     path = store.instrument_dir(inst.meta.slug).parent.parent / "takes" / name
     sf.write(path, audio, SR, subtype="PCM_24")
-    if grid is not None:
-        takes_meta.save(inst.meta.slug, path, grid)
+    if in_app:
+        takes_meta.save(inst.meta.slug, path)
     return path
 
 
@@ -79,34 +79,26 @@ def test_noise_ends_the_hit_before_it_but_starts_none():
     assert cut_off
 
 
-def test_on_grid_takes_the_strongest_onset_in_each_bar():
-    ref = np.zeros(10 * SR)
-    for at, amp in ((0.9, 0.01), (1.1, 0.5), (4.0, 0.3), (5.6, 0.02)):
-        ref[int(at * SR): int(at * SR) + 100] = amp
-    onsets = [int(t * SR) for t in (0.9, 1.1, 4.0, 5.6)]
-    assert on_grid(onsets, ref, SR, [1.0, 4.0, 7.0]) == [int(1.1 * SR), int(4.0 * SR)]
-
-
-def test_the_click_grid_drops_handling_noise(uke):
+def test_handling_noise_isnt_a_hit(uke):
     take = lane(uke, "p")
-    write(uke, take.files[0], take_audio(take, (0.2, 0.25), noises=[0.05]), grid=[0.5, 3.5])
+    write(uke, take.files[0], take_audio(take, (0.2, 0.25), noises=[0.05]), in_app=True)
     r = result(process(uke), take.key)
     assert r.status == "ok" and len(r.hits) == 2 and all(h.layer == "p" for h in r.hits)
 
 
-def test_the_grid_is_ignored_once_the_file_changes(uke):
+def test_hits_played_at_any_pace_are_all_found(uke):
     take = lane(uke, "p")
-    path = write(uke, take.files[0], take_audio(take, (0.2, 0.25)), grid=[0.5])
-    write(uke, take.files[0], take_audio(take, (0.2, 0.25, 0.3)))  # replaced from a DAW
-    assert takes_meta.hits_at(uke.meta.slug, path) is None
+    # Three hits half a ring apart: no click asked for them.
+    write(uke, take.files[0], take_audio(take, (0.2, 0.25, 0.22), bar=1.0), in_app=True)
+    assert len(result(process(uke), take.key).hits) == 3
 
 
 def test_more_variations_join_their_lane_and_keep_decisions(uke):
     take = lane(uke, "f")
-    write(uke, take.files[0], take_audio(take, (0.7, 0.72)), grid=[0.5, 3.5])
+    write(uke, take.files[0], take_audio(take, (0.7, 0.72)), in_app=True)
     first = process(uke)
     more = write(uke, more_file(take, 1, take.signals[0]), take_audio(take, (0.69, 0.71, 0.73), seed=9),
-                 grid=[0.5, 3.5, 6.5])
+                 in_app=True)
     assert changed_takes(uke, first) == [f"{take.title} · more (1)"]
     after = process_one(uke, first, f"{take.base_name}-more1")
     more_result = result(after, f"{take.base_name}-more1")
@@ -140,7 +132,7 @@ def test_takes_recorded_again_are_noticed_before_building(uke):
 def test_a_combined_take_starts_in_the_first_lane_and_hits_can_be_moved(uke):
     p, f = lane(uke, "p"), lane(uke, "f")
     name = f"{combined_base(p)}_{p.signals[0]}.wav"
-    write(uke, name, take_audio(p, (0.2, 0.25, 0.7, 0.75)), grid=[0.5, 3.5, 6.5, 9.5])
+    write(uke, name, take_audio(p, (0.2, 0.25, 0.7, 0.75)), in_app=True)
     m = process(uke)
     combined = result(m, p.note_base)
     assert combined.origin == "combined" and [h.layer for h in combined.hits] == ["p"] * 4
@@ -334,10 +326,10 @@ def test_a_take_played_on_the_wrong_note_moves_to_the_right_one(uke):
 
     takes = store.instrument_dir(uke.meta.slug).parent.parent / "takes"
     wrong, right = lane(uke, "p", 0), lane(uke, "p", 1)
-    path = write(uke, wrong.files[0], take_audio(right, (0.3, 0.32)), grid=[0.5, 3.5])
+    path = write(uke, wrong.files[0], take_audio(right, (0.3, 0.32)), in_app=True)
     key = move_recording(uke, takes, wrong.key, right.note_base, "p")
     assert key == right.key and not path.exists() and (takes / right.files[0]).exists()
-    assert takes_meta.hits_at(uke.meta.slug, takes / right.files[0]) == [0.5, 3.5]  # its click grid came along
+    assert takes_meta.recorded_now(uke.meta.slug, takes / right.files[0])  # what the app knows came along
     m = process(uke)
     assert result(m, wrong.key).status == "missing" and len(result(m, right.key).hits) == 2
 
@@ -366,7 +358,7 @@ def test_a_pluck_after_a_quiet_touch_is_still_the_hit(uke):
     audio[pluck_at: pluck_at + len(tone)] += tone
     k = knock(0.004, SR, rng)  # a faint click later in the take
     audio[int(5.7 * SR): int(5.7 * SR) + len(k)] += k
-    write(uke, take.files[0], audio, grid=[0.5])  # played a second late
+    write(uke, take.files[0], audio, in_app=True)
     hits = result(process(uke), take.key).hits
     assert len(hits) == 1 and 1.4 * SR <= hits[0].start <= 1.6 * SR
 
@@ -389,13 +381,12 @@ def test_decisions_stay_with_hits_cut_where_they_were(uke):
 
 def test_cuts_set_by_hand_replace_the_found_ones_until_reset(uke):
     take = lane(uke, "p")
-    path = write(uke, take.files[0], take_audio(take, (0.3, 0.32)), grid=[0.5, 3.5])
+    path = write(uke, take.files[0], take_audio(take, (0.3, 0.32)), in_app=True)
     found = result(process(uke), take.key)
     assert len(found.hits) == 2 and not found.cut_by_hand
     takes_meta.save_cuts(uke.meta.slug, path, [(int(1.0 * SR), int(2.0 * SR)), (found.hits[1].start, found.hits[1].end)])
     by_hand = result(process(uke), take.key)
     assert by_hand.cut_by_hand and [(h.start, h.end) for h in by_hand.hits][0] == (SR, 2 * SR)
-    assert takes_meta.hits_at(uke.meta.slug, path) == [0.5, 3.5]  # the click grid is still there
     takes_meta.save_cuts(uke.meta.slug, path, None)
     again = result(process(uke), take.key)
     assert not again.cut_by_hand and [h.start for h in again.hits] == [h.start for h in found.hits]
@@ -411,7 +402,7 @@ def test_a_hit_starts_at_its_attack_not_at_the_touch_before_it(uke, touch_s):
     audio[touch_at:pluck_at] += rng.normal(0, 10 ** (-58 / 20), pluck_at - touch_at)
     tone = pluck(440 * 2 ** ((take.note.midi - 69) / 12), 0.3, 2.0, SR, rng)
     audio[pluck_at: pluck_at + len(tone)] += tone
-    write(uke, take.files[0], audio, grid=[0.5])
+    write(uke, take.files[0], audio, in_app=True)
     (hit,) = result(process(uke), take.key).hits
     assert pluck_at - 0.003 * SR <= hit.start <= pluck_at  # the sample starts with the pluck
 
@@ -428,7 +419,7 @@ def touched_pluck(take, pluck_at, rng):
 def test_a_start_set_by_hand_moves_forward_to_the_pluck(uke):
     take = lane(uke, "p")
     pluck_at = int(1.56 * SR) + 37
-    path = write(uke, take.files[0], touched_pluck(take, pluck_at, np.random.default_rng(7)), grid=[0.5])
+    path = write(uke, take.files[0], touched_pluck(take, pluck_at, np.random.default_rng(7)), in_app=True)
     early, late = pluck_at - int(0.03 * SR), pluck_at + int(0.5 * SR)  # dragged 30 ms early; inside the note
     takes_meta.save_cuts(uke.meta.slug, path, [(early, pluck_at + int(0.4 * SR)), (late, late + SR)])
     found = result(process(uke), take.key)
@@ -485,7 +476,7 @@ def test_a_soft_hit_over_a_louder_tail_starts_at_its_rise():
 def test_a_hit_cut_by_hand_keeps_its_decisions_when_its_start_snaps_far(uke):
     take = lane(uke, "p")
     pluck_at = int(1.56 * SR) + 37
-    path = write(uke, take.files[0], touched_pluck(take, pluck_at, np.random.default_rng(7)), grid=[0.5])
+    path = write(uke, take.files[0], touched_pluck(take, pluck_at, np.random.default_rng(7)), in_app=True)
     early = pluck_at - int(0.1 * SR)  # set before starts snapped: 100 ms early
     takes_meta.save_cuts(uke.meta.slug, path, [(early, pluck_at + SR)])
     m = process(uke)
@@ -499,8 +490,8 @@ def test_a_rejected_recording_only_warns_when_its_velocity_keeps_nothing(uke):
     from vinst.preset import map_samples
 
     p = lane(uke, "p")
-    write(uke, p.files[0], take_audio(p, (0.3, 0.32)), grid=[0.5, 3.5])
-    write(uke, more_file(p, 1, p.signals[0]), take_audio(p, (0.3, 0.31), seed=9), grid=[0.5, 3.5])
+    write(uke, p.files[0], take_audio(p, (0.3, 0.32)), in_app=True)
+    write(uke, more_file(p, 1, p.signals[0]), take_audio(p, (0.3, 0.31), seed=9), in_app=True)
     m = process(uke)
     more = next(t for t in m.takes if t.origin == "more")
     for h in more.hits:
@@ -516,12 +507,12 @@ def test_results_remember_which_hit_finding_made_them(uke):
     from vinst.slicing import HIT_FINDER
 
     p = lane(uke, "p")
-    write(uke, p.files[0], take_audio(p, (0.3, 0.32)), grid=[0.5, 3.5])
+    write(uke, p.files[0], take_audio(p, (0.3, 0.32)), in_app=True)
     m = process(uke)
     assert m.finder == HIT_FINDER
     m.finder = 0  # sliced before hits were found as they are now
     f = lane(uke, "f")
-    write(uke, f.files[0], take_audio(f, (0.6, 0.62)), grid=[0.5, 3.5])
+    write(uke, f.files[0], take_audio(f, (0.6, 0.62)), in_app=True)
     assert process_one(uke, m, f.key).finder == 0  # one recording sliced again; the others are still older
 
 
@@ -531,7 +522,7 @@ def test_the_first_sample_is_sliced_as_set_now(uke):
     m = process(uke).model_copy(update={"finder": 0, "cleanup": "denoise 12"})  # nothing recorded yet
     assert not slicing.has_samples(m)
     p = lane(uke, "p")
-    write(uke, p.files[0], take_audio(p, (0.3, 0.32)), grid=[0.5, 3.5])
+    write(uke, p.files[0], take_audio(p, (0.3, 0.32)), in_app=True)
     again = process_one(uke, m, p.key)
     assert slicing.has_samples(again)
     assert (again.finder, again.cleanup) == (HIT_FINDER, slicing.cleanup_setup(uke))
@@ -554,9 +545,9 @@ def test_a_tail_ends_before_the_next_sound_not_at_its_attack():
 
 def test_a_new_take_is_sliced_with_all_others_while_they_carry_the_old_low_cut(uke):
     p, f = lane(uke, "p"), lane(uke, "f")
-    write(uke, p.files[0], take_audio(p, (0.3, 0.32)), grid=[0.5, 3.5])
+    write(uke, p.files[0], take_audio(p, (0.3, 0.32)), in_app=True)
     m = process(uke).model_copy(update={"cleanup": "low cut 0.75 12"})  # sliced with the cut in them
-    write(uke, f.files[0], take_audio(f, (0.6, 0.62)), grid=[0.5, 3.5])
+    write(uke, f.files[0], take_audio(f, (0.6, 0.62)), in_app=True)
     again = process_one(uke, m, f.key)
     assert again.cleanup == "" and result(again, f.key).hits  # all sliced again, none cut
 
@@ -660,7 +651,7 @@ def test_a_dropped_file_whose_signal_isnt_named_waits_to_be_asked(uke):
 
 def test_deleting_a_recording_takes_its_samples_and_decisions_and_keeps_the_others(uke, trash_bin):
     take, other = lane(uke, "f"), lane(uke, "p")
-    first = write(uke, take.files[0], take_audio(take, (0.7, 0.72)), grid=[0.5, 3.5])
+    first = write(uke, take.files[0], take_audio(take, (0.7, 0.72)), in_app=True)
     more = write(uke, more_file(take, 1, take.signals[0]), take_audio(take, (0.69, 0.71), seed=9))
     kept = write(uke, other.files[0], take_audio(other, (0.2, 0.25)))
     manifest = process(uke)
@@ -679,7 +670,7 @@ def test_deleting_a_recording_takes_its_samples_and_decisions_and_keeps_the_othe
     assert result(after, take.key).status == "missing" and not result(after, take.key).hits
     assert all(t.key != more_key for t in after.takes)  # not a planned recording: gone, not unrecorded
     assert [h.files for h in result(after, other.key).hits] == [h.files for h in result(manifest, other.key).hits]
-    assert takes_meta.hits_at(uke.meta.slug, first) is None
+    assert first.name not in takes_meta._load(uke.meta.slug)
     assert changed_takes(uke, after) == []  # nothing to slice again
     # Recorded again under the same name: a new recording, without the old one's rejections.
     write(uke, take.files[0], take_audio(take, (0.7, 0.72), seed=5))
