@@ -686,6 +686,19 @@ def test_the_low_cut_knob_blends_the_uncut_and_the_cut_sample(built, monkeypatch
     assert below(cut + part) == pytest.approx(below(src), rel=0.02)  # at 0 %: no low cut
 
 
+def test_the_low_cut_knob_starts_where_set(built):
+    from vinst.spec import LOW_TAG
+
+    inst, _ = built
+    inst.processing.low_cut = True
+    inst.processing.low_cut_start = 60
+    xml = etree.parse(str(bundle.build(inst).preset_file))
+    knob = next(k for k in xml.iter("labeled-knob") if k.get("label") == "Low cut %")
+    assert float(knob.get("value")) == 60
+    # The knob's table, so the sound on load matches where the knob shows
+    assert float(next(t for t in xml.iter("tag") if t.get("name") == LOW_TAG).get("volume")) == pytest.approx(0.4)
+
+
 def test_no_low_cut_knob_without_the_low_cut(built):
     inst, _ = built
     inst.preset.controls = [*inst.preset.controls, "lowcut"]

@@ -840,7 +840,9 @@ def step_worksheet(ed: "Editor") -> None:
     path = store.manifest_path(slug)
     state: dict[str, Any] = {"manifest": None, "problems_only": False, "busy": False,
                              "progress": 0.0, "label": "", "stale": None, "edited": [], "edited_keys": [],
-                             "changed": set(), "deleted": set()}
+                             "changed": set(), "deleted": set(),
+                             # Per recording, what shows its hits: faded out or slid shut while it's deleted.
+                             "going": {}, "arriving": set()}
     ui.add_css(CSS)
     ui.add_body_html(f"<script>{JS}</script>")
     try:
@@ -864,14 +866,10 @@ def step_worksheet(ed: "Editor") -> None:
     ui.timer(0.25, tick)
 
     def show_progress(on: bool) -> None:
-        """The progress bar beside the slice button. Their row is only there with one of them in it: empty,
-        it would still take a gap in the step. Closing, the bar slides shut first (anim.Collapse takes .25 s)."""
+        """The progress bar beside the slice button. Their row slides open only with one of them in it, as the
+        list below moves with it."""
         progress_box.set_open(on)
-        if on:
-            slice_row.set_visibility(True)
-        else:
-            with anchor:
-                ui.timer(0.3, lambda: slice_row.set_visibility(button.visible or state["busy"]), once=True)
+        slice_box.set_open(on or button.visible)
 
     async def slice_all(only: str | None = None) -> None:
         """Slice everything, or with `only` just that recording (right after recording it). While a slice
@@ -1331,13 +1329,21 @@ def step_worksheet(ed: "Editor") -> None:
         a Trash are only deleted `for_good`, after asking."""
         lane_dialog.close()
         dialog.close()
+        # A single recording leaves in place, so nothing above it moves; all of them go with the progress bar.
+        for key in keys or ():
+            for el in state["going"].get(key, []):
+                if isinstance(el, Collapse):
+                    el.set_open(False)
+                else:
+                    el.classes(add="vi-going")
         while state["busy"]:  # a slice running now would write the samples back
             await asyncio.sleep(0.1)
         if not still_there():
             return
         state["busy"] = True
         button.disable()
-        show_progress(True)
+        if keys is None:
+            show_progress(True)
 
         def report(i: int, n: int, name: str) -> None:
             state["progress"], state["label"] = (i / n if n else 1), f"{i}/{n} · deleting {name}"
@@ -1364,7 +1370,9 @@ def step_worksheet(ed: "Editor") -> None:
             if cleanup_eq.forget_missing(inst, {t.key for t in manifest.takes if t.status != "missing"}):
                 ed.changed()
         state["stale"] = None
+        state["arriving"] = set(keys or ())
         results.refresh()
+        state["arriving"] = set()
         ed.refresh()
         if found is None:
             return
@@ -1488,6 +1496,7 @@ def step_worksheet(ed: "Editor") -> None:
                 f"background:{hit_color(h)};color:white" + (";text-decoration:line-through" if h.rejected else ""))
         draggable_hit(c, take, h)
         info_tip(c, take, h)
+        state["going"].setdefault(take.key, []).append(c)
 
     def compare_button(hits: list[tuple[TakeResult, Hit]], signal: str | None = None) -> None:
         """Plays the kept hits; with `signal`, that signal's sound of them, else the first signal's."""
@@ -1559,7 +1568,8 @@ def step_worksheet(ed: "Editor") -> None:
                     drop_hint(take)
             if recorded and result.hits:
                 hits = [(result, h) for h in result.hits]
-                with ui.element("div").classes("w-full"):
+                with Collapse(True, inner_classes="w-full") as strip:
+                    state["going"].setdefault(result.key, []).append(strip)
                     hit_strip(hits, sum(hit_seconds(r, h) for r, h in hits),
                               max((hit_peak_db(h) for _, h in hits), default=0.0))
             drop_target(lane, take, "", take.pass_id)
@@ -1672,7 +1682,8 @@ def step_worksheet(ed: "Editor") -> None:
         return ui.row().classes("items-center gap-1 no-wrap shrink-0").style(f"height:{WAVE_H}px")
 
     def drop_hint(take: Take) -> None:
-        ui.label("or drop an audio file here").classes("text-xs opacity-50 whitespace-nowrap") \
+        ui.label("or drop an audio file here") \
+            .classes("text-xs opacity-50 whitespace-nowrap" + (" vi-arriving" if take.key in state["arriving"] else "")) \
             .tooltip(f"E.g. a file exported from Cubase or WaveLab; it is stored as {', '.join(take.files)}"
                      + ("; a file with a channel per signal works too" if len(take.signals) > 1 else ""))
 
@@ -1822,8 +1833,9 @@ def step_worksheet(ed: "Editor") -> None:
         hit shows each signal's wave, stacked, each as tall as that signal is loud (`loudest_of`)."""
         with ui.element("div").classes("vi-hits"):
             for r in empty:
-                ui.label("no hit found").classes("vi-hit-empty").style(
+                tile = ui.label("no hit found").classes("vi-hit-empty").style(
                     f"height:{lanes_height(len(signals or [None]))}px").on("click", lambda t=r: open_recording(t))
+                state["going"].setdefault(r.key, []).append(tile)
             for r, h in hits:
                 if not r.envelope:  # e.g. imported files: nothing to draw
                     chip(r, h)
@@ -1845,6 +1857,7 @@ def step_worksheet(ed: "Editor") -> None:
                     ui.label(f"{h.rms_db:.0f} dB").classes("vi-hit-level")
                 draggable_hit(tile, r, h)
                 info_tip(tile, r, h)
+                state["going"].setdefault(r.key, []).append(tile)
 
     def aim_label(pass_id: str, note: str, lane: str, hits: list[tuple[TakeResult, Hit]]) -> None:
         """How loud to play this velocity: orange while its kept hits are off it. Every row has one, so
@@ -2021,6 +2034,7 @@ def step_worksheet(ed: "Editor") -> None:
     def results() -> None:
         """The list: every note, then the extras."""
         manifest: Manifest | None = state["manifest"]
+        state["going"] = {}
         if state["stale"] is None:
             # What changed on disk is found in the background (it reads files): shown when it's in.
             found_nothing()
@@ -2470,7 +2484,7 @@ def step_worksheet(ed: "Editor") -> None:
         """What needs slicing again, and the counts; redrawn with the results."""
         # Only offered when something needs it: takes recorded here are sliced right away.
         button.set_visibility(importing or bool(state["stale"]))
-        slice_row.set_visibility(button.visible or state.get("busy", False))
+        slice_box.set_open(button.visible or progress_box.is_open)
         overview_box.set_visibility(bool(state["stale"]))
         if not importing:
             button.set_text("Update them" if state["edited"] else "Slice them")
@@ -2482,7 +2496,7 @@ def step_worksheet(ed: "Editor") -> None:
     # The message gets a line of its own, however long; below it the button, and the progress bar
     # filling the rest with the take's name on one line of its own, so nothing moves as names change.
     overview_box = ui.column().classes("gap-0 w-full")
-    with ui.row().classes("items-center gap-4 w-full no-wrap") as slice_row:
+    with Collapse(False, gapless=True) as slice_box, ui.row().classes("items-center gap-4 w-full no-wrap"):
         button = ui.button("Import & analyse" if importing else "Slice them",
                            icon="file_download" if importing else "content_cut",
                            on_click=lambda: update_edited() if state["edited"] else slice_all()) \

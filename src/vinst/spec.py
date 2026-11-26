@@ -247,6 +247,8 @@ class Processing(BaseModel):
     low_cut_below: float = Field(default=0.75, ge=0.3, le=1.0, description="share of the note's pitch")
     # Deep, as the Low cut knob starts at 0 % and blends in amplitude: more dB mostly widens the knob's top.
     low_cut_db: float = Field(default=18.0, ge=1, le=40)
+    # Where the Low cut knob starts, in %: 0 as recorded, 100 the full cut.
+    low_cut_start: float = Field(default=0.0, ge=0, le=100)
     # Applied when slicing, to the takes each is for (see vinst.cleanup_eq).
     cleanup_eqs: list[CleanupEq] = []
 

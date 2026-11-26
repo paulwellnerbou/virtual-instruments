@@ -1,5 +1,6 @@
 """Wizard steps 6 (sound & look) and 7 (build, install, package), and the extras' keys of step 4."""
 
+import math
 import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -475,6 +476,14 @@ def colour_field(ed: "Editor", label: str, attr: str, tooltip: str | None = None
         reset.set_visibility(getattr(p, attr).upper() != default.upper())
 
 
+def start_text(start: float, reduction_db: float) -> str:
+    """What the Low cut knob plays where it starts: the blend is in amplitude (see preset.knobs_for)."""
+    if start <= 0:
+        return "as recorded"
+    gain = 1 - start / 100 * (1 - 10 ** (-reduction_db / 20))
+    return f"{-20 * math.log10(gain):.0f} dB of the {reduction_db:g} dB cut"
+
+
 def shown_controls(inst: "Instrument") -> list[str]:
     """The controls that can do something in this instrument."""
     out = []
@@ -591,13 +600,23 @@ def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
                              "reverb is a little quieter, its highs gone, so you may turn it up a bit. MuseScore's "
                              "soundfont has no reverb; nothing changes there.").classes("text-xs opacity-70 max-w-3xl")
                 if key == "lowcut":
+                    with ui.row().classes("items-center gap-2"):
+                        ed.number("Knob starts at", proc, "low_cut_start", cast=float, min=0, max=100, step=5,
+                                  precision=0, suffix="%").classes("w-36")
+
+                        @ui.refreshable
+                        def at_start() -> None:
+                            ui.label(start_text(proc.low_cut_start, proc.low_cut_db)).classes("text-xs opacity-70")
+
+                        at_start()
+                        ed.on_change_hooks.append(at_start.refresh)
                     ui.label("E.g. the low resonance of a ukulele's body that rings on after the pluck; the note itself, from its pitch up, "
                              "stays as it is. A curve, not a step, as drawn: the full amount well below the share "
                              "set, less towards it, almost nothing at the pitch. Applied when building, so no "
                              "slicing is needed; the instrument then also carries what was cut out. "
-                             "The instrument's Low cut knob starts at 0 %, as recorded, and reaches this cut at "
+                             "The instrument's Low cut knob plays it as recorded at 0 % and reaches this cut at "
                              "100 %; most of the cut comes in its upper half. Two things are set for the knob at 50 %, "
-                             "not where it starts: loudness is evened out there, so notes with much low resonance "
+                             "wherever it starts: loudness is evened out there, so notes with much low resonance "
                              "play a little louder at 0 % and a little quieter at 100 %, and MuseScore's "
                              "soundfont, which has no knob, has the cut as at 50 %.").classes("text-xs opacity-70 max-w-3xl")
 

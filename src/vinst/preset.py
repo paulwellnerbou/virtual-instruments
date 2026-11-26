@@ -599,7 +599,7 @@ def knobs_for(inst: Instrument, controls: list[str], effects: list[str], buses: 
         elif c == "lowcut":
             # 0 %: as recorded, 100 %: the cut set when building; between, a blend of the two.
             # A knob shows a bare number; its label has room for about 10 characters.
-            knobs.append(Knob("lowcut", "Low cut %", 0, 100, 0, [
+            knobs.append(Knob("lowcut", "Low cut %", 0, 100, inst.processing.low_cut_start, [
                 dict(type="amp", level="tag", identifier=LOW_TAG, parameter="AMP_VOLUME", translation="table",
                      translationTable="0,1;100,0;100.001,0")],
                 tooltip=f"The low resonance below each note's pitch, e.g. of the body after a pluck: 0 % as "
@@ -813,7 +813,8 @@ def render(inst: Instrument, mapping: Mapping, background: str | None = None) ->
     for tag, vol in initial_tag_volumes(inst, knobs).items():
         _el(tags_el, "tag", name=tag, volume=float(vol))
     if "lowcut" in knob_index:
-        _el(tags_el, "tag", name=LOW_TAG, volume=1.0)  # the knob starts as recorded
+        # The knob's table: 0 % plays all of the low part, 100 % none.
+        _el(tags_el, "tag", name=LOW_TAG, volume=round(1 - inst.processing.low_cut_start / 100, 3))
     if mapping.release:
         _el(tags_el, "tag", name=RELEASE_TAG, volume=0.5 if "noise" in knob_index else 1.0)
 
