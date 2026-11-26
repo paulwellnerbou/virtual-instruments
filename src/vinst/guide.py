@@ -1,21 +1,22 @@
 """What to play while recording in the app.
 
-Hits are played at the player's own pace, each left to ring out, and the player stops when done:
-slicing finds them however they're spaced. Only the noise floor is timed: a count-in, then silence.
+Hits are played at the player's own pace, as many as they like, each left to ring out, and the
+player stops when done: slicing finds them however they're spaced. The planned number is only a
+suggestion. Only the noise floor is timed: a count-in, then silence.
 """
 
 from dataclasses import asdict, dataclass, field
 
 from vinst import notes as note_names
 from vinst.plan import Take, plan_takes, planned_notes
-from vinst.spec import Instrument, file_token
+from vinst.spec import Instrument, InstrumentType, file_token
 
 BEAT_S = 1.0  # of the noise floor's count-in
 COUNT_IN_BEATS = 4
 PRE_ROLL_S = 0.5  # of the count-in, recorded before the silence
 DYNAMICS = {"ppp": "very soft", "pp": "very soft", "p": "soft", "mp": "medium soft", "mf": "medium",
             "f": "loud", "ff": "very loud", "fff": "very loud"}
-RING_OUT = "Let each ring out before the next. Stop when you're done."
+DONE = "stop when you're done."
 
 
 @dataclass
@@ -71,18 +72,31 @@ def how_to_play(inst: Instrument, take: Take) -> str:
 NOISE_FLOOR_HOW = "Everything connected, nothing touched"
 
 
-def hits(inst: Instrument, take: Take, count: int, new: bool = False) -> Guide:
+def times(count: int) -> str:
+    return "once" if count == 1 else f"{count} times"
+
+
+def between(inst: Instrument) -> str:
+    """What to do before playing the next note, and then: stop."""
+    held = inst.meta.type == InstrumentType.SUSTAINED
+    return f"{'Hold each as long as a note may last' if held else 'Let each ring out before the next'}, and {DONE}"
+
+
+def hits(inst: Instrument, take: Take, count: int) -> Guide:
     guide = Guide(BEAT_S)
     how = how_to_play(inst, take)
-    what = f"{count} {'new ' if new else ''}hit{'' if count == 1 else 's'}"
-    guide.add(0, "play", f"{what} · {how}" if how else what, RING_OUT)
+    about = f"As often as you like, about {times(count)}"
+    if take.kind == "note":  # an extra's sound, a knock or a chuck, doesn't ring
+        guide.add(0, "play", f"Play it {how}", f"{about}. {between(inst)}")
+    else:
+        guide.add(0, "play", how or "Play it", f"{about}, and {DONE}")
     return guide
 
 
-def take_guide(inst: Instrument, take: Take, count: int | None = None) -> Guide:
-    """One take on its own; `count` hits instead of the planned ones."""
+def take_guide(inst: Instrument, take: Take) -> Guide:
+    """One take on its own."""
     if take.kind != "noise_floor":
-        return hits(inst, take, count or take.hits)
+        return hits(inst, take, take.hits)
     guide = Guide(BEAT_S)
     guide.add(COUNT_IN_BEATS * BEAT_S, "count", "Get ready", "Then stay silent", beats=COUNT_IN_BEATS)
     guide.add(inst.recording.noise_floor_seconds, "silence", "Stay silent", NOISE_FLOOR_HOW)
@@ -91,7 +105,7 @@ def take_guide(inst: Instrument, take: Take, count: int | None = None) -> Guide:
 
 def more_guide(inst: Instrument, take: Take, count: int) -> Guide:
     """More variations of a lane take, to compare with its own and keep the best."""
-    return hits(inst, take, count, new=True)
+    return hits(inst, take, count)
 
 
 def scale_guide(inst: Instrument, pass_id: str, per_note: int) -> Guide:
@@ -104,7 +118,8 @@ def scale_guide(inst: Instrument, pass_id: str, per_note: int) -> Guide:
     every = midis == list(range(midis[0], midis[-1] + 1))
     which = f"{note_names.name(midis[0])} to {note_names.name(midis[-1])}" if every \
         else ", ".join(note_names.name(m) for m in midis)
-    guide.add(0, "play", f"{which} · {per_note} hits each", f"Low to high, one velocity throughout. {RING_OUT}")
+    guide.add(0, "play", f"{which}, low to high",
+              f"Each note about {times(per_note)}, at one velocity throughout. {between(inst)}")
     return guide
 
 

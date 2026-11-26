@@ -152,9 +152,19 @@ def test_a_take_is_played_at_its_own_pace(tmp_path, monkeypatch):
     g = guide.take_guide(inst, take)
     assert g.free and g.skip == 0 and g.total == 0
     (play,) = g.steps
-    assert (play.kind, play.title) == ("play", "2 hits · f (loud)") and "ring out" in play.detail
-    assert guide.take_guide(inst, take, 4).steps[0].title == "4 hits · f (loud)"
-    assert guide.more_guide(inst, take, 1).steps[0].title == "1 new hit · f (loud)"
+    assert (play.kind, play.title) == ("play", "Play it f (loud)")
+    assert play.detail.startswith("As often as you like, about 2 times.") and "ring out" in play.detail
+    assert guide.more_guide(inst, take, 1).steps[0].detail.startswith("As often as you like, about once.")
+
+
+def test_an_extra_isnt_asked_to_ring_and_a_sustained_note_is_held(tmp_path, monkeypatch):
+    inst = uke(monkeypatch, tmp_path)
+    chuck = next(t for t in plan_takes(inst) if t.kind == "extra")
+    (play,) = guide.take_guide(inst, chuck).steps
+    assert "ring" not in play.detail and play.detail.endswith("and stop when you're done.")
+    inst.meta.type = InstrumentType.SUSTAINED
+    note = next(t for t in plan_takes(inst) if t.kind == "note")
+    assert "Hold each as long as a note may last" in guide.take_guide(inst, note).steps[0].detail
 
 
 def test_the_noise_floor_counts_in_and_stops_by_itself(tmp_path, monkeypatch):
@@ -271,4 +281,5 @@ def test_scale_guide_asks_for_the_scale_low_to_high(tmp_path, monkeypatch):
     assert len(midis) > 2
     g = guide.scale_guide(inst, p.id, 2)
     (play,) = g.steps
-    assert g.free and play.title.startswith(f"{notes.name(midis[0])}, ") and play.title.endswith(" · 2 hits each")
+    assert g.free and play.title.startswith(f"{notes.name(midis[0])}, ") and play.title.endswith(", low to high")
+    assert play.detail.startswith("Each note about 2 times")

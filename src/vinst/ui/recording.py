@@ -1,9 +1,9 @@
 """Recording in the app: input settings, and a dialog that records a take or a whole pass.
 
 The dialog shows the input levels from the moment it opens, so the gain can be set before
-starting. While recording, it says what to play (see guide): hits at the player's own pace until
-they stop, or for the noise floor a count-in and the silence left. The browser animates it on its
-own clock; the server only decides when recording starts and stops.
+starting. It says what to play (see guide) in words: hits at the player's own pace until they stop,
+or for the noise floor a count-in and the silence left. The browser counts the time on its own
+clock; the server only decides when recording starts and stops.
 """
 
 import asyncio
@@ -28,37 +28,20 @@ from vinst.plan import take_key as take_key_of
 from vinst.slicing import has_audio
 from vinst.spec import Instrument, Signal
 from vinst.ui import form
-from vinst.ui.controls import NumberField
 
 if TYPE_CHECKING:
     from vinst.ui.app import Editor
 
 SILENCE_WARNING_S = 2.0
-MAX_HITS = 12
 SCALE_HITS = 3  # on each note of a recorded scale
 
 CSS = """
-.vi-rec { display: flex; flex-direction: column; align-items: center; gap: 6px; min-height: 330px; }
-.vi-rec-stage { position: relative; width: 150px; height: 150px; display: grid; place-items: center; }
-.vi-rec-pulse { position: absolute; inset: 0; border-radius: 50%; border: 6px solid #9e9e9e;
-                transition: background-color .08s, border-color .08s; }
-.vi-rec[data-kind=count] .vi-rec-pulse { border-color: #f9a825; }
-.vi-rec[data-free=true] .vi-rec-beats, .vi-rec[data-free=true] .vi-rec-bar,
-.vi-rec[data-free=true] .vi-rec-total { visibility: hidden; }
-.vi-rec[data-play=true] .vi-rec-pulse { background: #e53935; border-color: #e53935; }
-.vi-rec[data-kind=silence] .vi-rec-pulse { border-color: #546e7a; border-style: dashed; }
-.vi-rec-big { position: relative; font-size: 2.6rem; font-weight: 600; }
-.vi-rec[data-play=true] .vi-rec-big { color: white; }
+.vi-rec { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px;
+          padding: 20px 0 12px; }
 .vi-rec-title { font-size: 1.6rem; font-weight: 600; }
 .vi-rec-detail { font-size: 1.15rem; min-height: 1.5em; }
-.vi-rec-beats { display: flex; gap: 8px; min-height: 16px; margin: 4px 0 12px; }  /* room for the beat's dot to grow */
-.vi-rec-beats span { width: 14px; height: 14px; border-radius: 50%; background: #e0e0e0;
-                     transition: background-color .08s, transform .08s; }
-.vi-rec-beats span.on { background: #1976d2; transform: scale(1.3); }
-.vi-rec-bar, .vi-rec-total { width: 100%; height: 8px; background: #eeeeee; border-radius: 4px; overflow: hidden; }
-.vi-rec-bar > div { height: 100%; background: #1976d2; }
-.vi-rec-total { height: 4px; } .vi-rec-total > div { height: 100%; background: #9e9e9e; }
-.vi-rec-time { opacity: .7; font-size: .9rem; min-height: 1.3em; }
+.vi-rec-time { font-size: 1.15rem; font-variant-numeric: tabular-nums; min-height: 1.5em; margin-top: 8px; }
+.vi-rec[data-live=true] .vi-rec-time { color: #e53935; font-weight: 600; }
 .vi-meter { display: grid; grid-template-columns: 7rem 1fr 4.5rem; align-items: center; gap: 8px; width: 100%; }
 .vi-meter-bar { height: 10px; background: var(--vi-border, #eeeeee); border-radius: 5px; overflow: hidden; }
 .vi-meter-bar > div { height: 100%; width: 0; background: #43a047; transition: width .08s linear; }
@@ -74,42 +57,19 @@ window.viRec = (() => {
   let raf = null;
   const part = (root, name) => root.querySelector('.vi-rec-' + name);
   const clock = s => { s = Math.max(0, Math.ceil(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
-  function free(root, g, t, live) {
-    const s = g.steps[0], stage = root.querySelector('.vi-rec');
-    stage.dataset.kind = s.kind; stage.dataset.play = live;
-    part(root, 'title').textContent = s.title;
-    part(root, 'detail').textContent = s.detail;
-    part(root, 'big').textContent = live ? 'Play' : '';
-    part(root, 'pulse').style.transform = 'scale(1)';
-    part(root, 'time').textContent = live ? clock(t) : '';
-    return true;
-  }
   function show(root, g, t, live) {
-    root.querySelector('.vi-rec').dataset.free = g.free;
-    if (g.free) return free(root, g, t, live);
-    const i = g.steps.findIndex(s => t < s.at + s.length);
+    // Before recording: what the take is about, its last step.
+    const i = !live ? g.steps.length - 1 : g.free ? 0 : g.steps.findIndex(s => t < s.at + s.length);
     const s = g.steps[i >= 0 ? i : g.steps.length - 1];
-    const local = Math.min(t - s.at, s.length);
-    const beat = s.beats ? Math.min(Math.floor(local / g.beat), s.beats - 1) : -1;
-    const phase = s.beats ? (local / g.beat) % 1 : 0;
-    const stage = root.querySelector('.vi-rec'); stage.dataset.kind = s.kind; stage.dataset.play = false;
-    part(root, 'title').textContent = i >= 0 ? s.title : 'Done';
-    part(root, 'detail').textContent = i < 0 ? '' : s.detail;
-    const left = s.length - local;
-    part(root, 'big').textContent = i < 0 ? '✓' : s.kind === 'count' ? String(s.beats - beat)
-      : s.kind === 'silence' ? clock(left) : '·';
-    const pulse = part(root, 'pulse');
-    pulse.style.transform = 'scale(' + (s.beats && i >= 0 ? 1 + 0.12 * Math.pow(1 - phase, 3) : 1) + ')';
-    const dots = part(root, 'beats');
-    if (dots.childElementCount !== s.beats) {
-      dots.innerHTML = '';
-      for (let b = 0; b < s.beats; b++) dots.append(document.createElement('span'));
-    }
-    [...dots.children].forEach((d, b) => d.classList.toggle('on', b === beat && i >= 0));
-    part(root, 'bar').firstElementChild.style.width = (100 * local / s.length) + '%';
-    part(root, 'total').firstElementChild.style.width = Math.min(100, 100 * t / g.total) + '%';
-    part(root, 'time').textContent = clock(t) + ' / ' + clock(g.total);
-    return i >= 0;
+    const local = t - s.at, done = i < 0;
+    root.querySelector('.vi-rec').dataset.live = live && !done;
+    part(root, 'title').textContent = done ? 'Done' : s.title;
+    part(root, 'detail').textContent = done ? '' : s.detail;
+    part(root, 'time').textContent = !live || done ? ''
+      : g.free ? 'Recording · ' + clock(t)
+      : s.kind === 'count' ? 'Silence in ' + Math.max(1, s.beats - Math.floor(local / g.beat))
+      : 'Recording · ' + clock(s.length - local) + ' left';
+    return !done;
   }
   function stop() {
     if (raf) cancelAnimationFrame(raf);
@@ -179,16 +139,15 @@ def record_take(ed: "Editor", number: int, on_saved: Saved | None = None) -> Non
         record_more(ed, take.key, ed.inst.dynamics.round_robins, on_saved)
         return
     following = next((t for t in plan_takes(ed.inst) if t.number == number + 1), None)
-    count = take.hits if take.kind == "note" else None  # extras and the noise floor are as planned
-    open_dialog(ed, take.title, signals_of(ed, take.signals), paths,
-                lambda n: guides.take_guide(ed.inst, take, n), count,
+    open_dialog(ed, take.title, signals_of(ed, take.signals), paths, guides.take_guide(ed.inst, take),
                 (lambda: record_take(ed, following.number, on_saved)) if following else None,
                 f"Next: {following.title}" if following else "",
                 (lambda: on_saved(take.key)) if on_saved else None, loudest_velocity(ed, take), aim_for(ed, take))
 
 
 def record_more(ed: "Editor", take_key: str, count: int, on_saved: Saved | None = None) -> None:
-    """Record more variations of a lane take, to compare with its own and keep the best of all."""
+    """Record more variations of a lane take, to compare with its own and keep the best of all;
+    `count`: how many to suggest."""
     from vinst.slicing import more_numbers
 
     take = next((t for t in plan_takes(ed.inst) if t.key == take_key), None)
@@ -199,7 +158,7 @@ def record_more(ed: "Editor", take_key: str, count: int, on_saved: Saved | None 
     paths = {sid: folder / more_file(take, number, sid) for sid in take.signals}
     key = take_key_of(more_base(take, number), take.pass_id)
     open_dialog(ed, f"{take.title} · more hits", signals_of(ed, take.signals), paths,
-                lambda n: guides.more_guide(ed.inst, take, n or count), count, None, "",
+                guides.more_guide(ed.inst, take, count), None, "",
                 (lambda: on_saved(key)) if on_saved else None, loudest_velocity(ed, take), aim_for(ed, take))
 
 
@@ -212,8 +171,8 @@ def record_scale(ed: "Editor", pass_id: str, folder: Path, then: Callable[[], No
         return
     paths = {s.id: folder / f"scale_{s.id}.wav" for s in p.signals}
     title = "The whole scale" + (f" · {p.name}" if len(recording_passes(ed.inst)) > 1 else "")
-    open_dialog(ed, title, list(p.signals), paths, lambda n: guides.scale_guide(ed.inst, pass_id, n or SCALE_HITS),
-                SCALE_HITS, then, "Split by pitch", next_icon="call_split", is_take=False, on_closed=on_closed)
+    open_dialog(ed, title, list(p.signals), paths, guides.scale_guide(ed.inst, pass_id, SCALE_HITS),
+                then, "Split by pitch", next_icon="call_split", is_take=False, on_closed=on_closed)
 
 
 def peak_dbfs(path: Path) -> float:
@@ -267,15 +226,13 @@ def take_stream(inst: Instrument, signals: list[Signal]) \
 
 
 def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str, Path],
-                guide_for: Callable[[int | None], guides.Guide], count: int | None,
-                on_next: Callable[[], None] | None, next_label: str,
+                guide: guides.Guide, on_next: Callable[[], None] | None, next_label: str,
                 on_saved: Callable[[], None] | None = None, judge_level: bool = False,
                 aim: str | None = None, next_icon: str = "skip_next", is_take: bool = True,
                 on_closed: Callable[[], None] | None = None) -> None:
-    """`count`: how many hits to ask for, which the player can change before recording; None for
-    takes recorded as planned. `judge_level`: a take of the loudest velocity, whose level says how
-    to set the input gain. `aim`: how loud to play a soft velocity. `is_take`: the files are takes,
-    marked as recorded in the app (see takes_meta), not a scale to split."""
+    """`guide`: what to play (see guide). `judge_level`: a take of the loudest velocity, whose level
+    says how to set the input gain. `aim`: how loud to play a soft velocity. `is_take`: the files are
+    takes, marked as recorded in the app (see takes_meta), not a scale to split."""
     inst = ed.inst
     paused = pause_monitors()
     opened = take_stream(inst, signals)
@@ -285,7 +242,7 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
         return
     rec, device, channels = opened
     opened = time.monotonic()
-    state: dict = {"timer": None, "guide": guide_for(count), "started": 0.0}
+    state: dict = {"timer": None, "started": 0.0}
     client = ui.context.client
 
     # At page level: the take table redraws after each saved take and would take the dialog with it.
@@ -299,13 +256,8 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
                     close_tip = ui.tooltip("Close")
         root_id = f"vi-rec-{dialog.id}"
         with ui.element("div").classes("w-full").props(f"id={root_id}"):
-            ui.html(
-                '<div class="vi-rec">'
-                '<div class="vi-rec-stage"><div class="vi-rec-pulse"></div><div class="vi-rec-big"></div></div>'
-                '<div class="vi-rec-title"></div><div class="vi-rec-detail"></div><div class="vi-rec-beats"></div>'
-                '<div class="vi-rec-bar"><div></div></div>'
-                '<div class="vi-rec-total"><div></div></div><div class="vi-rec-time"></div></div>'
-            ).classes("w-full")
+            ui.html('<div class="vi-rec"><div class="vi-rec-title"></div><div class="vi-rec-detail"></div>'
+                    '<div class="vi-rec-time"></div></div>').classes("w-full")
             with ui.column().classes("w-full gap-1 mt-2"):
                 for s in signals:
                     ui.html(f'<div class="vi-meter" data-signal="{escape(s.id)}">'
@@ -323,23 +275,11 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
             ui.label(aim).classes("text-sm opacity-70")
         outcome = ui.column().classes("w-full gap-0 text-sm")
         with ui.row().classes("w-full items-center justify-end"):
-            hits_input = None
-            if count is not None:
-                hits_input = NumberField("Hits", value=count, min=1, max=MAX_HITS, step=1, precision=0,
-                                       on_change=lambda e: set_count(e.value)) \
-                    .props("dense outlined").classes("w-24")
-                ui.space()
             cancel_btn = ui.button("Cancel", on_click=lambda: finish(False)).props("flat")
             keep_btn = ui.button("Stop and keep", on_click=lambda: finish(True))
             next_btn = ui.button(next_label or "Next", icon=next_icon, on_click=lambda: go_next()) \
                 .props("outline")
             start_btn = ui.button("Record", icon="fiber_manual_record", on_click=lambda: start()).props("color=red")
-
-    def set_count(value: float | None) -> None:
-        if value is None or rec.recording:
-            return
-        state["guide"] = guide_for(max(1, min(MAX_HITS, int(value))))
-        preview()
 
     def buttons(recording: bool, done: bool = False) -> None:
         start_btn.set_text("Record again" if done else "Record")
@@ -348,12 +288,9 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
         next_btn.set_visibility(done and on_next is not None)
         cancel_btn.set_visibility(recording)
         keep_btn.set_visibility(recording)
-        if hits_input is not None:
-            hits_input.set_enabled(not recording)
 
     def start() -> None:
         outcome.clear()
-        guide = state["guide"]
         try:
             rec.start(paths, inst.recording.bit_depth, skip_seconds=guide.skip)
         except recorder.RecorderError as e:
@@ -372,7 +309,6 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
         if state["timer"]:
             state["timer"].cancel()
             state["timer"] = None
-        guide = state["guide"]
         # About as much audio as the take ran for; less means the interface stopped.
         ran = guide.total if complete else time.monotonic() - state["started"]
         result = rec.stop(keep, min_seconds=ran - guide.skip - 1)
@@ -410,7 +346,7 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
         silent.set_visibility(not rec.heard and time.monotonic() - opened > SILENCE_WARNING_S)
 
     def preview() -> None:
-        ui.run_javascript(f"viRec.preview({json.dumps(root_id)}, {json.dumps(state['guide'].to_dict())})")
+        ui.run_javascript(f"viRec.preview({json.dumps(root_id)}, {json.dumps(guide.to_dict())})")
 
     with dialog:
         meter = ui.timer(0.1, levels)

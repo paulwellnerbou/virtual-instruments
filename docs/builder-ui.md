@@ -59,7 +59,7 @@ Record, check and fix everything in one place.
 
 ### Recording
 
-- **● on a row** records it at your own pace: the dialog says how many hits to play and how; let each ring out, then **Stop and keep**. Set how many hits first. Slicing finds the hits however they're spaced. The noise floor counts in and stops by itself.
+- **● on a row** records it at your own pace: the dialog says how to play it, as often as you like (about as many times as the variations per velocity); let each ring out, then **Stop and keep**. Slicing finds the hits however they're spaced. The noise floor counts in and stops by itself.
 - Once a velocity is recorded, ● records **more hits** beside the others, to compare and reject the weak ones. The noise floor and extras are single takes, so ● records them again.
 - A recording replaces the old one only when it finishes: cancelling or an interface problem keeps what you had. The app won't record while the interface runs at another sample rate than the instrument.
 - **Recorded elsewhere?** Drop a WAV, AIFF or FLAC onto a row. It becomes that velocity's take, or more hits if there is one, so nothing is overwritten. With signals recorded together, drop a file per signal with its name in the file name (`…_piezo.wav`), or one file with a channel per signal: the worksheet asks which channel (left, right) or file is which signal.
