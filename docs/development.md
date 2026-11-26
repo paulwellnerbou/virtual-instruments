@@ -15,7 +15,7 @@ uv run pytest
 Other commands:
 
 - `uv run vinst open`: what the app launcher runs: starts the server if needed and opens the browser
-- `uv run vinst install-app`: installs the launcher into `~/Applications`; it always runs the builder from this checkout. Run it again to pick up a new icon; it also removes a launcher installed under the old name
+- `uv run vinst install-app`: installs the launch agent and, until the page is installed as a Chrome app, the launcher into `~/Applications`; both run the builder from this checkout. Run it again to pick up a new icon, or once the Chrome app exists to remove the launcher; it also removes a launcher installed under the old name
 - `uv run vinst list`
 - `uv run vinst new "Name" --type plucked`
 - `uv run vinst slice <slug>`: cuts the recorded takes into hits (or, for an instrument that imports existing samples, imports its folder), analyses them and writes `hits.json`
@@ -23,7 +23,9 @@ Other commands:
 - `uv run vinst split <slug> <velocity> <files…> [--dry-run]`: cuts a long recording of many notes into the notes' takes by pitch (one file per signal); slice afterwards
 - `uv run vinst synth-takes <slug> <folder>`: writes fake takes, with a few deliberate mistakes, for trying out slicing and review without recording
 
-The launcher's server listens on http://127.0.0.1:4780 and stops about two minutes after the last page closes. If it can't start (e.g. the port is taken), the launcher shows an alert. The log is `~/Library/Logs/vinst.log`, trimmed when it passes 1 MB.
+The launch agent (`~/Library/LaunchAgents/io.github.vinst.instrument-builder.plist`, see `src/vinst/agent.py`) has launchd listen on http://127.0.0.1:4780. The first connection starts a small helper, which takes the socket and starts `uv run vinst ui --fd …` as responsible for itself: macOS then grants the microphone as for `uv` run from a terminal, where it would refuse the helper's Python without asking. The server stops about two minutes after the last page closes and launchd listens again. Remove the agent with `launchctl bootout gui/$(id -u)/io.github.vinst.instrument-builder` and delete its plist.
+
+Without the agent (a launcher installed before it), the launcher starts the server itself; if it can't (e.g. the port is taken), it shows an alert. The log is `~/Library/Logs/vinst.log`, trimmed when it passes 1 MB.
 
 The icon (launcher, favicon, installed Chrome window) is drawn by `scripts/make_icons.py`, which writes every size into `src/vinst/ui/assets`; it needs `rsvg-convert` (`brew install librsvg`).
 

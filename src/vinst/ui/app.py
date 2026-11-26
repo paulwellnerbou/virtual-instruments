@@ -1027,10 +1027,11 @@ def step_dynamics(ed: Editor) -> None:
     ed.on_range_changed.append(extras.refresh)
 
 
-def run(port: int = 8080, show: bool = True, idle_exit: float = 0) -> None:
+def run(port: int = 8080, show: bool = True, idle_exit: float = 0, fd: int | None = None) -> None:
+    """`fd`: a socket already listening on `port`, handed over by the launch agent."""
     if idle_exit > 0:
         from vinst.ui import idle
 
         idle.enable(idle_exit)
     ui.run(title=APP_TITLE, port=port, show=show, reload=False, dark=None, favicon=ASSETS / "favicon.svg", host="127.0.0.1",
-           show_welcome_message=idle_exit <= 0)
+           show_welcome_message=idle_exit <= 0, **({"fd": fd} if fd is not None else {}))

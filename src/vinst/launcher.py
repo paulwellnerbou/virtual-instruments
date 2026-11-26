@@ -12,6 +12,8 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
+from vinst import agent
+
 APP_PORT = 4780  # fixed, so a page installed as a Chrome app keeps working
 APP_NAME = "Virtual Instrument Creator"
 OLD_NAMES = ["DecentSampler Instrument Builder"]
@@ -52,8 +54,9 @@ def trim_log(path: Path = LOG_FILE, max_bytes: int = LOG_MAX_BYTES) -> None:
         pass
 
 
-def chrome_app(name: str = APP_NAME, folder: Path = CHROME_APPS) -> Path | None:
+def chrome_app(name: str = APP_NAME, folder: Path | None = None) -> Path | None:
     """The builder installed as a Chrome app ("Install page as app"), if there is one."""
+    folder = folder or CHROME_APPS
     candidates = sorted(folder.glob(f"{name}*.app")) if folder.is_dir() else []
     return candidates[0] if candidates else None
 
@@ -69,10 +72,13 @@ def start_server(port: int, idle_exit: float) -> None:
 
 def open_builder(port: int = APP_PORT, idle_exit: float = 120) -> None:
     if not builder_running(port):
-        if port_in_use(port):
+        if agent.installed():
+            pass  # macOS starts it on this first request
+        elif port_in_use(port):
             raise LaunchError(f"Port {port} is used by another program, so the builder can't start. "
                               "Quit that program and try again.")
-        start_server(port, idle_exit)
+        else:
+            start_server(port, idle_exit)
         deadline = time.monotonic() + START_TIMEOUT_S
         while not builder_running(port):
             if time.monotonic() > deadline:
@@ -154,16 +160,20 @@ def write_launcher(bundle: Path, repo: Path, uv: Path) -> None:
     bundle.touch()  # Finder caches an app's icon until the bundle's date changes
 
 
-def remove_old_launchers(folder: Path) -> list[Path]:
-    """Launchers installed under an earlier name; only ones this project made."""
+def made_here(bundle: Path) -> bool:
+    try:
+        info = plistlib.loads((bundle / "Contents" / "Info.plist").read_bytes())
+    except (OSError, plistlib.InvalidFileException):
+        return False
+    return info.get("CFBundleIdentifier") == BUNDLE_ID
+
+
+def remove_launchers(folder: Path, names: list[str]) -> list[Path]:
+    """Only ones this project made."""
     removed = []
-    for name in OLD_NAMES:
+    for name in names:
         bundle = folder / f"{name}.app"
-        try:
-            info = plistlib.loads((bundle / "Contents" / "Info.plist").read_bytes())
-        except (OSError, plistlib.InvalidFileException):
-            continue
-        if info.get("CFBundleIdentifier") == BUNDLE_ID:
+        if made_here(bundle):
             shutil.rmtree(bundle)
             removed.append(bundle)
     return removed

@@ -75,9 +75,9 @@ cd virtual-instruments
 uv run vinst install-app
 ```
 
-This puts **Virtual Instrument Creator.app** into `~/Applications`. It opens the builder in your browser and stops a couple of minutes after you close the page.
+From then on macOS starts the builder whenever its page (http://127.0.0.1:4780/) is opened, and it stops a couple of minutes after you close the page. It also puts **Virtual Instrument Creator.app** into `~/Applications`, which opens that page.
 
-**In its own window:** open the builder once in Chrome and install it as an app (⋮ → Cast, save and share → Install page as app). The launcher then opens that window; always start it through the launcher.
+**In its own window:** open the page once in Chrome and install it as an app (⋮ → Cast, save and share → Install). Then run `uv run vinst install-app` again: the Chrome app opens the builder by itself, so the launcher is removed and only one Virtual Instrument Creator remains.
 
 ## How it works
 
