@@ -1,6 +1,6 @@
 """Stop the server once no browser has been connected for a while.
 
-Used when the launcher app starts the server: it runs only while the builder is open somewhere.
+Used when the server starts on demand (launch agent or launcher): it runs only while the builder is open somewhere.
 """
 
 import asyncio

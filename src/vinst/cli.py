@@ -1,10 +1,11 @@
 import shutil
+import sys
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from vinst import defaults, launcher, store
+from vinst import agent, defaults, launcher, store
 from vinst.plan import summarize
 from vinst.spec import InstrumentType
 
@@ -19,11 +20,12 @@ def ui(
     port: int = 8080,
     show: bool = True,
     idle_exit: Annotated[float, typer.Option(help="stop after this many seconds without an open page; 0: never")] = 0,
+    fd: Annotated[int | None, typer.Option(help="serve on this listening socket (what the launch agent passes)")] = None,
 ) -> None:
     """Run the instrument builder and open it in the browser."""
     from vinst.ui.app import run
 
-    run(port=port, show=show, idle_exit=idle_exit)
+    run(port=port, show=show, idle_exit=idle_exit, fd=fd)
 
 
 @app.command("open")
@@ -43,7 +45,8 @@ def open_(
 def install_app(
     folder: Annotated[str, typer.Option(help="where to put the app")] = "~/Applications",
 ) -> None:
-    """Create a macOS launcher app that runs the builder from this checkout."""
+    """Let macOS start the builder from this checkout when its page is opened, and add a launcher app
+    until the page is installed as a Chrome app."""
     uv = shutil.which("uv")
     if uv is None:
         typer.echo("uv not found on PATH.", err=True)
@@ -53,12 +56,27 @@ def install_app(
     except launcher.LaunchError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1) from e
+    try:
+        agent.install(Path(sys.executable), Path(uv), repo, launcher.APP_PORT, launcher.LOG_FILE)
+    except OSError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1) from e
+    url = f"http://127.0.0.1:{launcher.APP_PORT}/"
+    typer.echo(f"macOS now starts the builder whenever {url} is opened.")
     folder_path = Path(folder).expanduser()
-    for old in launcher.remove_old_launchers(folder_path):
+    names = launcher.OLD_NAMES
+    chrome = launcher.chrome_app()
+    if chrome is not None:
+        names = [*names, launcher.APP_NAME]  # the Chrome app opens it by itself now
+    for old in launcher.remove_launchers(folder_path, names):
         typer.echo(f"Removed {old}")
+    if chrome is not None:
+        typer.echo(f"Open the builder with {chrome}")
+        return
     bundle = folder_path / f"{launcher.APP_NAME}.app"
     launcher.write_launcher(bundle, repo, Path(uv))
-    typer.echo(f"Installed {bundle}")
+    typer.echo(f"Installed {bundle}. For a window of its own, install the page as an app in Chrome "
+               "(⋮ → Cast, save and share), then run install-app again: the Chrome app replaces the launcher.")
 
 
 @app.command("list")
