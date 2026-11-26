@@ -9,7 +9,7 @@ from vinst.plan import summarize
 from vinst.spec import InstrumentType
 
 app = typer.Typer(
-    help="DecentSampler Instrument Builder: build DecentSampler instruments from recordings.",
+    help="Virtual Instrument Creator: build DecentSampler instruments and SF2 soundfonts from recordings.",
     no_args_is_help=True,
 )
 
@@ -53,7 +53,10 @@ def install_app(
     except launcher.LaunchError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1) from e
-    bundle = Path(folder).expanduser() / f"{launcher.APP_NAME}.app"
+    folder_path = Path(folder).expanduser()
+    for old in launcher.remove_old_launchers(folder_path):
+        typer.echo(f"Removed {old}")
+    bundle = folder_path / f"{launcher.APP_NAME}.app"
     launcher.write_launcher(bundle, repo, Path(uv))
     typer.echo(f"Installed {bundle}")
 

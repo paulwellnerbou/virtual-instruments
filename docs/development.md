@@ -15,7 +15,7 @@ uv run pytest
 Other commands:
 
 - `uv run vinst open`: what the app launcher runs: starts the server if needed and opens the browser
-- `uv run vinst install-app`: installs the launcher into `~/Applications`; it always runs the builder from this checkout
+- `uv run vinst install-app`: installs the launcher into `~/Applications`; it always runs the builder from this checkout. Run it again to pick up a new icon; it also removes a launcher installed under the old name
 - `uv run vinst list`
 - `uv run vinst new "Name" --type plucked`
 - `uv run vinst slice <slug>`: cuts the recorded takes into hits (or, for an instrument that imports existing samples, imports its folder), analyses them and writes `hits.json`
@@ -24,6 +24,8 @@ Other commands:
 - `uv run vinst synth-takes <slug> <folder>`: writes fake takes, with a few deliberate mistakes, for trying out slicing and review without recording
 
 The launcher's server listens on http://127.0.0.1:4780 and stops about two minutes after the last page closes. If it can't start (e.g. the port is taken), the launcher shows an alert. The log is `~/Library/Logs/vinst.log`, trimmed when it passes 1 MB.
+
+The icon (launcher, favicon, installed Chrome window) is drawn by `scripts/make_icons.py`, which writes every size into `src/vinst/ui/assets`; it needs `rsvg-convert` (`brew install librsvg`).
 
 ## Environment variables
 

@@ -808,6 +808,8 @@ def test_the_soundfont_goes_to_musescore_but_never_over_someone_elses(built, tmp
     folder.mkdir()
     assert sf2.install(font, inst.meta.slug, folder).read_bytes() == font.read_bytes()
     assert sf2.install(font, inst.meta.slug, folder)  # again over its own copy
+    (folder / font.name).write_bytes(b"RIFF....sfbk ISFT DecentSampler Instrument Builder (vinst)")
+    assert sf2.install(font, inst.meta.slug, folder)  # written before the rename
     (folder / font.name).write_bytes(b"RIFF....sfbk someone else's")
     with pytest.raises(ValueError, match="wasn't made by this builder"):
         sf2.install(font, inst.meta.slug, folder)
