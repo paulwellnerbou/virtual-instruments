@@ -29,7 +29,7 @@ def move_recording(inst: Instrument, takes_dir: Path, source_key: str, note_base
     if any(new.exists() for _, new in moves):
         raise ValueError(f"{target.title} has a recording of that name already.")
     for old, new in moves:
-        old.rename(new)  # keeps size and modification time, so the click grid still applies
+        old.rename(new)  # keeps size and modification time, so its hand cuts still apply
         takes_meta.rename(inst.meta.slug, old.name, new.name)
     cleanup_eq.move_take(inst, source_key, key)
     return key
