@@ -18,8 +18,9 @@ CSS = """
 /* Closed, it gives back the gap before it in its column too, so nothing below moves until it opens. */
 .vi-collapse.vi-gapless { transition: grid-template-rows .25s ease, opacity .25s ease, margin-top .25s ease; }
 .vi-collapse.vi-gapless:not(.vi-open) { margin-top: calc(-1 * var(--nicegui-default-gap)); }
-/* Leaving: e.g. a recording's hits while it goes to the Trash. Arriving: what takes their place. */
-.vi-going { opacity: 0; transform: scale(.96); pointer-events: none; transition: opacity .25s ease, transform .25s ease; }
+/* Leaving: e.g. a recording's hits while it goes to the Trash. Arriving: what takes their place.
+   Doubled: an element's own transition (a hit's hover) would replace this one. */
+.vi-going.vi-going { opacity: 0; transform: scale(.96); pointer-events: none; transition: opacity .25s ease, transform .25s ease; }
 .vi-arriving { animation: vi-arrive .25s ease both; }
 @keyframes vi-arrive { from { opacity: 0; } }
 """

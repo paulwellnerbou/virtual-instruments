@@ -1329,17 +1329,23 @@ def step_worksheet(ed: "Editor") -> None:
         a Trash are only deleted `for_good`, after asking."""
         lane_dialog.close()
         dialog.close()
-        # A single recording leaves in place, so nothing above it moves; all of them go with the progress bar.
-        for key in keys or ():
-            for el in state["going"].get(key, []):
-                if isinstance(el, Collapse):
-                    el.set_open(False)
-                else:
-                    el.classes(add="vi-going")
+
+        def leave() -> None:
+            """A single recording leaves in place, so nothing above it moves; all of them go with the
+            progress bar."""
+            for key in keys or ():
+                for el in state["going"].get(key, []):
+                    if isinstance(el, Collapse):
+                        el.set_open(False)
+                    else:
+                        el.classes(add="vi-going")
+
+        leave()
         while state["busy"]:  # a slice running now would write the samples back
             await asyncio.sleep(0.1)
         if not still_there():
             return
+        leave()  # that slice redrew the list
         state["busy"] = True
         button.disable()
         if keys is None:
@@ -1371,7 +1377,7 @@ def step_worksheet(ed: "Editor") -> None:
                 ed.changed()
         state["stale"] = None
         state["arriving"] = set(keys or ())
-        results.refresh()
+        await results.refresh()  # else it runs later, once "arriving" is emptied
         state["arriving"] = set()
         ed.refresh()
         if found is None:
