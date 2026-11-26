@@ -29,7 +29,8 @@ INFO_MAX = 256  # bytes of an INFO string, its terminating zeros included (Fluid
 PAD = 46  # zero samples the specification wants after each sample
 
 
-MARK = b"DecentSampler Instrument Builder (vinst)"
+MARK = b"Virtual Instrument Creator (vinst)"
+OLD_MARKS = [b"DecentSampler Instrument Builder (vinst)"]  # soundfonts written before the rename
 OF = "vinst instrument: "  # in its comment, which instrument a soundfont is of
 MUSESCORE_FOLDER = Path("~/Documents/MuseScore4/SoundFonts")  # MuseScore 4's default
 MUSESCORE_SETTINGS = Path("~/Library/Preferences/org.musescore.MuseScore4.plist")
@@ -58,7 +59,8 @@ def header(path: Path) -> bytes:
 
 def made_here(path: Path) -> bool:
     """Whether the soundfont at `path` was written by this builder (it says so in its info)."""
-    return MARK in header(path)
+    head = header(path)
+    return any(m in head for m in [MARK, *OLD_MARKS])
 
 
 def install(font: Path, slug: str, folder: Path | None = None) -> Path:

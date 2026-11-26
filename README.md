@@ -1,6 +1,6 @@
-# DecentSampler Instrument Builder
+# Virtual Instrument Creator
 
-Turn your own recordings of an instrument into a playable [DecentSampler](https://www.decentsamples.com/product/decent-sampler-plugin/) instrument: describe it, record each note in the app or bring files from your DAW, check the samples, and build.
+Turn your own recordings of an instrument into a playable [DecentSampler](https://www.decentsamples.com/product/decent-sampler-plugin/) instrument and SF2 soundfont: describe it, record each note in the app or bring files from your DAW, check the samples, and build.
 
 Made for ukuleles, it works for any plucked or struck string instrument, pitched percussion (kalimba, metallophone), sustained instruments, drums and single sounds.
 
@@ -75,7 +75,7 @@ cd virtual-instruments
 uv run vinst install-app
 ```
 
-This puts **DecentSampler Instrument Builder.app** into `~/Applications`. It opens the builder in your browser and stops a couple of minutes after you close the page.
+This puts **Virtual Instrument Creator.app** into `~/Applications`. It opens the builder in your browser and stops a couple of minutes after you close the page.
 
 **In its own window:** open the builder once in Chrome and install it as an app (⋮ → Cast, save and share → Install page as app). The launcher then opens that window; always start it through the launcher.
 

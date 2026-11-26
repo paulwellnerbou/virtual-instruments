@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import Any
 
 import nicegui
-from nicegui import ui
+from fastapi import HTTPException
+from fastapi.responses import FileResponse, JSONResponse
+from nicegui import app, ui
 from pydantic import ValidationError
 
 from vinst import defaults, notes, review, store
@@ -37,7 +39,12 @@ from vinst.ui.build_steps import extra_use, step_build, step_sound, velocity_lay
 from vinst.ui.finder import can_choose_folder, choose_folder
 from vinst.ui.worksheet import settings_cards, step_worksheet
 
-APP_TITLE = "DecentSampler Instrument Builder"
+APP_TITLE = "Virtual Instrument Creator"
+ASSETS = Path(__file__).parent / "assets"
+ICONS = {"icon-192.png": 192, "icon-512.png": 512}
+# Lets Chrome's "Install page as app" take the name and a sharp icon, not a blurry favicon.
+HEAD = """<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/icon-512.png">"""
 DECENTSAMPLER_URL = "https://www.decentsamples.com/product/decent-sampler-plugin/"
 SIGNAL_IDS = {"Pickup": "pickup", "Piezo": "piezo", "Internal mic": "mic", "External mic": "extmic", "DI": "di",
               "Room mic": "room", "Close mic": "close"}
@@ -143,12 +150,31 @@ def header() -> None:
     ui.add_css(STEPS_CSS)
     theme.add_css()
     recording.add_assets()
+    ui.add_head_html(HEAD)
     with ui.header().classes("items-center justify-between px-4 py-0"):
         ui.link(APP_TITLE, "/").classes("text-inherit font-semibold no-underline")
         with ui.row().classes("items-center gap-1 text-sm opacity-80"):
             ui.label("Builds instruments for")
             ui.link("DecentSampler", DECENTSAMPLER_URL, new_tab=True).classes("text-inherit")
             ui.icon("open_in_new").classes("text-sm")
+            ui.label("and SF2 soundfonts")
+
+
+@app.get("/manifest.webmanifest")
+def manifest() -> JSONResponse:
+    return JSONResponse({
+        "name": APP_TITLE, "short_name": APP_TITLE, "start_url": "/", "display": "standalone",
+        "theme_color": "#0a6ee6",
+        "icons": [{"src": f"/icons/{name}", "sizes": f"{size}x{size}", "type": "image/png"}
+                  for name, size in ICONS.items()],
+    }, media_type="application/manifest+json")
+
+
+@app.get("/icons/{name}")
+def icon(name: str) -> FileResponse:
+    if name not in ICONS:
+        raise HTTPException(404)
+    return FileResponse(ASSETS / name)
 
 
 @ui.page("/")
@@ -1008,5 +1034,5 @@ def run(port: int = 8080, show: bool = True, idle_exit: float = 0) -> None:
         from vinst.ui import idle
 
         idle.enable(idle_exit)
-    ui.run(title=APP_TITLE, port=port, show=show, reload=False, dark=None, favicon="🎸", host="127.0.0.1",
+    ui.run(title=APP_TITLE, port=port, show=show, reload=False, dark=None, favicon=ASSETS / "favicon.svg", host="127.0.0.1",
            show_welcome_message=idle_exit <= 0)

@@ -88,6 +88,22 @@ def test_port_taken_by_another_program_is_reported(monkeypatch):
         launcher.open_builder(4780, 120)
 
 
+def test_launcher_has_the_icon_and_replaces_one_under_the_old_name(tmp_path):
+    old = tmp_path / f"{launcher.OLD_NAMES[0]}.app"
+    launcher.write_launcher(old, tmp_path, tmp_path / "uv")
+    foreign = tmp_path / "Foreign"
+    (foreign / f"{launcher.OLD_NAMES[0]}.app" / "Contents").mkdir(parents=True)
+    (foreign / f"{launcher.OLD_NAMES[0]}.app" / "Contents" / "Info.plist").write_bytes(
+        plistlib.dumps({"CFBundleIdentifier": "com.example.other"}))
+    assert launcher.remove_old_launchers(tmp_path) == [old] and not old.exists()
+    assert launcher.remove_old_launchers(foreign) == [] and (foreign / f"{launcher.OLD_NAMES[0]}.app").exists()
+    bundle = tmp_path / f"{launcher.APP_NAME}.app"
+    launcher.write_launcher(bundle, tmp_path, tmp_path / "uv")
+    info = plistlib.loads((bundle / "Contents" / "Info.plist").read_bytes())
+    assert info["CFBundleName"] == "Virtual Instrument Creator" and info["CFBundleIconFile"] == "icon"
+    assert (bundle / "Contents" / "Resources" / "icon.icns").read_bytes()[:4] == b"icns"
+
+
 def test_chrome_app_lookup(tmp_path):
     assert launcher.chrome_app(folder=tmp_path) is None
     (tmp_path / f"{launcher.APP_NAME}.app").mkdir()

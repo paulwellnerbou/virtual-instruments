@@ -1,7 +1,7 @@
 [project]
 name = "vinst"
 version = "0.1.0"
-description = "Build DecentSampler instruments from recordings"
+description = "Virtual Instrument Creator: build DecentSampler instruments and SF2 soundfonts from recordings"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE", "src/vinst/vendor/decentsampler_schema/LICENSE"]

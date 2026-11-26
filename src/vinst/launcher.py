@@ -1,6 +1,8 @@
 """Running the builder like an app: start the server on demand, open it, and the macOS launcher."""
 
+import plistlib
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -11,7 +13,10 @@ import webbrowser
 from pathlib import Path
 
 APP_PORT = 4780  # fixed, so a page installed as a Chrome app keeps working
-APP_NAME = "DecentSampler Instrument Builder"
+APP_NAME = "Virtual Instrument Creator"
+OLD_NAMES = ["DecentSampler Instrument Builder"]
+BUNDLE_ID = "io.github.vinst.instrument-builder"
+ICON = Path(__file__).parent / "ui" / "assets" / "icon.icns"
 LOG_FILE = Path("~/Library/Logs/vinst.log").expanduser()
 LOG_MAX_BYTES = 1_000_000
 START_TIMEOUT_S = 30
@@ -121,7 +126,8 @@ INFO_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 <dict>
   <key>CFBundleName</key><string>{name}</string>
   <key>CFBundleDisplayName</key><string>{name}</string>
-  <key>CFBundleIdentifier</key><string>io.github.vinst.instrument-builder</string>
+  <key>CFBundleIdentifier</key><string>{bundle_id}</string>
+  <key>CFBundleIconFile</key><string>icon</string>
   <key>CFBundleExecutable</key><string>launcher</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
@@ -135,9 +141,29 @@ INFO_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 def write_launcher(bundle: Path, repo: Path, uv: Path) -> None:
     macos = bundle / "Contents" / "MacOS"
     macos.mkdir(parents=True, exist_ok=True)
-    (bundle / "Contents" / "Info.plist").write_text(INFO_PLIST.format(name=APP_NAME), encoding="utf-8")
+    (bundle / "Contents" / "Info.plist").write_text(INFO_PLIST.format(name=APP_NAME, bundle_id=BUNDLE_ID),
+                                                    encoding="utf-8")
+    resources = bundle / "Contents" / "Resources"
+    resources.mkdir(exist_ok=True)
+    shutil.copyfile(ICON, resources / "icon.icns")
     script = macos / "launcher"
     script.write_text(LAUNCHER.format(repo=shlex.quote(str(repo)), uv=shlex.quote(str(uv)),
                                       log=shlex.quote(str(LOG_FILE)), name=shlex.quote(APP_NAME)),
                       encoding="utf-8")
     script.chmod(0o755)
+    bundle.touch()  # Finder caches an app's icon until the bundle's date changes
+
+
+def remove_old_launchers(folder: Path) -> list[Path]:
+    """Launchers installed under an earlier name; only ones this project made."""
+    removed = []
+    for name in OLD_NAMES:
+        bundle = folder / f"{name}.app"
+        try:
+            info = plistlib.loads((bundle / "Contents" / "Info.plist").read_bytes())
+        except (OSError, plistlib.InvalidFileException):
+            continue
+        if info.get("CFBundleIdentifier") == BUNDLE_ID:
+            shutil.rmtree(bundle)
+            removed.append(bundle)
+    return removed
