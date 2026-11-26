@@ -109,6 +109,21 @@ def test_with_the_agent_the_launcher_waits_for_macos_to_start_the_builder(monkey
     assert not started
 
 
+def test_with_the_agent_not_listening_the_launcher_starts_the_builder(monkeypatch):
+    agent.PLIST.parent.mkdir()
+    agent.PLIST.write_bytes(b"")  # left behind, but launchd doesn't hold the port
+    calls = iter([False, True])
+    started = []
+    monkeypatch.setattr(launcher, "builder_running", lambda port: next(calls))
+    monkeypatch.setattr(launcher, "port_in_use", lambda port: False)
+    monkeypatch.setattr(launcher, "start_server", lambda *a: started.append(a))
+    monkeypatch.setattr(launcher.time, "sleep", lambda s: None)
+    monkeypatch.setattr(launcher, "chrome_app", lambda: None)
+    monkeypatch.setattr(launcher.webbrowser, "open", lambda url: None)
+    launcher.open_builder(4780, 120)
+    assert started == [(4780, 120)]
+
+
 def test_agent_hands_the_port_to_uv_in_this_checkout(tmp_path):
     info = plistlib.loads(agent.plist(tmp_path / ".venv/bin/python", tmp_path / "uv", tmp_path, 4780,
                                       tmp_path / "vinst.log"))
@@ -154,6 +169,7 @@ def test_install_app_keeps_the_launcher_only_until_there_is_a_chrome_app(monkeyp
 
     installed = []
     monkeypatch.setattr(agent, "install", lambda *a: installed.append(a))
+    monkeypatch.setattr("vinst.cli.sys.platform", "darwin")
     monkeypatch.setattr(launcher, "CHROME_APPS", tmp_path / "Chrome Apps")
     apps = tmp_path / "Applications"
     result = CliRunner().invoke(app, ["install-app", "--folder", str(apps)])
@@ -162,6 +178,18 @@ def test_install_app_keeps_the_launcher_only_until_there_is_a_chrome_app(monkeyp
     result = CliRunner().invoke(app, ["install-app", "--folder", str(apps)])
     assert result.exit_code == 0 and not (apps / f"{launcher.APP_NAME}.app").exists()
     assert "Open the builder with" in result.output
+
+
+def test_install_app_elsewhere_than_macos_says_so(monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+
+    from vinst.cli import app
+
+    installed = []
+    monkeypatch.setattr(agent, "install", lambda *a: installed.append(a))
+    monkeypatch.setattr("vinst.cli.sys.platform", "linux")
+    result = CliRunner().invoke(app, ["install-app", "--folder", str(tmp_path)])
+    assert result.exit_code == 1 and "macOS only" in result.output and not installed
 
 
 def test_launcher_has_the_icon_and_replaces_one_under_the_old_name(tmp_path):
