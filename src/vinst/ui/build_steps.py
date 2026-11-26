@@ -593,12 +593,13 @@ def control_row(ed: "Editor", key: str, switches: dict[str, ui.switch]) -> None:
                 if key == "lowcut":
                     ui.label("E.g. the low resonance of a ukulele's body that rings on after the pluck; the note itself, from its pitch up, "
                              "stays as it is. A curve, not a step, as drawn: the full amount well below the share "
-                             "set, less towards it, almost nothing at the pitch. The knob blends "
-                             "between the samples as recorded (0 %, where it starts) and with this cut (100 %). "
-                             "Applied when building, so no slicing is needed; the instrument then also carries "
-                             "what was cut out. Loudness is evened out halfway (50 %), so notes with much low "
-                             "resonance play a little louder at 0 % and a little quieter at 100 %. MuseScore's "
-                             "soundfont has the cut at 50 %.").classes("text-xs opacity-70 max-w-3xl")
+                             "set, less towards it, almost nothing at the pitch. Applied when building, so no "
+                             "slicing is needed; the instrument then also carries what was cut out. "
+                             "The instrument's Low cut knob starts at 0 %, as recorded, and reaches this cut at "
+                             "100 %; most of the cut comes in its upper half. Two things are set for the knob at 50 %, "
+                             "not where it starts: loudness is evened out there, so notes with much low resonance "
+                             "play a little louder at 0 % and a little quieter at 100 %, and MuseScore's "
+                             "soundfont, which has no knob, has the cut as at 50 %.").classes("text-xs opacity-70 max-w-3xl")
 
 
 def extra_use(ed: "Editor", x: Extra) -> None:
