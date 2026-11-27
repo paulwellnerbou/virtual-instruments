@@ -9,6 +9,8 @@ from contextlib import contextmanager
 
 from nicegui import ui
 
+from vinst.ui import notice
+
 LABEL_W = "w-28"
 LABEL_CHARS = 12  # what fits into LABEL_W
 
@@ -26,6 +28,6 @@ def setting(label: str, hint: str | None = None) -> Iterator[ui.row]:
             yield controls
 
 
-def note(text: str, style: str = "text-warning") -> None:
+def note(text: str) -> None:
     """A message about the settings above, across the whole row."""
-    ui.label(text).classes(f"text-xs {style} w-full")
+    notice.show(text, dense=True)

@@ -27,7 +27,7 @@ from vinst.plan import Take, more_base, more_file, note_lanes, plan_takes, plann
 from vinst.plan import take_key as take_key_of
 from vinst.slicing import has_audio
 from vinst.spec import Instrument, Signal
-from vinst.ui import form
+from vinst.ui import form, notice
 
 if TYPE_CHECKING:
     from vinst.ui.app import Editor
@@ -322,15 +322,15 @@ def open_dialog(ed: "Editor", title: str, signals: list[Signal], paths: dict[str
                 ui.label(f"Saved {', '.join(p.name for p in result.files)} ({result.seconds:.0f} s).") \
                     .classes("text-positive")
                 if result.overflows:
-                    ui.label(f"{result.overflows} dropouts: the interface lost audio. Record this again; closing "
-                             "other audio apps helps.").classes("text-negative")
+                    notice.show(f"{result.overflows} dropouts: the interface lost audio. Record this again; closing "
+                                "other audio apps helps.", "error", dense=True)
                 if result.clipped:
                     names = ", ".join(s.name for s in signals if s.id in result.clipped)
-                    ui.label(f"Clipped: {names}. Turn the gain down and record again.").classes("text-negative")
+                    notice.show((f"Clipped: {names}.", "Turn the gain down and record again."), "error", dense=True)
                 elif judge_level:
                     advice = recorder.level_advice(max(peak_dbfs(f) for f in result.files))
                     if advice:
-                        ui.label(advice).classes("text-warning")
+                        notice.show(advice, dense=True)
             else:
                 ui.label("Cancelled; nothing was changed.").classes("opacity-70")
         buttons(False, done=bool(result.files))

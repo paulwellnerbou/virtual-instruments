@@ -250,7 +250,7 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
         manifest = recut(inst, manifest, edited, lambda i, n, _title: step(i, n))
         review.save(manifest, store.manifest_path(inst.meta.slug))
         titles = [t.title for t in manifest.takes if t.key in edited]
-        recut_info.append(f"Edited since slicing, so cut again where they were cut: {', '.join(titles[:3])}"
+        recut_info.append(f"Cut again where they were cut, as edited since slicing: {', '.join(titles[:3])}"
                           + (f" and {len(titles) - 3} more." if len(titles) > 3 else "."))
     changed = changed_takes(inst, manifest)
     if changed:
@@ -269,8 +269,8 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
         raise ValueError("No usable hits: record and slice some notes first.")
     mapping.info[:0] = recut_info
     if cut_in_samples(manifest):
-        mapping.warnings.append("The sliced samples still have the pitch-relative low cut they were sliced with, so "
-                                "changes to it don't apply; slice them again (step 5) once and it's applied when "
+        mapping.warnings.append("Changes to the low cut don't apply: the sliced samples still have the pitch-relative "
+                                "low cut they were sliced with; slice them again (step 5) once and it's applied when "
                                 "building.")
 
     name = bundle_name(inst)
@@ -298,7 +298,7 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
     if abs(mapping.gain_db) >= 0.1:
         mapping.info.append(
             f"Level {'raised' if mapping.gain_db > 0 else 'lowered'} by {abs(mapping.gain_db):.1f} dB"
-            + (f"; the peaks of {len(limited)} samples were held under {level.CEILING_DB:.0f} dBFS, by up to "
+            + (f": the peaks of {len(limited)} samples were held under {level.CEILING_DB:.0f} dBFS, by up to "
                f"{max(limited):.1f} dB." if limited else "."))
     for e in mapping.notes:
         e.volume_db = round(e.volume_db - loudest[e.file], 2)
@@ -310,7 +310,7 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
                             {e.file: e.removed for e in mapping.notes if e.removed}, bands, stage("room"))
         if over >= 0.1:
             mapping.gain_db = -over
-            mapping.info.append(f"Played {over:.1f} dB quieter, so the Equalizer's boosts (as its knobs start) "
+            mapping.info.append(f"Played {over:.1f} dB quieter: the Equalizer's boosts (as its knobs start) "
                                 "stay under full scale.")
 
     images_dir = bundle / IMAGES_DIR
@@ -332,7 +332,7 @@ def build(inst: Instrument, progress: Callable[[float, str], None] | None = None
         if inst.preset.reverb_send:
             width = reverb_send.band_width([reverb_send.sample_pitch(e.lo, e.hi) for e in mapping.notes])
             mapping.info.append(
-                f"To avoid reverb hiss from attacks with high frequencies, every sample is also sent to one of "
+                f"No reverb hiss from bright attacks: every sample is also sent to one of "
                 f"{len(irs)} buses, one per {width} semitones. Each bus has a convolution reverb playing {source} "
                 f"with a −{abs(reverb_send.SHELF_DB):g} dB high shelf from {reverb_send.SHELF_ABOVE:g} × its "
                 f"middle note's pitch and a low-pass at {reverb_send.LOWPASS_HZ / 1000:g} kHz "

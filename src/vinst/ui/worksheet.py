@@ -41,7 +41,7 @@ from vinst.plan import (
 from vinst.slicing import SUBTYPES
 from vinst.review import FLAGS, Hit, Manifest, TakeResult, lane_of, loudness, settle
 from vinst.spec import AUDIO_SUFFIXES, SAFE_NAME as SAFE_LANE, SUSTAINED_TYPES, CleanupEq, EqFilter, Instrument, NoteLanes, Signal
-from vinst.ui import form, open_with, recording
+from vinst.ui import form, notice, open_with, recording
 from vinst.ui.anim import Collapse
 from vinst.ui.controls import NumberField, Segmented
 from vinst.ui.finder import can_choose_folder, choose_folder, ensure_folder, reveal
@@ -341,6 +341,10 @@ def hit_info(take: TakeResult, hit: Hit, imported: bool = False) -> str:
     if hit.rejected:
         lines.append("Rejected: left out of the instrument")
     return "\n".join(lines)
+
+
+def sentence(text: str) -> str:
+    return text if text[-1:] in ".!?)" else text + "."
 
 
 def hit_peak_db(hit: Hit) -> float:
@@ -848,8 +852,8 @@ def step_worksheet(ed: "Editor") -> None:
     try:
         state["manifest"] = review.load(path)
     except Exception as e:  # e.g. written by an older version; slicing again replaces it
-        ui.label(f"{path.name} can't be read ({e.__class__.__name__}); slice again to replace it. "
-                 "Rejections stored in it are lost.").classes("text-sm text-orange-600")
+        notice.show(f"{path.name} can't be read ({e.__class__.__name__}); slice again to replace it. "
+                    "Rejections stored in it are lost.")
 
     importing = inst.recording.source == "samples"
     if state["manifest"] and not importing:
@@ -1567,7 +1571,7 @@ def step_worksheet(ed: "Editor") -> None:
                     compare_button([(result, h) for h in result.hits])
                 ui.label(take.title).classes("font-medium whitespace-nowrap")
                 if recorded and result.message:
-                    ui.label(result.message).classes("text-xs text-orange-600 truncate")
+                    notice.inline(result.message).classes("text-xs")
                 elif recorded and result.info:
                     ui.label(result.info).classes("text-xs opacity-60 truncate")
                 elif not recorded:
@@ -1614,9 +1618,10 @@ def step_worksheet(ed: "Editor") -> None:
                         if not ok:
                             with controls_strip():
                                 drop_hint(take)
-                        elif result.message or result.info:
-                            ui.label(result.message or result.info).classes(
-                                "text-xs truncate " + ("text-orange-600" if result.message else "opacity-60"))
+                        elif result.message:
+                            notice.inline(result.message).classes("text-xs")
+                        elif result.info:
+                            ui.label(result.info).classes("text-xs truncate opacity-60")
                         hit_strip(hits, span_s, loudest, signals=take.signals, loudest_of=loudest_of)
                 drop_target(row, take, "", take.pass_id)
 
@@ -1640,7 +1645,7 @@ def step_worksheet(ed: "Editor") -> None:
                     level_text = f" · {level:.1f} dBFS" if level is not None else ""
                     ui.label(noise_text(result) + level_text).classes("text-sm opacity-70 truncate")
                 elif recorded and result.message:
-                    ui.label(result.message).classes("text-xs text-orange-600 truncate")
+                    notice.inline(result.message).classes("text-xs")
                 elif not recorded:
                     drop_hint(take)
             drop_target(row, take, "", take.pass_id)
@@ -1681,7 +1686,7 @@ def step_worksheet(ed: "Editor") -> None:
                         if not recorded:
                             drop_hint(take)
                         elif result.message and result.status != "noise_floor":
-                            ui.label(result.message).classes("text-xs text-orange-600 truncate")
+                            notice.inline(result.message).classes("text-xs")
                 drop_target(row, take, "", take.pass_id)
 
     def controls_strip() -> ui.row:
@@ -1815,7 +1820,7 @@ def step_worksheet(ed: "Editor") -> None:
             def buttons() -> None:
                 twice = len(set(picked.values())) < len(picked)
                 if twice:
-                    ui.label("Each signal needs its own file or channel.").classes("text-xs text-orange-600")
+                    notice.show("Each signal needs its own file or channel.", dense=True)
                 with ui.row().classes("w-full justify-end gap-2 mt-2"):
                     ui.button("Cancel", on_click=lambda: box.submit(None)).props("flat")
                     ui.button("Continue", on_click=lambda: box.submit([options[picked[s.id]] for s in signals])) \
@@ -1914,18 +1919,23 @@ def step_worksheet(ed: "Editor") -> None:
                 if own:
                     ui.button("Use default velocities", on_click=lambda n=note: use_defaults(n)) \
                         .props("flat dense no-caps")
-            # A row's own status ("not recorded yet") shows in the row: here what needs attention, in
-            # orange, and what's good to know, in grey; with several passes, whose.
+            # A row's own status ("not recorded yet") shows in the row: here what needs attention, a
+            # paragraph each, and what's good to know, in grey; with several passes, whose.
             recorded_recs = [r for r in recs if r.status != "missing"]
             changed_here(recorded_recs, title)
-            for attr, style in (("message", "text-orange-600"), ("info", "opacity-60")):
-                parts = []
-                for p, _ in by_pass:
-                    text = "; ".join(filter(None, (getattr(r, attr) for r in recs_of[p.id] if r.status != "missing")))
-                    if text:
-                        parts.append(f"{p.name}: {text}" if len(by_pass) > 1 else text)
-                if parts:
-                    ui.label("; ".join(parts)).classes(f"text-xs {style}")
+            # A recording's messages come joined by "; ": a paragraph each.
+            messages = [(p.name if len(by_pass) > 1 else None, sentence(m))
+                        for p, _ in by_pass for r in recs_of[p.id] if r.status != "missing"
+                        for m in r.message.split("; ") if m]
+            if messages:
+                notice.show(messages, dense=True)
+            infos = []
+            for p, _ in by_pass:
+                text = "; ".join(filter(None, (r.info for r in recs_of[p.id] if r.status != "missing")))
+                if text:
+                    infos.append(f"{p.name}: {text}" if len(by_pass) > 1 else text)
+            if infos:
+                ui.label("; ".join(infos)).classes("text-xs opacity-60")
             bounds = lane_bounds(inst, note)
             # As wide as the longest velocity name of the instrument, so short names leave no gap but
             # the buttons still line up across notes.
@@ -2000,21 +2010,25 @@ def step_worksheet(ed: "Editor") -> None:
         other = [r for r in recs if r.title in state["changed"] and r.key not in state["edited_keys"]]
         gone = [r for r in other if r.title in state["deleted"]]
         other = [r for r in other if r.title not in state["deleted"]]
-        if edited:
-            with ui.row().classes("items-center gap-2"):
-                ui.label("Edited since slicing: " + ", ".join(short(r) for r in edited) + ".") \
-                    .classes("text-xs text-orange-600")
-                ui.button("Update", icon="sync", on_click=lambda keys=[r.key for r in edited]: update_edited(keys)) \
-                    .props("flat dense no-caps size=sm") \
-                    .tooltip("Cut again where it was cut, keeping your decisions, so you hear the edited sound")
-        for r in other:
-            with ui.row().classes("items-center gap-2"):
-                ui.label(f"{short(r)}: changed since slicing.").classes("text-xs text-orange-600")
-                ui.button("Re-slice", icon="content_cut", on_click=lambda r=r: reslice(r)) \
-                    .props("flat dense no-caps size=sm").tooltip("Find this recording's hits again")
-        if gone:
-            ui.label(", ".join(short(r) for r in gone) + ": deleted since slicing; Slice them (above) takes "
-                     f"{'its hits' if len(gone) == 1 else 'their hits'} out.").classes("text-xs text-orange-600")
+        if not (edited or other or gone):
+            return
+        item = "vi-notice-item" if bool(edited) + len(other) + bool(gone) > 1 else ""
+        with notice.box(dense=True):
+            if edited:
+                with ui.row().classes(f"items-center gap-2 {item}"):
+                    notice.paragraph(("Edited since slicing:", ", ".join(short(r) for r in edited) + "."))
+                    ui.button("Update", icon="sync",
+                              on_click=lambda keys=[r.key for r in edited]: update_edited(keys)) \
+                        .props("flat dense no-caps size=sm") \
+                        .tooltip("Cut again where it was cut, keeping your decisions, so you hear the edited sound")
+            for r in other:
+                with ui.row().classes(f"items-center gap-2 {item}"):
+                    notice.paragraph((f"{short(r)}:", "changed since slicing."))
+                    ui.button("Re-slice", icon="content_cut", on_click=lambda r=r: reslice(r)) \
+                        .props("flat dense no-caps size=sm").tooltip("Find this recording's hits again")
+            if gone:
+                notice.paragraph((", ".join(short(r) for r in gone) + ":", "deleted since slicing; Slice them "
+                                  f"(above) takes {'its hits' if len(gone) == 1 else 'their hits'} out.")).classes(item)
 
     def import_card(take: TakeResult) -> None:
         label, color = STATUS[take.status]
@@ -2025,7 +2039,7 @@ def step_worksheet(ed: "Editor") -> None:
                 ui.label(take.title).classes("font-medium")
                 ui.badge(label, color=color)
                 if take.message:
-                    ui.label(take.message).classes("text-sm text-orange-600")
+                    notice.inline(take.message).classes("text-sm")
             rows: dict[str, list[Hit]] = {}
             for h in take.hits:
                 rows.setdefault(h.layer or "hits", []).append(h)
@@ -2252,7 +2266,7 @@ def step_worksheet(ed: "Editor") -> None:
                             ui.label(name).classes("w-20 shrink-0 font-medium whitespace-nowrap"
                                                    + (" opacity-50" if pl.take is None else ""))
                             if pl.take is None:
-                                ui.label(f"{hits}: {pl.why}, left out").classes("text-orange-600")
+                                notice.inline(f"{hits}: {pl.why}, left out", truncate=False)
                             else:
                                 # The string it's played on, if any: the title without the note and lane.
                                 where = pl.take.title.replace(f" · {pl.take.lane}", "").removeprefix(name)
@@ -2496,7 +2510,7 @@ def step_worksheet(ed: "Editor") -> None:
             button.set_text("Update them" if state["edited"] else "Slice them")
             button.props(f"icon={'sync' if state['edited'] else 'content_cut'}")
         if state["stale"]:
-            ui.label("⚠ " + state["stale"]).classes("text-sm text-orange-600")
+            notice.show(state["stale"])
 
     # Buttons and the switch stay out of the redrawn parts: the switch keeps its animation.
     # The message gets a line of its own, however long; below it the button, and the progress bar

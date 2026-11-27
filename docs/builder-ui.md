@@ -155,7 +155,7 @@ Only the built instrument changes here, not your recordings or samples.
 
 ## 7. Build
 
-**Build** creates the instrument and checks the preset format, sample and artwork files, key and velocity coverage, and variations, listing warnings and errors. You can build before everything is recorded, e.g. to try the first notes.
+**Build** creates the instrument and checks the preset format, sample and artwork files, key and velocity coverage, and variations. Below the result: why it isn't valid, if it isn't; what to check, e.g. notes not recorded yet; and what the build did, e.g. how far it raised the level. You can build before everything is recorded, e.g. to try the first notes.
 
 - **DecentSampler:** **Install into DecentSampler** copies it into `~/DecentSampler`, replacing only instruments this builder made. **Package .dslibrary** makes one file to share. **Show in Finder** shows it.
 - **Soundfont:** the same instrument as SF2, for MuseScore and other players. SF2 has no variations, so each key and velocity plays one sample (its own note's, best in tune), without release noises; the Equalizer is built into its samples. **Download** saves it; **Copy to MuseScore** puts it into `~/Documents/MuseScore4/SoundFonts` (never over one made elsewhere): restart MuseScore and choose it in the Mixer. **Show in Finder** shows the file.
