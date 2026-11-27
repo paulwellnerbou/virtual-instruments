@@ -293,10 +293,10 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
     unrecorded = len({(t.pass_id, t.note_base) for t in plan.values() if t.kind == "note"} - recorded) \
         if not imported else 0
     if unrecorded:
-        m.warnings.append(f"{unrecorded} planned notes aren't recorded yet; neighbouring samples cover them.")
+        m.warnings.append(f"{unrecorded} planned notes aren't recorded yet: neighbouring samples cover them.")
     if laneless:
-        m.warnings.append(f"{laneless} hits have no velocity (theirs was removed from the note) and are left out; "
-                          "drag them into one in the worksheet.")
+        m.warnings.append(f"{laneless} hits have no velocity: theirs was removed from the note, so they're left "
+                          "out; drag them into one in the worksheet.")
     if not notes:
         return m
 
@@ -366,19 +366,19 @@ def map_samples(inst: Instrument, manifest: Manifest) -> Mapping:
                       "are lifted or lowered to it, so moving between velocities changes the sound, not the "
                       "loudness.")
     if inst.preset.balance:
-        m.info.append(f"Loudness evened out: {len(balanced)} samples corrected"
+        m.info.append(f"Loudness evened out: {len(balanced)} sample{'' if len(balanced) == 1 else 's'} corrected"
                       + (f", largest {max(balanced, key=abs):+.1f} dB." if balanced else "."))
     if capped:
-        m.warnings.append("These samples are far louder or softer than the notes around them and were evened out "
-                          f"by only {BALANCE_MAX_DB:g} dB: " + ", ".join(dict.fromkeys(capped))
-                          + ". Probably a mis-hit or a slicing error; check them in the worksheet.")
+        m.warnings.append("Far louder or softer than the notes around them: " + ", ".join(dict.fromkeys(capped))
+                          + f". Evened out by only {BALANCE_MAX_DB:g} dB; probably a mis-hit or a slicing error, "
+                          "so check them in the worksheet.")
     if inst.processing.loops:
         looped = {e.file for e in m.notes if e.loop}
         m.info.append(f"Loops: {len(looped)} of {len({e.file for e in m.notes})} note samples loop.")
         shortened = {e.file for e in m.notes if e.loop and e.loop[2] < wanted_crossfade(inst, e.sample_rate)}
         if shortened:
             m.warnings.append(f"{len(shortened)} loops start too early for the {inst.processing.loop_crossfade_ms:g} ms "
-                              "crossfade and got a shorter one; slice again to search loops that fit it.")
+                              "crossfade: they got a shorter one; slice again to search loops that fit it.")
     for e in m.release:
         e.lo, e.hi = m.span
     by_signal: dict[str, int] = defaultdict(int)

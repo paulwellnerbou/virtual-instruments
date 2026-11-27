@@ -16,7 +16,7 @@ from vinst.preset import mixable_signals
 from vinst.spec import CONTROLS, Extra, ExtraKey
 from vinst.ui.anim import Collapse
 from vinst.ui.controls import NumberField, Segmented, VelocitySplits
-from vinst.ui import preview
+from vinst.ui import notice, preview
 from vinst.ui.equalizer import equalizer
 from vinst.ui.finder import reveal
 
@@ -307,7 +307,7 @@ def artwork_field(ed: "Editor", attr: str, stem: str, label: str, ratio: str, hi
             if path.is_file():
                 ui.label(path.name).classes("text-sm")
             else:
-                ui.label(f"{path.name} is missing.").classes("text-sm text-orange-600")
+                notice.inline(f"{path.name} is missing.").classes("text-sm")
             ui.button(f"Remove {stem}", icon="close", on_click=remove).props("flat dense")
 
     def remove() -> None:
@@ -371,7 +371,7 @@ def reverb_ir_field(ed: "Editor") -> None:
                       on_change=lambda e: ed.set(p, "reverb_own", e.value))
             ui.button("Remove", icon="close", on_click=remove).props("flat dense")
         if not path.is_file():
-            ui.label(f"{path.name} is missing.").classes("text-sm text-orange-600")
+            notice.inline(f"{path.name} is missing.").classes("text-sm")
 
     def remove() -> None:
         old = Path(p.reverb_ir).expanduser() if p.reverb_ir else None
@@ -726,14 +726,19 @@ def step_build(ed: "Editor") -> None:
                 ui.label("Not built yet.").classes("opacity-70")
                 return
             ok = r.report.ok
-            ui.label(("✓ Valid" if ok else "✗ Not valid") + f" · {r.samples} samples · {r.size_bytes / 1e6:,.0f} MB") \
-                .classes("text-base font-medium " + ("text-green-600" if ok else "text-red-600"))
-            for e in r.report.errors[:50]:
-                ui.label(f"✗ {e}").classes("text-sm text-red-600")
-            for w in r.warnings + r.report.warnings:
-                ui.label(f"⚠ {w}").classes("text-sm text-orange-600")
-            for line in r.info:
-                ui.label(f"ℹ {line}").classes("text-sm opacity-80")
+            with ui.row().classes("items-center gap-2"):
+                ui.icon("check_circle" if ok else "cancel", size="20px").classes("text-positive" if ok else "text-negative")
+                ui.label("Valid" if ok else "Not valid").classes("text-base font-medium")
+                ui.label(f"{r.samples} samples · {r.size_bytes / 1e6:,.0f} MB").classes("text-sm opacity-60")
+            if r.report.errors:
+                notice.item_list([notice.headed(e) for e in r.report.errors[:50]], "error",
+                                 title="Why it isn't valid")
+            warnings = r.warnings + r.report.warnings
+            if warnings:
+                notice.item_list([notice.headed(w) for w in warnings], "warning",
+                                 title=f"{len(warnings)} thing{'' if len(warnings) == 1 else 's'} to check")
+            if r.info:
+                notice.item_list([notice.headed(line) for line in r.info], "info", title="What the build did")
 
         report()
 

@@ -568,7 +568,7 @@ def test_a_take_edited_without_moving_a_hit_is_cut_where_it_was_when_building(uk
     manifest = review.load(store.manifest_path(uke.meta.slug))
     assert slicing.edited_takes(uke, manifest) == [take.key]
     built = bundle.build(uke)  # no slicing asked for
-    assert any("cut again where they were cut" in line for line in built.info)
+    assert any("Cut again where they were cut" in line for line in built.info)
     after = review.load(store.manifest_path(uke.meta.slug))
     again = result(after, take.key)
     assert [(h.start, h.end) for h in again.hits] == before and again.hits[1].rejected

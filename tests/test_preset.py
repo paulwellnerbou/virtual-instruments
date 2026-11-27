@@ -1023,7 +1023,7 @@ def test_the_equalizer_s_boosts_get_room_below_full_scale(built):
     inst.preset.controls = ["mix", "eq"]
     inst.preset.eq = [EqBand(type="high_shelf", freq=3000, q=0.7, gain_db=18)]  # the attack's click gets louder
     result = bundle.build(inst)
-    line = next(line for line in result.info if "so the Equalizer's boosts" in line)
+    line = next(line for line in result.info if "the Equalizer's boosts" in line)
     volume = float(etree.parse(str(result.preset_file)).find("groups").get("volume").removesuffix("dB"))
     assert f"Played {-volume:.1f} dB quieter" in line
     # As DecentSampler plays them: at that volume through the EQ, the loudest reaches the ceiling, no further

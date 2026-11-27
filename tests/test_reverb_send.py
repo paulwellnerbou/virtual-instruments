@@ -38,7 +38,7 @@ def test_on_sends_every_sample_to_a_reverb_bus_of_its_pitch(built):
     doc = _preset(result)
     assert "reverb" not in [e.get("type") for e in doc.find("effects")]
     buses = doc.find("buses").findall("bus")
-    assert any(line.startswith("To avoid reverb hiss") and f"one of {len(buses)} buses" in line
+    assert any(line.startswith("No reverb hiss") and f"one of {len(buses)} buses" in line
                for line in result.info)
     assert buses and all(float(b.get("busVolume")) == inst.preset.reverb for b in buses)
     for b in buses:

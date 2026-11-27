@@ -33,7 +33,7 @@ from vinst.spec import (
     slugify,
 )
 from vinst.trash import NoTrash, available, remove, trash
-from vinst.ui import anim, keyboard, recording, theme
+from vinst.ui import anim, keyboard, notice, recording, theme
 from vinst.ui.controls import NumberField, Segmented
 from vinst.ui.build_steps import extra_use, step_build, step_sound, velocity_layers
 from vinst.ui.finder import can_choose_folder, choose_folder
@@ -149,6 +149,7 @@ def header() -> None:
     anim.add_css()
     ui.add_css(STEPS_CSS)
     theme.add_css()
+    notice.add_css()
     recording.add_assets()
     ui.add_head_html(HEAD)
     with ui.header().classes("items-center justify-between px-4 py-0"):
@@ -610,8 +611,8 @@ def summary_panel(ed: Editor) -> None:
                 .classes("w-full")
             ui.label(import_status(inst)).classes("text-sm font-medium")
             ui.label(f"Signals: {', '.join(x.name for x in inst.signals) or '–'}").classes("text-sm opacity-70")
-            for p in inst.problems():
-                ui.label(f"⚠ {p}").classes("text-sm text-orange-600")
+            if problems := inst.problems():
+                notice.show(problems, dense=True)
             return
         s = summarize(inst)
         strings = [st.name for st in inst.range.strings] if inst.range.mode == "strings" else []
@@ -626,8 +627,8 @@ def summary_panel(ed: Editor) -> None:
                          ("Signals", ", ".join(x.name for x in inst.signals) or "–")]:
                 ui.label(k).classes("opacity-70")
                 ui.label(str(v))
-        for p in inst.problems():
-            ui.label(f"⚠ {p}").classes("text-sm text-orange-600")
+        if problems := inst.problems():
+            notice.show(problems, dense=True)
 
     body()
     ed.on_change_hooks.append(body.refresh)
